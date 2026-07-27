@@ -5,25 +5,38 @@ namespace Alacrity.UiTestPlugin;
 /// <summary>Minimal package used to exercise the public plugin lifecycle without game integration.</summary>
 public sealed class UiTestPlugin : IAlacrityPlugin
 {
-    public PluginManifest Manifest { get; } = new PluginManifest(
-        new PluginId("alacrity.ui-test"),
-        "Alacrity UI Test Plugin",
-        new System.Version(0, 1, 0),
-        "ExoField",
-        "A minimal lifecycle package used to verify Alacrity plugin discovery and ownership cleanup.",
-        new[] { "1.4.5.6" },
-        capabilities: PluginCapability.UserInterface,
-        permissions: PluginPermission.DrawUserInterface,
-        multiplayerSafety: MultiplayerSafety.ClientOnly,
-        changelog: "0.1.0 - Minimal lifecycle test package.",
-        entryAssembly: "Alacrity.UiTestPlugin.dll",
-        entryType: "Alacrity.UiTestPlugin.UiTestPlugin");
-
     public void Initialize(IPluginContext context)
     {
         context.Logger.Info("Alacrity UI test plugin initialized.");
-        if (context is IPluginContextV2 extended)
-            extended.Ui.RegisterSettingsPage(new PluginUiContribution("ui-test-settings", "UI Test Settings"));
+        var showDiagnostics = context.Settings.Get("showDiagnostics", true);
+        var accent = context.Settings.Get("accent", "Green");
+        var opacity = context.Settings.Get("opacity", 0.75f);
+        var accentColor = context.Settings.Get("accentColor", "#37C871");
+        context.Settings.Set("showDiagnostics", showDiagnostics);
+        context.Settings.Set("accent", accent);
+        context.Settings.Set("opacity", opacity);
+        context.Settings.Set("accentColor", accentColor);
+        context.Ui.RegisterSettingsPage(new PluginUiContribution("ui-test-settings", "UI Test Settings"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle(
+                "ui-test-diagnostics",
+                "Show diagnostics",
+                () => context.Settings.Get("showDiagnostics", true),
+                value => context.Settings.Set("showDiagnostics", value)));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle(
+                "ui-test-accent",
+                "Accent",
+                new[] { "Green", "Blue", "Purple" },
+                () => context.Settings.Get("accent", "Green"),
+                value => context.Settings.Set("accent", value)));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider(
+                "ui-test-opacity", "Overlay opacity", 0f, 1f, 0.05f,
+                () => context.Settings.Get("opacity", 0.75f),
+                value => context.Settings.Set("opacity", value),
+                value => (int)(value * 100f) + "%"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Color(
+                "ui-test-accent-color", "Accent color",
+                () => PluginColor.TryParseHex(context.Settings.Get("accentColor", "#37C871"), out var color) ? color : new PluginColor(55, 200, 113),
+                value => context.Settings.Set("accentColor", value.ToHex())));
     }
 
     public void Enable() { }

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "alacrity.ui-test",
+  "name": "Alacrity UI Test Plugin",
+  "version": "0.1.0",
+  "publisher": "ExoField",
+  "description": "A minimal lifecycle package used to verify Alacrity plugin discovery and interactive settings.",
+  "supportedGameVersions": [ "1.4.5.6" ],
+  "capabilities": [ "UserInterface" ],
+  "permissions": [ "DrawUserInterface" ],
+  "multiplayerSafety": "ClientOnly",
+  "changelog": "0.1.0 - Interactive settings test package.",
+  "entryAssembly": "Alacrity.UiTestPlugin.dll",
+  "entryType": "Alacrity.UiTestPlugin.UiTestPlugin"
+}

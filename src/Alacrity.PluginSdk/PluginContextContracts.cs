@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +21,7 @@ public interface IPluginRegistration : IDisposable
 public interface IAsyncAlacrityPlugin
 {
     /// <summary>Initializes plugin state from the host-supplied verified context.</summary>
-    Task InitializeAsync(IPluginContextV2 context, CancellationToken cancellationToken);
+    Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken);
 
     /// <summary>Activates registrations and runtime work.</summary>
     Task EnableAsync(CancellationToken cancellationToken);
@@ -30,31 +31,6 @@ public interface IAsyncAlacrityPlugin
 
     /// <summary>Releases plugin-owned managed state.</summary>
     Task ShutdownAsync(CancellationToken cancellationToken);
-}
-
-/// <summary>Expanded plugin context for packages whose manifest was verified before DLL execution.</summary>
-public interface IPluginContextV2 : IPluginContext
-{
-    /// <summary>Plugin-scoped settings service.</summary>
-    IPluginSettings Settings { get; }
-
-    /// <summary>Path-confined plugin data storage.</summary>
-    IPluginStorage Storage { get; }
-
-    /// <summary>Typed snapshot event subscriptions.</summary>
-    IPluginEventService Events { get; }
-
-    /// <summary>Scoped command registrations.</summary>
-    IPluginCommandService Commands { get; }
-
-    /// <summary>Scoped keybind registrations.</summary>
-    IPluginKeybindService Keybinds { get; }
-
-    /// <summary>UI contribution registrations interpreted by the host application.</summary>
-    IPluginUiService Ui { get; }
-
-    /// <summary>Read-only multiplayer session and server policy state.</summary>
-    IMultiplayerSession Multiplayer { get; }
 }
 
 /// <summary>Plugin-scoped typed settings boundary. Persistence and recovery are host-owned.</summary>
@@ -198,6 +174,12 @@ public interface IPluginUiService
     /// <summary>Registers a settings-page contribution.</summary>
     IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution);
 
+    /// <summary>Registers a host-rendered interactive setting owned by the current plugin.</summary>
+    IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution);
+
+    /// <summary>Registers a typed host-rendered setting control owned by the current plugin.</summary>
+    IPluginRegistration RegisterSettingsControl(PluginSettingControl control);
+
     /// <summary>Registers an overlay contribution.</summary>
     IPluginRegistration RegisterOverlay(PluginUiContribution contribution);
 }
@@ -212,11 +194,144 @@ public sealed class PluginUiContribution
         DisplayName = string.IsNullOrWhiteSpace(displayName) ? throw new ArgumentException("A display name is required.", nameof(displayName)) : displayName;
     }
 
+    /// <summary>Creates an interactive setting with plugin-owned value and activation delegates.</summary>
+    public PluginUiContribution(string id, string displayName, Func<string> valueText, Action activate)
+        : this(id, displayName)
+    {
+        ValueText = valueText ?? throw new ArgumentNullException(nameof(valueText));
+        Activate = activate ?? throw new ArgumentNullException(nameof(activate));
+    }
+
     /// <summary>Stable contribution identifier within the current plugin.</summary>
     public string Id { get; }
 
     /// <summary>User-facing display name.</summary>
     public string DisplayName { get; }
+
+    /// <summary>Gets the current setting value while the contribution is visible.</summary>
+    public Func<string>? ValueText { get; }
+
+    /// <summary>Changes the setting when the player activates the control.</summary>
+    public Action? Activate { get; }
+
+    /// <summary>Whether this contribution is a host-rendered interactive setting.</summary>
+    public bool IsInteractive => ValueText != null && Activate != null;
+}
+
+/// <summary>Host-rendered setting control kinds supported by the stable plugin UI contract.</summary>
+public enum PluginSettingControlKind
+{
+    /// <summary>A two-state enabled or disabled control.</summary>
+    Toggle,
+    /// <summary>A control which cycles through declared values.</summary>
+    Cycle,
+    /// <summary>A bounded numeric slider.</summary>
+    Slider,
+    /// <summary>A three-channel color picker with hexadecimal import and export.</summary>
+    Color
+}
+
+/// <summary>Terraria-independent RGB color used by plugin settings contracts.</summary>
+public readonly struct PluginColor : IEquatable<PluginColor>
+{
+    /// <summary>Creates an opaque RGB color.</summary>
+    public PluginColor(byte red, byte green, byte blue) { Red = red; Green = green; Blue = blue; }
+    /// <summary>Red channel.</summary>
+    public byte Red { get; }
+    /// <summary>Green channel.</summary>
+    public byte Green { get; }
+    /// <summary>Blue channel.</summary>
+    public byte Blue { get; }
+    /// <summary>Formats the color as a six-digit hexadecimal value.</summary>
+    public string ToHex() => "#" + Red.ToString("X2") + Green.ToString("X2") + Blue.ToString("X2");
+    /// <summary>Parses a #RRGGBB or RRGGBB color.</summary>
+    public static bool TryParseHex(string? value, out PluginColor color)
+    {
+        color = default;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        string hex = value!.Trim();
+        if (hex.StartsWith("#", StringComparison.Ordinal)) hex = hex.Substring(1);
+        if (hex.Length != 6 || !byte.TryParse(hex.Substring(0, 2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out byte red) || !byte.TryParse(hex.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out byte green) || !byte.TryParse(hex.Substring(4, 2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out byte blue)) return false;
+        color = new PluginColor(red, green, blue);
+        return true;
+    }
+    /// <inheritdoc />
+    public bool Equals(PluginColor other) => Red == other.Red && Green == other.Green && Blue == other.Blue;
+    /// <inheritdoc />
+    public override bool Equals(object? obj) => obj is PluginColor other && Equals(other);
+    /// <inheritdoc />
+    public override int GetHashCode() => (Red << 16) | (Green << 8) | Blue;
+}
+
+/// <summary>Typed plugin setting metadata and host callbacks. Factories validate their stable declarations eagerly.</summary>
+public sealed class PluginSettingControl
+{
+    private PluginSettingControl(string id, string displayName, PluginSettingControlKind kind)
+    {
+        Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A setting control ID is required.", nameof(id)) : id;
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? throw new ArgumentException("A setting display name is required.", nameof(displayName)) : displayName;
+        Kind = kind;
+    }
+
+    /// <summary>Stable control ID within the owning plugin.</summary>
+    public string Id { get; }
+    /// <summary>User-facing setting label.</summary>
+    public string DisplayName { get; }
+    /// <summary>How the host renders and edits this control.</summary>
+    public PluginSettingControlKind Kind { get; }
+    /// <summary>Reads the current toggle value.</summary>
+    public Func<bool>? GetToggle { get; private set; }
+    /// <summary>Writes a toggle value.</summary>
+    public Action<bool>? SetToggle { get; private set; }
+    /// <summary>Declared cycle values in display order.</summary>
+    public IReadOnlyList<string>? CycleValues { get; private set; }
+    /// <summary>Reads the current cycle value.</summary>
+    public Func<string>? GetCycle { get; private set; }
+    /// <summary>Writes a cycle value.</summary>
+    public Action<string>? SetCycle { get; private set; }
+    /// <summary>Inclusive slider minimum.</summary>
+    public float Minimum { get; private set; }
+    /// <summary>Inclusive slider maximum.</summary>
+    public float Maximum { get; private set; }
+    /// <summary>Slider increment, or zero for continuous movement.</summary>
+    public float Step { get; private set; }
+    /// <summary>Reads the slider value.</summary>
+    public Func<float>? GetSlider { get; private set; }
+    /// <summary>Writes the slider value.</summary>
+    public Action<float>? SetSlider { get; private set; }
+    /// <summary>Optional slider display formatter.</summary>
+    public Func<float, string>? FormatSlider { get; private set; }
+    /// <summary>Reads the RGB color.</summary>
+    public Func<PluginColor>? GetColor { get; private set; }
+    /// <summary>Writes the RGB color.</summary>
+    public Action<PluginColor>? SetColor { get; private set; }
+
+    /// <summary>Creates a Terraria-style enabled or disabled setting.</summary>
+    public static PluginSettingControl Toggle(string id, string displayName, Func<bool> getValue, Action<bool> setValue)
+    {
+        var control = new PluginSettingControl(id, displayName, PluginSettingControlKind.Toggle) { GetToggle = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetToggle = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
+        return control;
+    }
+
+    /// <summary>Creates a Terraria-style cycling setting.</summary>
+    public static PluginSettingControl Cycle(string id, string displayName, IReadOnlyList<string> values, Func<string> getValue, Action<string> setValue)
+    {
+        if (values == null || values.Count < 2 || values.Any(string.IsNullOrWhiteSpace)) throw new ArgumentException("A cycle needs at least two non-empty values.", nameof(values));
+        return new PluginSettingControl(id, displayName, PluginSettingControlKind.Cycle) { CycleValues = values.ToArray(), GetCycle = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetCycle = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
+    }
+
+    /// <summary>Creates a bounded Terraria-style numeric slider.</summary>
+    public static PluginSettingControl Slider(string id, string displayName, float minimum, float maximum, float step, Func<float> getValue, Action<float> setValue, Func<float, string>? formatter = null)
+    {
+        if (float.IsNaN(minimum) || float.IsNaN(maximum) || minimum >= maximum || step < 0f) throw new ArgumentOutOfRangeException(nameof(minimum), "Slider bounds or step are invalid.");
+        return new PluginSettingControl(id, displayName, PluginSettingControlKind.Slider) { Minimum = minimum, Maximum = maximum, Step = step, GetSlider = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetSlider = setValue ?? throw new ArgumentNullException(nameof(setValue)), FormatSlider = formatter };
+    }
+
+    /// <summary>Creates a three-channel Terraria-style color picker with host-owned hexadecimal copy and paste.</summary>
+    public static PluginSettingControl Color(string id, string displayName, Func<PluginColor> getValue, Action<PluginColor> setValue)
+    {
+        return new PluginSettingControl(id, displayName, PluginSettingControlKind.Color) { GetColor = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetColor = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
+    }
 }
 
 /// <summary>Host-mediated service publication and discovery.</summary>

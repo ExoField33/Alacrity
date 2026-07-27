@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
@@ -15,6 +18,7 @@ using Terraria;
 using Terraria.GameContent.UI.Elements;
 using Terraria.UI;
 using Terraria.UI.Gamepad;
+using Terraria.Utilities;
 
 namespace AlacrityTerraria
 {
@@ -24,6 +28,7 @@ namespace AlacrityTerraria
         private static PluginManagementMenu _menu;
         private static PluginNotificationCenter _notifications;
         private static PluginDependencyDiagnostics _diagnostics;
+        private static PluginExtensionHost _extensions;
         private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
         private static readonly Color ResourcePackBorder = new Color(13, 20, 44) * 0.8f;
@@ -32,6 +37,8 @@ namespace AlacrityTerraria
         private static MethodInfo _assetRequest;
         private static MethodInfo _assetFrame;
         private static PropertyInfo _assetValue;
+        private static FieldInfo _mainAssetsField;
+        private static readonly HashSet<string> ReportedOptionalUiFailures = new HashSet<string>(StringComparer.Ordinal);
         private static Texture2D _ingameBlankTexture;
         private static bool _pluginMenuOpen;
         private static PluginSelectionMenu _selectionMenu;
@@ -39,6 +46,9 @@ namespace AlacrityTerraria
         private static int _ingameSelectedEntry;
         private static int _ingameView;
         private static float _ingameScroll;
+        private static float _ingameDescriptionScroll;
+        private static string _ingameHoveredSettingId;
+        private static bool _enabledStateRestored;
 
         public static void Open()
         {
@@ -66,10 +76,14 @@ namespace AlacrityTerraria
         {
             EnsurePluginManager();
             RefreshPluginCatalog();
-            _ingameEntries = _presenter.Present(_runtime, _diagnostics.ActiveWarnings).ToArray();
+            _ingameEntries = _presenter.Present(_runtime, _diagnostics.ActiveWarnings)
+                .Where(entry => entry.IsEnabled)
+                .ToArray();
             _ingameSelectedEntry = 0;
             _ingameView = 0;
             _ingameScroll = 0f;
+            _ingameDescriptionScroll = 0f;
+            _ingameHoveredSettingId = null;
         }
 
         public static void DrawIngamePluginSettings(SpriteBatch spriteBatch)
@@ -88,6 +102,8 @@ namespace AlacrityTerraria
 
             if (_ingameView == 1)
                 DrawIngamePluginDescription(spriteBatch, bounds, _ingameEntries[_ingameSelectedEntry]);
+            else if (_ingameView == 2)
+                DrawIngamePluginSettingsPage(spriteBatch, bounds, _ingameEntries[_ingameSelectedEntry]);
             else
                 DrawIngamePluginList(spriteBatch, bounds);
         }
@@ -163,11 +179,19 @@ namespace AlacrityTerraria
             {
                 _ingameSelectedEntry = index;
                 _ingameView = 1;
+                _ingameDescriptionScroll = 0f;
                 SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
             }
             else if (settingsHovered)
             {
-                Main.instance.MouseText(plugin.CanConfigure ? "Plugin Settings" : "No plugin settings are available.");
+                if (!HasSettings(plugin.Id))
+                    Main.instance.MouseText("No plugin settings are available.");
+                else
+                {
+                    _ingameSelectedEntry = index;
+                    _ingameView = 2;
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                }
             }
         }
 
@@ -175,11 +199,256 @@ namespace AlacrityTerraria
         {
             Utils.DrawBorderString(spriteBatch, plugin.Name, new Vector2(bounds.Center.X, bounds.Y + 16), Color.White, 0.9f, 0.5f, 0f, -1);
             Utils.DrawBorderString(spriteBatch, "Version: " + plugin.Version, new Vector2(bounds.Center.X, bounds.Y + 50), Color.White, 0.7f, 0.5f, 0f, -1);
-            Utils.DrawBorderString(spriteBatch, "Description", new Vector2(bounds.X + 18, bounds.Y + 86), Color.White, 0.8f, 0f, 0f, -1);
-            Utils.DrawBorderString(spriteBatch, plugin.Description, new Vector2(bounds.X + 18, bounds.Y + 108), Color.White, 0.65f, 0f, 0f, -1);
-            Utils.DrawBorderString(spriteBatch, "Changelog", new Vector2(bounds.X + 18, bounds.Y + 176), Color.White, 0.8f, 0f, 0f, -1);
-            Utils.DrawBorderString(spriteBatch, plugin.Changelog, new Vector2(bounds.X + 18, bounds.Y + 198), Color.White, 0.65f, 0f, 0f, -1);
+            string body = "Description\n" + (string.IsNullOrWhiteSpace(plugin.Description) ? "No information provided." : plugin.Description) + "\n\nChangelog\n" + (string.IsNullOrWhiteSpace(plugin.Changelog) ? "No information provided." : plugin.Changelog);
+            string[] lines = WrapPluginText(body, 44);
+            const int top = 82;
+            const int lineHeight = 17;
+            int visibleHeight = bounds.Height - top - 18;
+            int contentHeight = lines.Length * lineHeight;
+            UpdateIngameDescriptionScroll(bounds, contentHeight, visibleHeight);
+            int firstLine = (int)(_ingameDescriptionScroll / lineHeight);
+            int lastLine = Math.Min(lines.Length, firstLine + visibleHeight / lineHeight + 2);
+            for (int index = firstLine; index < lastLine; index++)
+            {
+                bool heading = lines[index] == "Description" || lines[index] == "Changelog";
+                Utils.DrawBorderString(spriteBatch, lines[index], new Vector2(bounds.X + 18, bounds.Y + top + index * lineHeight - _ingameDescriptionScroll), heading ? Color.White : Color.White, heading ? 0.8f : 0.65f, 0f, 0f, -1);
+            }
+            DrawIngameDescriptionScrollbar(spriteBatch, bounds, contentHeight, visibleHeight);
+        }
 
+        private static string[] WrapPluginText(string text, int maximumCharacters)
+        {
+            var lines = new List<string>();
+            foreach (string paragraph in text.Replace("\r", string.Empty).Split('\n'))
+            {
+                string current = string.Empty;
+                foreach (string word in paragraph.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (word.Length > maximumCharacters)
+                    {
+                        if (current.Length != 0) { lines.Add(current); current = string.Empty; }
+                        for (int offset = 0; offset < word.Length; offset += maximumCharacters)
+                            lines.Add(word.Substring(offset, Math.Min(maximumCharacters, word.Length - offset)));
+                        continue;
+                    }
+                    if (current.Length != 0 && current.Length + word.Length + 1 > maximumCharacters)
+                    {
+                        lines.Add(current);
+                        current = word;
+                    }
+                    else current = current.Length == 0 ? word : current + " " + word;
+                }
+                lines.Add(current);
+            }
+            return lines.ToArray();
+        }
+
+        private static void DrawIngamePluginSettingsPage(SpriteBatch spriteBatch, Rectangle bounds, PluginManagerRow plugin)
+        {
+            Utils.DrawBorderString(spriteBatch, plugin.Name + " Settings", new Vector2(bounds.Center.X, bounds.Y + 16), Color.White, 0.9f, 0.5f, 0f, -1);
+            var controls = _extensions.GetSettingsControls(plugin.Id);
+            var pages = _extensions.GetSettingsPages(plugin.Id).Where(page => page.IsInteractive).ToArray();
+            if (controls.Count == 0 && pages.Length == 0)
+            {
+                Utils.DrawBorderString(spriteBatch, "No plugin settings are available.", new Vector2(bounds.Center.X, bounds.Center.Y), Color.White, 0.7f, 0.5f, 0.5f, -1);
+                return;
+            }
+
+            int y = bounds.Y + 58;
+            bool anySettingHovered = false;
+            foreach (var control in controls)
+            {
+                y += DrawIngameTypedControl(spriteBatch, bounds, y, control, ref anySettingHovered);
+            }
+            foreach (var page in pages)
+            {
+                var hitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
+                bool hovered = hitArea.Contains(Main.mouseX, Main.mouseY);
+                anySettingHovered |= hovered;
+                if (hovered && _ingameHoveredSettingId != page.Id)
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                if (hovered)
+                    _ingameHoveredSettingId = page.Id;
+
+                string value = ReadSettingValue(page);
+                Utils.DrawBorderString(
+                    spriteBatch,
+                    page.DisplayName + ": " + value,
+                    new Vector2(bounds.Center.X, y),
+                    hovered ? new Color(255, 230, 140) : Color.White,
+                    hovered ? 0.8f : 0.7f,
+                    0.5f,
+                    0f,
+                    -1);
+
+                if (hovered && Main.mouseLeft && Main.mouseLeftRelease)
+                    ActivateSetting(page);
+                y += 30;
+            }
+
+            if (!anySettingHovered)
+                _ingameHoveredSettingId = null;
+        }
+
+        private static int DrawIngameTypedControl(SpriteBatch spriteBatch, Rectangle bounds, int y, PluginSettingControl control, ref bool anyHovered)
+        {
+            if (control.Kind == PluginSettingControlKind.Color)
+            {
+                var swatch = new Rectangle(bounds.X + 18, y - 7, 20, 20);
+                Utils.DrawInvBG(spriteBatch, swatch.X, swatch.Y, swatch.Width, swatch.Height, new Color(control.GetColor().Red, control.GetColor().Green, control.GetColor().Blue));
+                Utils.DrawBorderString(spriteBatch, control.DisplayName + ": " + control.GetColor().ToHex(), new Vector2(bounds.X + 46, y), Color.White, 0.7f, 0f, 0f, -1);
+                var copy = new Rectangle(bounds.Right - 73, y - 8, 25, 22);
+                var paste = new Rectangle(bounds.Right - 42, y - 8, 25, 22);
+                bool copyHover = copy.Contains(Main.mouseX, Main.mouseY), pasteHover = paste.Contains(Main.mouseX, Main.mouseY);
+                anyHovered |= copyHover || pasteHover;
+                DrawIngameClipboardButton(spriteBatch, copy, "Images/UI/CharCreation/Copy", copyHover, "Copy color hex");
+                DrawIngameClipboardButton(spriteBatch, paste, "Images/UI/CharCreation/Paste", pasteHover, "Paste color hex");
+                if (Main.mouseLeft && Main.mouseLeftRelease && copyHover) TrySetClipboardText(control.GetColor().ToHex());
+                if (Main.mouseLeft && Main.mouseLeftRelease && pasteHover && PluginColor.TryParseHex(TryGetClipboardText(), out var pasted)) control.SetColor(pasted);
+                return 34;
+            }
+            if (control.Kind == PluginSettingControlKind.Slider)
+            {
+                var bar = new Rectangle(bounds.Right - 150, y - 5, 132, 14);
+                bool hovered = bar.Contains(Main.mouseX, Main.mouseY);
+                anyHovered |= hovered;
+                DrawIngameSlider(spriteBatch, bar, NormalizeSlider(control));
+                Utils.DrawBorderString(spriteBatch, control.DisplayName + ": " + ReadSettingValue(control), new Vector2(bounds.X + 18, y), Color.White, 0.7f, 0f, 0f, -1);
+                if (hovered && Main.mouseLeft) control.SetSlider(DenormalizeSlider((Main.mouseX - bar.X) / (float)bar.Width, control));
+                return 32;
+            }
+            var hitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
+            bool hover = hitArea.Contains(Main.mouseX, Main.mouseY);
+            anyHovered |= hover;
+            if (hover && _ingameHoveredSettingId != control.Id) SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+            if (hover) _ingameHoveredSettingId = control.Id;
+            Utils.DrawBorderString(spriteBatch, control.DisplayName + ": " + ReadSettingValue(control), new Vector2(bounds.Center.X, y), hover ? new Color(255, 230, 140) : Color.White, hover ? 0.8f : 0.7f, 0.5f, 0f, -1);
+            if (hover && Main.mouseLeft && Main.mouseLeftRelease) ActivateSetting(control);
+            return 30;
+        }
+
+        private static void DrawIngameSlider(SpriteBatch spriteBatch, Rectangle bar, float value)
+        {
+            EnsureIngameBlankTexture(spriteBatch);
+            if (_ingameBlankTexture == null) return;
+            spriteBatch.Draw(_ingameBlankTexture, bar, new Color(29, 36, 70, 220));
+            int filledWidth = (int)((bar.Width - 4) * MathHelper.Clamp(value, 0f, 1f));
+            spriteBatch.Draw(_ingameBlankTexture, new Rectangle(bar.X + 2, bar.Y + 4, filledWidth, 6), new Color(160, 180, 255));
+            spriteBatch.Draw(_ingameBlankTexture, new Rectangle(bar.X + 2 + filledWidth, bar.Y + 1, 4, 12), Color.White);
+        }
+
+        private static void DrawIngameClipboardButton(SpriteBatch spriteBatch, Rectangle bounds, string texturePath, bool hovered, string hoverText)
+        {
+            DrawResourcePackButtonBackground(spriteBatch, bounds, hovered);
+            Texture2D texture = RequestTextureValue(texturePath);
+            var destination = new Rectangle(bounds.Center.X - 7, bounds.Center.Y - 7, 14, 14);
+            spriteBatch.Draw(texture, destination, Color.White);
+            if (hovered) Main.instance.MouseText(hoverText);
+        }
+
+        private static float NormalizeSlider(PluginSettingControl control) => MathHelper.Clamp((control.GetSlider() - control.Minimum) / (control.Maximum - control.Minimum), 0f, 1f);
+        private static float DenormalizeSlider(float value, PluginSettingControl control)
+        {
+            float result = control.Minimum + MathHelper.Clamp(value, 0f, 1f) * (control.Maximum - control.Minimum);
+            return control.Step <= 0f ? result : control.Minimum + (float)Math.Round((result - control.Minimum) / control.Step) * control.Step;
+        }
+
+        private static bool HasSettings(PluginId pluginId) => _extensions.GetSettingsControls(pluginId).Count != 0 || _extensions.GetSettingsPages(pluginId).Any(page => page.IsInteractive);
+
+        private static string ReadSettingValue(PluginSettingControl control)
+        {
+            try
+            {
+                switch (control.Kind)
+                {
+                    case PluginSettingControlKind.Toggle: return control.GetToggle() ? "Enabled" : "Disabled";
+                    case PluginSettingControlKind.Cycle: return control.GetCycle();
+                    case PluginSettingControlKind.Slider:
+                        float value = control.GetSlider();
+                        return control.FormatSlider == null ? value.ToString("0.##") : control.FormatSlider(value);
+                    case PluginSettingControlKind.Color: return control.GetColor().ToHex();
+                    default: return "Unavailable";
+                }
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Read plugin setting", exception);
+                return "Unavailable";
+            }
+        }
+
+        private static void ActivateSetting(PluginSettingControl control)
+        {
+            try
+            {
+                if (control.Kind == PluginSettingControlKind.Toggle) control.SetToggle(!control.GetToggle());
+                else if (control.Kind == PluginSettingControlKind.Cycle)
+                {
+                    var values = control.CycleValues;
+                    int index = Array.IndexOf(values.ToArray(), control.GetCycle());
+                    control.SetCycle(values[(index + 1 + values.Count) % values.Count]);
+                }
+                SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+            }
+            catch (Exception exception) { Main.instance.MouseText("Unable to change plugin setting: " + exception.Message); }
+        }
+
+        private static string ReadSettingValue(PluginUiContribution contribution)
+        {
+            try { return contribution.ValueText == null ? string.Empty : contribution.ValueText(); }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Read legacy plugin setting", exception);
+                return "Unavailable";
+            }
+        }
+
+        private static void ActivateSetting(PluginUiContribution contribution)
+        {
+            try
+            {
+                contribution.Activate?.Invoke();
+                SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+            }
+            catch (Exception exception)
+            {
+                Main.instance.MouseText("Unable to change plugin setting: " + exception.Message);
+            }
+        }
+
+        // Mirrors the character creator's ReLogic clipboard contract without creating a hard compile-time dependency.
+        private static string TryGetClipboardText()
+        {
+            try
+            {
+                Type platform = Type.GetType("ReLogic.OS.Platform, ReLogic", false);
+                Type clipboard = Type.GetType("ReLogic.OS.IClipboard, ReLogic", false);
+                MethodInfo get = platform == null || clipboard == null ? null : platform.GetMethod("Get", BindingFlags.Public | BindingFlags.Static).MakeGenericMethod(clipboard);
+                object service = get == null ? null : get.Invoke(null, null);
+                PropertyInfo value = service == null ? null : service.GetType().GetProperty("Value");
+                return value == null ? string.Empty : value.GetValue(service, null) as string ?? string.Empty;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Read clipboard", exception);
+                return string.Empty;
+            }
+        }
+
+        private static void TrySetClipboardText(string text)
+        {
+            try
+            {
+                Type platform = Type.GetType("ReLogic.OS.Platform, ReLogic", false);
+                Type clipboard = Type.GetType("ReLogic.OS.IClipboard, ReLogic", false);
+                MethodInfo get = platform == null || clipboard == null ? null : platform.GetMethod("Get", BindingFlags.Public | BindingFlags.Static).MakeGenericMethod(clipboard);
+                object service = get == null ? null : get.Invoke(null, null);
+                service?.GetType().GetProperty("Value")?.SetValue(service, text, null);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Write clipboard", exception);
+            }
         }
 
         private static void DrawIngameActionButton(SpriteBatch spriteBatch, Rectangle bounds, string text, bool hovered)
@@ -198,8 +467,9 @@ namespace AlacrityTerraria
                 var destination = new Rectangle(bounds.Center.X - iconSize / 2, bounds.Center.Y - iconSize / 2, iconSize, iconSize);
                 spriteBatch.Draw(texture, destination, Color.White);
             }
-            catch
+            catch (Exception exception)
             {
+                ReportOptionalUiFailure("Draw in-game icon", exception);
                 Utils.DrawBorderString(spriteBatch, "?", new Vector2(bounds.Center.X, bounds.Center.Y), Color.White, 0.7f, 0.5f, 0.5f, -1);
             }
 
@@ -221,7 +491,7 @@ namespace AlacrityTerraria
 
         private static Texture2D RequestTextureValue(string path)
         {
-            object assets = typeof(Main).GetField("Assets", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
+            object assets = GetMainAssets();
             if (_assetRequest == null)
             {
                 _assetRequest = assets.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
@@ -240,6 +510,25 @@ namespace AlacrityTerraria
             return (Texture2D)_assetValue.GetValue(asset, null);
         }
 
+        private static object GetMainAssets()
+        {
+            _mainAssetsField = _mainAssetsField ?? typeof(Main).GetField("Assets", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            if (_mainAssetsField == null)
+                throw new MissingFieldException(typeof(Main).FullName, "Assets");
+
+            object assets = _mainAssetsField.GetValue(null);
+            if (assets == null)
+                throw new InvalidOperationException("Terraria Main.Assets is unavailable.");
+            return assets;
+        }
+
+        private static void ReportOptionalUiFailure(string operation, Exception exception)
+        {
+            string key = operation + ": " + exception.GetType().FullName + ": " + exception.Message;
+            if (ReportedOptionalUiFailures.Add(key))
+                Debug.WriteLine("Alacrity optional UI feature failed: " + key);
+        }
+
         private static void UpdateIngameScroll(Rectangle bounds, int contentHeight, int visibleHeight)
         {
             if (bounds.Contains(Main.mouseX, Main.mouseY))
@@ -250,6 +539,16 @@ namespace AlacrityTerraria
             }
 
             _ingameScroll = Math.Max(0f, Math.Min(_ingameScroll, Math.Max(0, contentHeight - visibleHeight)));
+        }
+
+        private static void UpdateIngameDescriptionScroll(Rectangle bounds, int contentHeight, int visibleHeight)
+        {
+            if (bounds.Contains(Main.mouseX, Main.mouseY))
+            {
+                int delta = Terraria.GameInput.PlayerInput.ScrollWheelDelta;
+                if (delta != 0) _ingameDescriptionScroll -= Math.Sign(delta) * 30f;
+            }
+            _ingameDescriptionScroll = Math.Max(0f, Math.Min(_ingameDescriptionScroll, Math.Max(0, contentHeight - visibleHeight)));
         }
 
         private static void DrawIngameScrollbar(SpriteBatch spriteBatch, Rectangle bounds, int contentHeight, int visibleHeight)
@@ -271,6 +570,19 @@ namespace AlacrityTerraria
             int thumbY = trackY + (int)((bounds.Height - thumbHeight) * (_ingameScroll / maxScroll));
             var thumb = new Rectangle(trackX - 1, thumbY, 6, thumbHeight);
             spriteBatch.Draw(_ingameBlankTexture, thumb, new Color(180, 170, 255, 220));
+        }
+
+        private static void DrawIngameDescriptionScrollbar(SpriteBatch spriteBatch, Rectangle bounds, int contentHeight, int visibleHeight)
+        {
+            if (contentHeight <= visibleHeight) return;
+            int trackX = bounds.Right - 13;
+            int trackY = bounds.Y + 82;
+            int trackHeight = visibleHeight;
+            int thumbHeight = Math.Max(16, (int)(trackHeight * (visibleHeight / (float)contentHeight)));
+            float maxScroll = contentHeight - visibleHeight;
+            int thumbY = trackY + (int)((trackHeight - thumbHeight) * (_ingameDescriptionScroll / maxScroll));
+            Utils.DrawInvBG(spriteBatch, trackX, trackY, 5, trackHeight, ResourcePackBorder);
+            Utils.DrawInvBG(spriteBatch, trackX, thumbY, 5, thumbHeight, ResourcePackHoverBackground);
         }
 
         private static void EnsureIngameBlankTexture(SpriteBatch spriteBatch)
@@ -315,7 +627,8 @@ namespace AlacrityTerraria
             string patchDirectory = Path.Combine(root, "data", "patches");
             Directory.CreateDirectory(patchDirectory);
             var patchHost = PatchHost.CreateManaged(root, Path.Combine(patchDirectory, "journal.json"));
-            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), new PluginExtensionHost(), new PluginCommandHost());
+            _extensions = new PluginExtensionHost();
+            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), _extensions, new PluginCommandHost());
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
@@ -345,17 +658,71 @@ namespace AlacrityTerraria
                     _runtime.Registry.MarkFaulted(record.Manifest.Id, exception.Message);
                 }
             }
+            RestoreEnabledPlugins();
+        }
+
+        private static string PluginStatePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-state.json");
+        private static string LegacyEnabledPluginsPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "enabled-plugins.txt");
+
+        private static void RestoreEnabledPlugins()
+        {
+            if (_enabledStateRestored) return;
+            _enabledStateRestored = true;
+            try
+            {
+                var requested = ReadEnabledPluginIds();
+                foreach (var record in _runtime.Registry.Records.Where(record => requested.Contains(record.Manifest.Id.Value) && (record.State == PluginPackageLifecycleState.Loaded || record.State == PluginPackageLifecycleState.Disabled)).ToArray())
+                    _runtime.Enable(record.Manifest.Id);
+                if (!File.Exists(PluginStatePath) && File.Exists(LegacyEnabledPluginsPath))
+                    PersistEnabledPlugins();
+            }
+            catch (Exception exception)
+            {
+                _notifications.Publish("Unable to restore enabled plugins: " + exception.Message, TimeSpan.FromSeconds(4));
+            }
+        }
+
+        private static void PersistEnabledPlugins()
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(PluginStatePath));
+                var records = _runtime.Registry.Records.Where(record => record.State != PluginPackageLifecycleState.Uninstalled).OrderBy(record => record.Manifest.Id.Value, StringComparer.Ordinal).ToArray();
+                string json = "{\n  \"plugins\": [\n" + string.Join(",\n", records.Select(record => "    { \"id\": \"" + record.Manifest.Id.Value + "\", \"enabled\": " + (record.State == PluginPackageLifecycleState.Enabled ? "true" : "false") + " }")) + "\n  ]\n}\n";
+                string temporaryPath = PluginStatePath + ".tmp";
+                File.WriteAllText(temporaryPath, json);
+                File.Copy(temporaryPath, PluginStatePath, true);
+                File.Delete(temporaryPath);
+            }
+            catch (Exception exception)
+            {
+                _notifications.Publish("Unable to save enabled plugins: " + exception.Message, TimeSpan.FromSeconds(4));
+            }
+        }
+
+        private static HashSet<string> ReadEnabledPluginIds()
+        {
+            if (File.Exists(PluginStatePath))
+            {
+                string json = File.ReadAllText(PluginStatePath);
+                return new HashSet<string>(Regex.Matches(json, "\\\"id\\\"\\s*:\\s*\\\"([a-z0-9.-]+)\\\"\\s*,\\s*\\\"enabled\\\"\\s*:\\s*true", RegexOptions.CultureInvariant).Cast<Match>().Select(match => match.Groups[1].Value), StringComparer.Ordinal);
+            }
+            return File.Exists(LegacyEnabledPluginsPath) ? new HashSet<string>(File.ReadAllLines(LegacyEnabledPluginsPath), StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
         }
 
         private sealed class PluginSelectionMenu : UIState
         {
             private readonly UIList _availableList = new UIList();
             private readonly UIList _enabledList = new UIList();
+            private readonly UIList _packageList = new UIList();
             private readonly UIText _availableTitle = new UIText("", 1f, false);
             private readonly UIText _enabledTitle = new UIText("", 1f, false);
+            private readonly UIText _packageTitle = new UIText("", 1f, false);
             private UIGamepadHelper _gamepadHelper;
             private UIText _settingsHint;
             private DateTime _nextStatusRefreshUtc;
+            private DateTime _manualHintExpiresUtc;
+            private bool _addRemoveView;
 
             public PluginSelectionMenu(PluginManagementMenu menu)
             {
@@ -364,6 +731,7 @@ namespace AlacrityTerraria
 
             private void BuildPage()
             {
+                RemoveAllChildren();
                 var root = new UIElement {
                     Width = new StyleDimension(0f, 0.8f),
                     MaxWidth = new StyleDimension(800f, 0f),
@@ -391,20 +759,36 @@ namespace AlacrityTerraria
                 listArea.SetPadding(0f);
                 panel.Append(listArea);
 
-                var availableContainer = CreateColumn(0f, 10f);
-                var enabledContainer = CreateColumn(1f, -10f);
-                listArea.Append(availableContainer);
-                listArea.Append(enabledContainer);
-
-                ConfigureList(_availableList, 1f);
-                ConfigureList(_enabledList, 0f);
-                availableContainer.Append(_availableList);
-                enabledContainer.Append(_enabledList);
-
-                ConfigureTitle(_availableTitle, 0f, 25f);
-                ConfigureTitle(_enabledTitle, 1f, -25f);
-                panel.Append(_availableTitle);
-                panel.Append(_enabledTitle);
+                if (_addRemoveView)
+                {
+                    var packageContainer = new UIElement { Width = new StyleDimension(-20f, 1f), Height = StyleDimension.Fill, HAlign = 0.5f };
+                    listArea.Append(packageContainer);
+                    ConfigureList(_packageList, 0.5f);
+                    packageContainer.Append(_packageList);
+                    _packageTitle.HAlign = 0.5f;
+                    _packageTitle.Width = new StyleDimension(-25f, 1f);
+                    _packageTitle.Top = new StyleDimension(10f, 0f);
+                    panel.Append(_packageTitle);
+                    AddScrollbar(packageContainer, _packageList, 1f);
+                }
+                else
+                {
+                    var availableContainer = CreateColumn(0f, 10f);
+                    var enabledContainer = CreateColumn(1f, -10f);
+                    listArea.Append(availableContainer);
+                    listArea.Append(enabledContainer);
+                    ConfigureList(_availableList, 1f);
+                    ConfigureList(_enabledList, 0f);
+                    availableContainer.Append(_availableList);
+                    enabledContainer.Append(_enabledList);
+                    ConfigureTitle(_availableTitle, 0f, 25f);
+                    ConfigureTitle(_enabledTitle, 1f, -25f);
+                    panel.Append(_availableTitle);
+                    panel.Append(_enabledTitle);
+                    AddScrollbar(availableContainer, _availableList, 0f);
+                    AddScrollbar(enabledContainer, _enabledList, 1f);
+                    AddSeparator(panel);
+                }
 
                 var title = new UITextPanel<string>("Plugins", 1f, true) {
                     HAlign = 0.5f,
@@ -415,9 +799,6 @@ namespace AlacrityTerraria
                 title.SetPadding(13f);
                 root.Append(title);
 
-                AddScrollbar(availableContainer, _availableList, 0f);
-                AddScrollbar(enabledContainer, _enabledList, 1f);
-                AddSeparator(panel);
                 AddBottomControls(root);
                 RefreshLists();
             }
@@ -474,38 +855,68 @@ namespace AlacrityTerraria
 
             private void AddBottomControls(UIElement root)
             {
-                var back = new UITextPanel<string>("Back", 0.7f, true) {
-                    Width = new StyleDimension(-8f, 0.5f),
-                    Height = new StyleDimension(50f, 0f),
-                    VAlign = 1f,
-                    HAlign = 0f,
-                    Top = new StyleDimension(-45f, 0f)
-                };
-                back.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
-                back.OnMouseOut += (evt, element) => FadedMouseOut((UIPanel)element);
-                back.OnLeftClick += (evt, element) => Close();
+                var footer = new UIElement { Width = StyleDimension.Fill, Height = new StyleDimension(50f, 0f), VAlign = 1f, Top = new StyleDimension(-45f, 0f) };
+                root.Append(footer);
+                var back = CreateFooterButton("Back", 0.7f, false, Close);
+                PlaceFooterButton(back, 0);
                 back.SetSnapPoint("GoBack", 0, null, null);
-                root.Append(back);
+                footer.Append(back);
 
-                var folder = new UITextPanel<string>("Open Folder", 0.7f, true) {
-                    Width = new StyleDimension(-8f, 0.5f),
-                    Height = new StyleDimension(50f, 0f),
-                    VAlign = 1f,
-                    HAlign = 1f,
-                    Top = new StyleDimension(-45f, 0f)
-                };
-                folder.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
-                folder.OnMouseOut += (evt, element) => FadedMouseOut((UIPanel)element);
-                folder.OnLeftClick += (evt, element) => OpenPluginsFolder();
+                var manage = CreateFooterButton("Manage Plugins", 0.48f, !_addRemoveView, () => { _addRemoveView = false; BuildPage(); });
+                PlaceFooterButton(manage, 1);
+                footer.Append(manage);
+                var addRemove = CreateFooterButton("Add / Remove Plugins", 0.34f, _addRemoveView, () => { _addRemoveView = true; BuildPage(); });
+                PlaceFooterButton(addRemove, 2);
+                footer.Append(addRemove);
+
+                var folder = CreateFooterButton("Open Folder", 0.48f, false, OpenPluginsFolder);
+                PlaceFooterButton(folder, 3);
                 folder.SetSnapPoint("OpenFolder", 0, null, null);
-                root.Append(folder);
+                footer.Append(folder);
 
                 _settingsHint = new UIText("", 0.7f, false) {
                     HAlign = 0.5f,
                     VAlign = 1f,
-                    Top = new StyleDimension(-104f, 0f)
+                    Top = new StyleDimension(-160f, 0f)
                 };
                 root.Append(_settingsHint);
+            }
+
+            private static void PlaceFooterButton(UIElement button, int column)
+            {
+                var width = new StyleDimension(-12f, 0.25f);
+                button.Width = width;
+                button.MinWidth = width;
+                button.MaxWidth = width;
+                button.Height = StyleDimension.Fill;
+                button.Left = new StyleDimension(6f, column * 0.25f);
+                button.HAlign = 0f;
+                button.VAlign = 0f;
+                button.OverflowHidden = true;
+            }
+
+            private static UIPanel CreateFooterButton(string text, float textScale, bool selected, Action activate)
+            {
+                var button = new UIPanel { BackgroundColor = selected ? new Color(73, 94, 171) : new Color(63, 82, 151) * 0.8f, OverflowHidden = true };
+                // Match UITextPanel's native 12px inset and large-font baseline without allowing the caption to size the button.
+                button.SetPadding(12f);
+                var label = new UIText(text, textScale, true) {
+                    HAlign = 0.5f,
+                    Top = new StyleDimension(10f * textScale * (1f - textScale), 0f),
+                    OverflowHidden = true
+                };
+                button.Append(label);
+                button.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
+                button.OnMouseOut += (evt, element) => {
+                    var panel = (UIPanel)element;
+                    if (selected) {
+                        panel.BackgroundColor = new Color(73, 94, 171);
+                        panel.BorderColor = Color.Black;
+                    }
+                    else FadedMouseOut(panel);
+                };
+                button.OnLeftClick += (evt, element) => activate();
+                return button;
             }
 
             private static void FadedMouseOver(UIPanel panel)
@@ -582,9 +993,15 @@ namespace AlacrityTerraria
             {
                 _availableList.Clear();
                 _enabledList.Clear();
+                _packageList.Clear();
                 int order = 0;
                 foreach (PluginManagerRow plugin in _presenter.Present(_runtime, _diagnostics.ActiveWarnings))
                 {
+                    if (_addRemoveView)
+                    {
+                        _packageList.Add(CreatePackageRow(plugin, order++));
+                        continue;
+                    }
                     UIElement row = CreatePluginRow(plugin, order++);
                     if (plugin.IsEnabled)
                         _enabledList.Add(row);
@@ -594,6 +1011,50 @@ namespace AlacrityTerraria
 
                 _availableTitle.SetText("Available Plugins (" + _availableList.Count + ")");
                 _enabledTitle.SetText("Enabled Plugins (" + _enabledList.Count + ")");
+                _packageTitle.SetText("Installed Plugins (" + _packageList.Count + ")");
+            }
+
+            private UIElement CreatePackageRow(PluginManagerRow plugin, int order)
+            {
+                var row = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(92f, 0f), BackgroundColor = ResourcePackBackground, BorderColor = ResourcePackBorder };
+                row.SetPadding(5f);
+                var name = new UIText(plugin.Name, 0.9f, false) { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(4f, 0f) };
+                var author = new UIText(plugin.Author, 0.65f, false) { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(28f, 0f) };
+                row.Append(name); row.Append(author);
+                var content = new UIElement { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(48f, 0f), Width = new StyleDimension(-24f, 1f), Height = new StyleDimension(-53f, 1f) };
+                row.Append(content);
+                var description = CreateDescriptionButton(plugin); description.Width = new StyleDimension(0f, plugin.IsEnabled ? 0.5f : 1f / 3f); description.Height = StyleDimension.Fill; description.SetSnapPoint("PackageDescription", order, null, null); description.OnLeftClick += (evt, element) => OpenDescription(plugin); content.Append(description);
+                var status = CreatePackageStatusButton(); status.Left = StyleDimension.FromPercent(plugin.IsEnabled ? 0.5f : 1f / 3f); status.Width = new StyleDimension(0f, plugin.IsEnabled ? 0.5f : 1f / 3f); status.Height = StyleDimension.Fill; content.Append(status);
+                if (!plugin.IsEnabled)
+                {
+                    var uninstall = CreateUninstallButton(); uninstall.Left = StyleDimension.FromPercent(2f / 3f); uninstall.Width = new StyleDimension(0f, 1f / 3f); uninstall.Height = StyleDimension.Fill; uninstall.SetSnapPoint("PackageUninstall", order, null, null); content.Append(uninstall);
+                }
+                return row;
+            }
+
+            private static UIResourcePackInfoButton<string> CreatePackageStatusButton()
+            {
+                var button = new UIResourcePackInfoButton<string>("", 0.8f, false) { IgnoresMouseInteraction = true };
+                button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonCloudInactive"); button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText("Plugin is up to date"); }; return button;
+            }
+
+            private static UIResourcePackInfoButton<string> CreateUninstallButton()
+            {
+                var button = new UIResourcePackInfoButton<string>("", 0.8f, false); button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonDelete"); button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText("Uninstall Plugin"); }; return button;
+            }
+
+            private static void AppendSmallIcon(UIElement button, string path)
+            {
+                try
+                {
+                    var icon = (UIElement)Activator.CreateInstance(typeof(UIImage), RequestTexture(path));
+                    ConfigureButtonIcon(icon);
+                    button.Append(icon);
+                }
+                catch (Exception exception)
+                {
+                    ReportOptionalUiFailure("Create plugin-manager icon", exception);
+                }
             }
 
             private UIElement CreatePluginRow(PluginManagerRow plugin, int order)
@@ -623,7 +1084,7 @@ namespace AlacrityTerraria
                 };
                 row.Append(name);
 
-                var author = new UIText("Alacrity", 0.7f, false) {
+                var author = new UIText(plugin.Author, 0.7f, false) {
                     Left = new StyleDimension(12f, 0f),
                     Top = new StyleDimension(30f, 0f)
                 };
@@ -637,24 +1098,28 @@ namespace AlacrityTerraria
                 };
                 row.Append(content);
 
+                float buttonFraction = plugin.IsEnabled ? 1f / 3f : 0.5f;
                 var description = CreateDescriptionButton(plugin);
-                description.Width = new StyleDimension(0f, 1f / 3f);
+                description.Width = new StyleDimension(0f, buttonFraction);
                 description.Height = StyleDimension.Fill;
                 description.SetSnapPoint(plugin.IsEnabled ? "DescriptionOn" : "DescriptionOff", order, null, null);
                 description.OnLeftClick += (evt, element) => OpenDescription(plugin);
                 content.Append(description);
 
-                var settings = CreateSettingsButton(plugin);
-                settings.Left = StyleDimension.FromPercent(1f / 3f);
-                settings.Width = new StyleDimension(0f, 1f / 3f);
-                settings.Height = StyleDimension.Fill;
-                settings.SetSnapPoint(plugin.IsEnabled ? "SettingsOn" : "SettingsOff", order, null, null);
-                settings.OnLeftClick += (evt, element) => _settingsHint.SetText("No settings are exposed by " + plugin.Name + ".");
-                content.Append(settings);
+                if (plugin.IsEnabled)
+                {
+                    var settings = CreateSettingsButton(plugin);
+                    settings.Left = StyleDimension.FromPercent(buttonFraction);
+                    settings.Width = new StyleDimension(0f, buttonFraction);
+                    settings.Height = StyleDimension.Fill;
+                    settings.SetSnapPoint("SettingsOn", order, null, null);
+                    settings.OnLeftClick += (evt, element) => OpenSettings(plugin);
+                    content.Append(settings);
+                }
 
                 var toggle = CreateToggleButton(plugin);
-                toggle.Left = StyleDimension.FromPercent(2f / 3f);
-                toggle.Width = new StyleDimension(0f, 1f / 3f);
+                toggle.Left = StyleDimension.FromPercent(plugin.IsEnabled ? 2f / 3f : 0.5f);
+                toggle.Width = new StyleDimension(0f, buttonFraction);
                 toggle.Height = StyleDimension.Fill;
                 toggle.VAlign = 0f;
                 toggle.SetSnapPoint(plugin.IsEnabled ? "ToggleToOff" : "ToggleToOn", order, null, null);
@@ -667,6 +1132,7 @@ namespace AlacrityTerraria
                                 _runtime.Disable(plugin.Id);
                             else
                                 _runtime.Enable(plugin.Id);
+                            PersistEnabledPlugins();
                             RefreshRuntimeStatusHint(true);
                         }
                         catch (Exception exception)
@@ -686,9 +1152,21 @@ namespace AlacrityTerraria
                 return row;
             }
 
+            private void OpenSettings(PluginManagerRow plugin)
+            {
+                if (!HasSettings(plugin.Id))
+                {
+                    ShowStatus("No settings are exposed by " + plugin.Name + ".");
+                    return;
+                }
+                Main.MenuUI.SetState(new PluginSettingsMenu(plugin, _extensions.GetSettingsControls(plugin.Id), _extensions.GetSettingsPages(plugin.Id)));
+            }
+
             private void RefreshRuntimeStatusHint(bool force)
             {
                 var now = DateTime.UtcNow;
+                if (now < _manualHintExpiresUtc)
+                    return;
                 if (!force && now < _nextStatusRefreshUtc)
                     return;
 
@@ -703,6 +1181,12 @@ namespace AlacrityTerraria
                     text = warning == null ? string.Empty : warning.Plugin + ": " + warning.Reason;
                 }
                 _settingsHint.SetText(text);
+            }
+
+            private void ShowStatus(string text)
+            {
+                _settingsHint.SetText(text);
+                _manualHintExpiresUtc = DateTime.UtcNow.AddSeconds(4);
             }
 
             private static GroupOptionButton<bool> CreateToggleButton(PluginManagerRow plugin)
@@ -732,6 +1216,7 @@ namespace AlacrityTerraria
                 var description = new UIResourcePackInfoButton<string>("", 0.8f, false);
                 description.SetPadding(0f);
                 AppendPluginDescriptionIcon(description);
+                description.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
                 description.OnUpdate += (element) => DisplayMouseTextIfHovered(element, "Plugin Description");
                 return description;
             }
@@ -741,6 +1226,7 @@ namespace AlacrityTerraria
                 var settings = new UIResourcePackInfoButton<string>("", 0.8f, false);
                 settings.SetPadding(0f);
                 AppendPluginSettingsIcon(settings);
+                settings.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
                 settings.OnUpdate += (element) => DisplayMouseTextIfHovered(element, "Plugin Settings");
                 return settings;
             }
@@ -803,9 +1289,9 @@ namespace AlacrityTerraria
                 icon.IgnoresMouseInteraction = true;
             }
 
-            private static object RequestTexture(string path)
+            internal static object RequestTexture(string path)
             {
-                object assets = typeof(Main).GetField("Assets", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
+                object assets = GetMainAssets();
                 if (_assetRequest == null)
                 {
                     _assetRequest = assets.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
@@ -848,9 +1334,169 @@ namespace AlacrityTerraria
             }
         }
 
+        private sealed class PluginSettingsMenu : UIState
+        {
+            private readonly PluginManagerRow plugin;
+            private readonly IReadOnlyList<PluginSettingControl> controls;
+            private readonly IReadOnlyList<PluginUiContribution> legacyPages;
+            private UIGamepadHelper gamepadHelper;
+
+            public PluginSettingsMenu(PluginManagerRow plugin, IReadOnlyList<PluginSettingControl> controls, IReadOnlyList<PluginUiContribution> legacyPages)
+            {
+                this.plugin = plugin;
+                this.controls = controls;
+                this.legacyPages = legacyPages;
+            }
+
+            public override void OnInitialize()
+            {
+                // This deliberately mirrors UIManageControls: Terraria owns the panel, list, slider, and scrollbar visuals.
+                var outer = new UIElement { Width = new StyleDimension(0f, 0.8f), MaxWidth = new StyleDimension(600f, 0f), Top = new StyleDimension(220f, 0f), Height = new StyleDimension(-200f, 1f), HAlign = 0.5f };
+                Append(outer);
+                var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-110f, 1f), BackgroundColor = new Color(33, 43, 79) * 0.8f };
+                outer.Append(panel);
+                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-50f, 1f), VAlign = 1f, PaddingBottom = 5f, ListPadding = 20f };
+                panel.Append(list);
+
+                int snapIndex = 0;
+                foreach (var control in controls)
+                    AddControl(list, control, snapIndex++);
+                foreach (var page in legacyPages.Where(contribution => contribution.IsInteractive))
+                    AddLegacyControl(list, page, snapIndex++);
+
+                var scrollbar = new UIScrollbar { Height = new StyleDimension(-67f, 1f), HAlign = 1f, VAlign = 1f, MarginBottom = 11f };
+                panel.Append(scrollbar);
+                list.SetScrollbar(scrollbar);
+
+                var title = new UITextPanel<string>(plugin.Name + " Settings", 0.7f, true) { HAlign = 0.5f, Top = new StyleDimension(-45f, 0f), Left = new StyleDimension(-10f, 0f), BackgroundColor = new Color(73, 94, 171) };
+                title.SetPadding(15f);
+                outer.Append(title);
+                var back = new UITextPanel<string>("Back", 0.7f, true) {
+                    Width = new StyleDimension(-8f, 0.5f), Height = new StyleDimension(50f, 0f),
+                    HAlign = 0.5f, VAlign = 1f, Top = new StyleDimension(-20f, 0f)
+                };
+                back.OnMouseOver += (evt, element) => {
+                    var button = (UIPanel)element;
+                    button.BackgroundColor = new Color(73, 94, 171);
+                    button.BorderColor = Colors.FancyUIFatButtonMouseOver;
+                };
+                back.OnMouseOut += (evt, element) => {
+                    var button = (UIPanel)element;
+                    button.BackgroundColor = new Color(63, 82, 151) * 0.8f;
+                    button.BorderColor = Color.Black;
+                };
+                back.OnLeftClick += (evt, element) => ReturnToPluginList();
+                back.SetSnapPoint("GoBack", 0, null, null);
+                outer.Append(back);
+            }
+
+            private static void AddControl(UIList list, PluginSettingControl control, int snapIndex)
+            {
+                if (control.Kind == PluginSettingControlKind.Slider)
+                {
+                    var slider = new UIKeybindingSliderItem(
+                        () => control.DisplayName + ": " + ReadSettingValue(control),
+                        () => Normalize(control.GetSlider(), control.Minimum, control.Maximum),
+                        value => control.SetSlider(Denormalize(value, control.Minimum, control.Maximum, control.Step)),
+                        () => { }, control.Id.GetHashCode(), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(34f, 0f) };
+                    slider.SetSnapPoint("PluginSetting", snapIndex, null, null);
+                    list.Add(slider);
+                    return;
+                }
+                if (control.Kind == PluginSettingControlKind.Color)
+                {
+                    AddColorControls(list, control, snapIndex);
+                    return;
+                }
+                var entry = new UIKeybindingSimpleListItem(() => control.DisplayName + ": " + ReadSettingValue(control), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f) };
+                entry.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                entry.OnLeftClick += (evt, element) => ActivateSetting(control);
+                entry.SetSnapPoint("PluginSetting", snapIndex, null, null);
+                list.Add(entry);
+            }
+
+            private static void AddLegacyControl(UIList list, PluginUiContribution contribution, int snapIndex)
+            {
+                var entry = new UIKeybindingSimpleListItem(() => contribution.DisplayName + ": " + ReadSettingValue(contribution), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f) };
+                entry.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                entry.OnLeftClick += (evt, element) => ActivateSetting(contribution);
+                entry.SetSnapPoint("PluginSetting", snapIndex, null, null);
+                list.Add(entry);
+            }
+
+            private static void AddColorControls(UIList list, PluginSettingControl control, int snapIndex)
+            {
+                var row = new UIKeybindingSimpleListItem(() => control.DisplayName + ": " + control.GetColor().ToHex(), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(38f, 0f) };
+                var swatch = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f), HAlign = 1f, VAlign = 0.5f, Left = new StyleDimension(-72f, 0f), IgnoresMouseInteraction = true };
+                swatch.OnUpdate += element => ((UIPanel)element).BackgroundColor = new Color(control.GetColor().Red, control.GetColor().Green, control.GetColor().Blue);
+                row.Append(swatch);
+                row.Append(CreateClipboardIcon("Images/UI/CharCreation/Copy", -46f, "Copy color hex", () => TrySetClipboardText(control.GetColor().ToHex())));
+                row.Append(CreateClipboardIcon("Images/UI/CharCreation/Paste", -22f, "Paste color hex", () => { if (PluginColor.TryParseHex(TryGetClipboardText(), out var value)) control.SetColor(value); }));
+                row.SetSnapPoint("PluginSetting", snapIndex, null, null);
+                list.Add(row);
+            }
+
+            private static UIElement CreateClipboardIcon(string assetPath, float offset, string hoverText, Action click)
+            {
+                // 20px is 65% of Terraria's small character-creation button, keeping the action icons inside this compact row.
+                var button = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f) };
+                button.SetPadding(0f);
+                button.HAlign = 1f;
+                button.VAlign = 0.5f;
+                button.Left = new StyleDimension(offset, 0f);
+                var image = (UIElement)Activator.CreateInstance(typeof(UIImage), PluginSelectionMenu.RequestTexture(assetPath));
+                image.Width = StyleDimension.Fill;
+                image.Height = StyleDimension.Fill;
+                image.IgnoresMouseInteraction = true;
+                typeof(UIImage).GetProperty("ScaleToFit", BindingFlags.Public | BindingFlags.Instance)?.SetValue(image, true, null);
+                button.Append(image);
+                button.BackgroundColor = new Color(63, 82, 151) * 0.8f;
+                button.BorderColor = Color.Black;
+                button.OnMouseOver += (evt, element) => {
+                    var panel = (UIPanel)element;
+                    panel.BackgroundColor = new Color(73, 94, 171);
+                    panel.BorderColor = Colors.FancyUIFatButtonMouseOver;
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                };
+                button.OnMouseOut += (evt, element) => {
+                    var panel = (UIPanel)element;
+                    panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
+                    panel.BorderColor = Color.Black;
+                };
+                button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText(hoverText); };
+                button.OnLeftClick += (evt, element) => { click(); SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f); };
+                return button;
+            }
+
+            private static float Normalize(float value, float min, float max) => MathHelper.Clamp((value - min) / (max - min), 0f, 1f);
+            private static float Denormalize(float value, float min, float max, float step)
+            {
+                float result = min + MathHelper.Clamp(value, 0f, 1f) * (max - min);
+                return step <= 0f ? result : min + (float)Math.Round((result - min) / step) * step;
+            }
+
+            public override void Draw(SpriteBatch spriteBatch)
+            {
+                base.Draw(spriteBatch);
+                UILinkPointNavigator.Shortcuts.BackButtonCommand = 1;
+                SetupGamepadPoints();
+            }
+
+            private void SetupGamepadPoints()
+            {
+                int firstId = 3600;
+                int nextId = firstId;
+                foreach (var point in GetSnapPoints().Where(point => point.Name == "PluginSetting" || point.Name == "GoBack"))
+                    gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                gamepadHelper.MoveToVisuallyClosestPoint(firstId, nextId);
+            }
+
+        }
+
         private sealed class PluginDescriptionMenu : UIState
         {
             private readonly PluginManagerRow _plugin;
+            private UIGamepadHelper gamepadHelper;
 
             public PluginDescriptionMenu(PluginManagerRow plugin)
             {
@@ -859,40 +1505,37 @@ namespace AlacrityTerraria
 
             public override void OnInitialize()
             {
-                var panel = new UIPanel {
-                    Width = new StyleDimension(-260f, 1f),
-                    MaxWidth = new StyleDimension(900f, 0f),
-                    Height = new StyleDimension(-180f, 1f),
-                    MaxHeight = new StyleDimension(560f, 0f),
-                    HAlign = 0.5f,
-                    VAlign = 0.5f,
-                    BackgroundColor = ResourcePackBackground,
-                    BorderColor = ResourcePackBorder
-                };
-                panel.SetPadding(18f);
-                Append(panel);
+                // Mirrors UIResourcePackInfoMenu so variable package text is measured and scrolls instead of clipping.
+                var outer = new UIElement { Width = new StyleDimension(0f, 0.8f), MaxWidth = new StyleDimension(500f, 0f), MinWidth = new StyleDimension(300f, 0f), Top = new StyleDimension(230f, 0f), Height = new StyleDimension(-230f, 1f), HAlign = 0.5f };
+                Append(outer);
+                var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-110f, 1f), BackgroundColor = new Color(33, 43, 79) * 0.8f };
+                outer.Append(panel);
+                var content = new UIElement { Width = StyleDimension.Fill, Height = StyleDimension.Fill };
+                panel.Append(content);
 
-                var title = new UIText(_plugin.Name, 1.1f, true) {
+                var title = new UIText(_plugin.Name, 0.935f, true) {
                     HAlign = 0.5f,
-                    Top = new StyleDimension(10f, 0f)
+                    Top = new StyleDimension(0f, 0f)
                 };
-                panel.Append(title);
+                content.Append(title);
 
                 var author = new UIText("Author: " + _plugin.Author, 0.8f, false) {
-                    Left = new StyleDimension(14f, 0f),
-                    Top = new StyleDimension(52f, 0f)
+                    HAlign = 0f, VAlign = 0f, Top = new StyleDimension(42f, 0f)
                 };
-                panel.Append(author);
+                content.Append(author);
 
                 var version = new UIText("Version: " + _plugin.Version, 0.8f, false) {
-                    HAlign = 1f,
-                    Left = new StyleDimension(-14f, 0f),
-                    Top = new StyleDimension(52f, 0f)
+                    HAlign = 1f, VAlign = 0f, Top = new StyleDimension(42f, 0f)
                 };
-                panel.Append(version);
+                content.Append(version);
 
-                AppendSection(panel, "Description", _plugin.Description, 92f, 106f, 92f);
-                AppendSection(panel, "Changelog", _plugin.Changelog, 214f, 228f, 112f);
+                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-112f, 1f), VAlign = 1f, ListPadding = 14f, PaddingRight = 12f, ManualSortMethod = items => { } };
+                list.Add(CreateSection("Description", _plugin.Description, true));
+                list.Add(CreateSection("Changelog", _plugin.Changelog, false));
+                content.Append(list);
+                var scrollbar = new UIScrollbar { Height = new StyleDimension(-112f, 1f), HAlign = 1f, VAlign = 1f };
+                content.Append(scrollbar);
+                list.SetScrollbar(scrollbar);
 
                 var back = new UITextPanel<string>("Back", 0.7f, true) {
                     Width = new StyleDimension(-8f, 0.5f),
@@ -904,25 +1547,37 @@ namespace AlacrityTerraria
                 back.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
                 back.OnMouseOut += (evt, element) => FadedMouseOut((UIPanel)element);
                 back.OnLeftClick += (evt, element) => ReturnToPluginList();
-                panel.Append(back);
+                back.SetSnapPoint("GoBack", 0, null, null);
+                outer.Append(back);
             }
 
-            private static void AppendSection(UIElement panel, string heading, string text, float headingTop, float textTop, float height)
+            private static UIElement CreateSection(string heading, string text, bool includeDivider)
             {
-                var title = new UIText(heading, 0.85f, true) {
-                    Left = new StyleDimension(14f, 0f),
-                    Top = new StyleDimension(headingTop, 0f)
-                };
-                panel.Append(title);
+                string value = string.IsNullOrWhiteSpace(text) ? "No information provided." : text;
+                int lines = Math.Max(1, (value.Length + 45) / 46);
+                float bodyHeight = lines * 19f;
+                float dividerSpace = includeDivider ? 14f : 0f;
+                var section = new UIElement { Width = StyleDimension.Fill, Height = new StyleDimension(38f + bodyHeight + dividerSpace, 0f) };
+                section.Append(new UIText(heading, 0.68f, true) { Width = StyleDimension.Fill, Height = new StyleDimension(20f, 0f) });
+                section.Append(new UIText(value, 0.75f, false) { Width = StyleDimension.Fill, Top = new StyleDimension(30f, 0f), IsWrapped = true, WrappedTextBottomPadding = 0f });
+                if (includeDivider)
+                {
+                    var divider = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(2f, 0f), Top = new StyleDimension(34f + bodyHeight, 0f), BackgroundColor = new Color(104, 123, 192) * 0.65f, BorderColor = Color.Transparent, IgnoresMouseInteraction = true };
+                    divider.SetPadding(0f);
+                    section.Append(divider);
+                }
+                return section;
+            }
 
-                var content = new UIText(text, 0.75f, false) {
-                    Left = new StyleDimension(14f, 0f),
-                    Top = new StyleDimension(textTop, 0f),
-                    Width = new StyleDimension(-28f, 1f),
-                    Height = new StyleDimension(height, 0f),
-                    IsWrapped = true
-                };
-                panel.Append(content);
+            public override void Draw(SpriteBatch spriteBatch)
+            {
+                base.Draw(spriteBatch);
+                UILinkPointNavigator.Shortcuts.BackButtonCommand = 1;
+                int firstId = 3700;
+                int nextId = firstId;
+                foreach (var point in GetSnapPoints().Where(point => point.Name == "GoBack"))
+                    gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                gamepadHelper.MoveToVisuallyClosestPoint(firstId, nextId);
             }
 
             private static void FadedMouseOver(UIPanel panel)

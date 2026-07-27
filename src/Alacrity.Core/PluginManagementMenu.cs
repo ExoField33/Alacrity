@@ -43,7 +43,16 @@ public sealed class PluginManagementMenu
             controller.Manifest.Changelog,
             controller.State,
             controller.Manifest.Capabilities != PluginCapability.None))
-        .ToArray() : runtime.Registry.Records.Where(record => record.State != PluginPackageLifecycleState.Uninstalled).Select(record => new PluginSettingsEntry(record.Manifest.Id, record.Manifest.Name, record.Manifest.Publisher, record.Manifest.Version, record.Manifest.Description, record.Manifest.Changelog, ToPluginState(record.State), record.Manifest.Capabilities != PluginCapability.None)).ToArray();
+        .ToArray() : runtime.Registry.Records.Where(record => record.State != PluginPackageLifecycleState.Uninstalled).Select(record => new PluginSettingsEntry(
+            record.Manifest.Id, 
+            record.Manifest.Name, 
+            record.Manifest.Publisher, 
+            record.Manifest.Version, 
+            record.Manifest.Description, 
+            record.Manifest.Changelog, 
+            ToPluginState(record.State), 
+            record.Manifest.Capabilities != PluginCapability.None
+        )).ToArray();
 
     /// <summary>Toggles an initialized plugin and returns its new state.</summary>
     public PluginLifecycleState Toggle(PluginId id)

@@ -24,9 +24,6 @@ public sealed class PluginLifecycleController : IDisposable
         this.context = context ?? throw new ArgumentNullException(nameof(context));
         if (context.Manifest == null)
             throw new ArgumentException("A host-owned manifest is required.", nameof(context));
-#pragma warning disable CS0618 // Core owns the temporary legacy-manifest compatibility boundary.
-        PluginManifestCompatibility.EnsureLegacyPluginMatchesHost(plugin.Manifest, context.Manifest);
-#pragma warning restore CS0618
         State = PluginLifecycleState.Discovered;
         LastOperation = new PluginOperationResult("Construct", State, null, null);
     }

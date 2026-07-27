@@ -4,7 +4,7 @@ using Alacrity.PluginSdk;
 namespace Alacrity.Core;
 
 /// <summary>Concrete host context assembled from verified package metadata and scope-owned services.</summary>
-public sealed class PluginHostContext : IPluginContextV2
+public sealed class PluginHostContext : IPluginContext
 {
     internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
     {
@@ -56,7 +56,7 @@ public sealed class PluginHostContextFactory
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         manifest.Validate();
         var resources = new PluginResourceScope();
-        var extensionServices = extensions.CreateServices(resources);
+        var extensionServices = extensions.CreateServices(manifest, resources);
         return new PluginHostContext(manifest, logger, resources,
             new PluginSettingsStore(alacrityRoot, manifest.Id), new PluginDataStore(alacrityRoot, manifest.Id),
             extensionServices.Events, commands.CreateService(resources), extensionServices.Keybinds,

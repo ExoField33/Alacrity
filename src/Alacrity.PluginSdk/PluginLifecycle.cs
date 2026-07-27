@@ -28,22 +28,8 @@ public enum PluginLifecycleState
 /// <summary>Broad ownership category for cleanup and diagnostics.</summary>
 public enum PluginResourceKind
 {
-    /// <summary>Typed event subscription.</summary>
-    EventSubscription = 9,
-    /// <summary>Registered chat or console command.</summary>
-    Command = 10,
-    /// <summary>Registered input keybind.</summary>
-    Keybind = 11,
-    /// <summary>Published cross-plugin service.</summary>
-    Service = 12,
-    /// <summary>Background task or worker lifetime.</summary>
-    BackgroundTask = 13,
-    /// <summary>File watcher lifetime.</summary>
-    FileWatcher = 14,
-    /// <summary>Observed network handler registration.</summary>
-    NetworkHandler = 15,
-    /// <summary>Rendering callback registration.</summary>
-    RenderingHandler = 16,
+    // Values are intentionally stable for already-compiled third-party plugins.
+    // The host does not persist them, but changing them would alter the public SDK ABI.
     /// <summary>Reversible assembly or integration patch.</summary>
     Patch = 0,
     /// <summary>Managed hook or detour registration.</summary>
@@ -61,7 +47,23 @@ public enum PluginResourceKind
     /// <summary>Native handle or COM lifetime.</summary>
     NativeHandle = 7,
     /// <summary>Other disposable plugin-owned resource.</summary>
-    Other = 8
+    Other = 8,
+    /// <summary>Typed event subscription.</summary>
+    EventSubscription = 9,
+    /// <summary>Registered chat or console command.</summary>
+    Command = 10,
+    /// <summary>Registered input keybind.</summary>
+    Keybind = 11,
+    /// <summary>Published cross-plugin service.</summary>
+    Service = 12,
+    /// <summary>Background task or worker lifetime.</summary>
+    BackgroundTask = 13,
+    /// <summary>File watcher lifetime.</summary>
+    FileWatcher = 14,
+    /// <summary>Observed network handler registration.</summary>
+    NetworkHandler = 15,
+    /// <summary>Rendering callback registration.</summary>
+    RenderingHandler = 16,
 }
 
 /// <summary>State of a host-owned plugin resource scope.</summary>
@@ -131,18 +133,25 @@ public interface IPluginContext
     IPluginLogger Logger { get; }
     /// <summary>Dependency-aware cross-plugin services scoped to this plugin.</summary>
     IPluginServiceRegistry Services { get; }
+    /// <summary>Plugin-scoped settings service.</summary>
+    IPluginSettings Settings { get; }
+    /// <summary>Path-confined plugin data storage.</summary>
+    IPluginStorage Storage { get; }
+    /// <summary>Typed snapshot event subscriptions.</summary>
+    IPluginEventService Events { get; }
+    /// <summary>Scoped command registrations.</summary>
+    IPluginCommandService Commands { get; }
+    /// <summary>Scoped keybind registrations.</summary>
+    IPluginKeybindService Keybinds { get; }
+    /// <summary>UI contribution registrations interpreted by the host application.</summary>
+    IPluginUiService Ui { get; }
+    /// <summary>Read-only multiplayer session and server policy state.</summary>
+    IMultiplayerSession Multiplayer { get; }
 }
 
 /// <summary>Lifecycle contract implemented by an Alacrity plugin.</summary>
 public interface IAlacrityPlugin
 {
-    /// <summary>
-    /// Legacy package metadata retained only for host compatibility checks.
-    /// The host obtains the authoritative manifest from <c>plugin.json</c> before loading this type.
-    /// </summary>
-    [Obsolete("Plugin manifests are host-supplied through IPluginContext. This compatibility property will be removed after legacy plugin migration.")]
-    PluginManifest Manifest { get; }
-
     /// <summary>Creates feature state and registers owned resources.</summary>
     void Initialize(IPluginContext context);
     /// <summary>Activates the initialized plugin.</summary>

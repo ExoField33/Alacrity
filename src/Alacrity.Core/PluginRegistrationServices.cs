@@ -11,14 +11,37 @@ public sealed class PluginExtensionHost
     private readonly object gate = new object();
     private readonly Dictionary<Type, List<EventHandlerRegistration>> eventHandlers = new Dictionary<Type, List<EventHandlerRegistration>>();
     private readonly Dictionary<string, PluginKeybindDescriptor> keybinds = new Dictionary<string, PluginKeybindDescriptor>(StringComparer.Ordinal);
-    private readonly List<PluginUiContribution> settingsPages = new List<PluginUiContribution>();
-    private readonly List<PluginUiContribution> overlays = new List<PluginUiContribution>();
+    private readonly List<OwnedUiContribution> settingsPages = new List<OwnedUiContribution>();
+    private readonly List<OwnedSettingControl> settingsControls = new List<OwnedSettingControl>();
+    private readonly List<OwnedUiContribution> overlays = new List<OwnedUiContribution>();
 
     /// <summary>Creates scoped UI, event, and keybind service facades owned by one enable scope.</summary>
     public PluginExtensionServices CreateServices(IPluginResourceScope resources)
     {
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new PluginExtensionServices(new EventService(this, resources), new UiService(this, resources), new KeybindService(this, resources));
+        return CreateServices(default(PluginId), resources);
+    }
+
+    /// <summary>Creates scope-owned extension services associated with one verified plugin manifest.</summary>
+    public PluginExtensionServices CreateServices(PluginManifest manifest, IPluginResourceScope resources)
+    {
+        if (manifest == null) throw new ArgumentNullException(nameof(manifest));
+        if (resources == null) throw new ArgumentNullException(nameof(resources));
+        return CreateServices(manifest.Id, resources);
+    }
+
+    /// <summary>Returns settings-page contributions still owned by the specified active plugin.</summary>
+    public IReadOnlyList<PluginUiContribution> GetSettingsPages(PluginId pluginId)
+    {
+        lock (gate)
+            return settingsPages.Where(page => page.Owner == pluginId).Select(page => page.Contribution).ToArray();
+    }
+
+    /// <summary>Returns typed setting controls still owned by the specified active plugin.</summary>
+    public IReadOnlyList<PluginSettingControl> GetSettingsControls(PluginId pluginId)
+    {
+        lock (gate)
+            return settingsControls.Where(control => control.Owner == pluginId).Select(control => control.Control).ToArray();
     }
 
     /// <summary>Publishes an immutable host event snapshot to current subscribers.</summary>
@@ -50,11 +73,26 @@ public sealed class PluginExtensionHost
         return Own(resources, registration, PluginResourceKind.EventSubscription);
     }
 
-    private IPluginRegistration RegisterUi(IPluginResourceScope resources, PluginUiContribution contribution, bool overlay)
+    private PluginExtensionServices CreateServices(PluginId owner, IPluginResourceScope resources)
+    {
+        return new PluginExtensionServices(new EventService(this, resources), new UiService(this, owner, resources), new KeybindService(this, resources));
+    }
+
+    private IPluginRegistration RegisterUi(PluginId owner, IPluginResourceScope resources, PluginUiContribution contribution, bool overlay)
     {
         if (contribution == null) throw new ArgumentNullException(nameof(contribution));
-        var registration = new CallbackRegistration("ui:" + contribution.Id, () => { lock (gate) (overlay ? overlays : settingsPages).Remove(contribution); });
-        lock (gate) (overlay ? overlays : settingsPages).Add(contribution);
+        var entry = new OwnedUiContribution(owner, contribution);
+        var registration = new CallbackRegistration("ui:" + contribution.Id, () => { lock (gate) (overlay ? overlays : settingsPages).Remove(entry); });
+        lock (gate) (overlay ? overlays : settingsPages).Add(entry);
+        return Own(resources, registration, PluginResourceKind.UserInterface);
+    }
+
+    private IPluginRegistration RegisterSettingControl(PluginId owner, IPluginResourceScope resources, PluginSettingControl control)
+    {
+        if (control == null) throw new ArgumentNullException(nameof(control));
+        var entry = new OwnedSettingControl(owner, control);
+        var registration = new CallbackRegistration("setting:" + control.Id, () => { lock (gate) settingsControls.Remove(entry); });
+        lock (gate) settingsControls.Add(entry);
         return Own(resources, registration, PluginResourceKind.UserInterface);
     }
 
@@ -100,10 +138,17 @@ public sealed class PluginExtensionHost
     }
     private sealed class UiService : IPluginUiService
     {
-        private readonly PluginExtensionHost host; private readonly IPluginResourceScope resources;
-        public UiService(PluginExtensionHost host, IPluginResourceScope resources) { this.host = host; this.resources = resources; }
-        public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) => host.RegisterUi(resources, contribution, false);
-        public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) => host.RegisterUi(resources, contribution, true);
+        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
+        public UiService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
+        public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) => host.RegisterUi(owner, resources, contribution, false);
+        public IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution)
+        {
+            if (contribution == null) throw new ArgumentNullException(nameof(contribution));
+            if (!contribution.IsInteractive) throw new ArgumentException("A settings control must provide a value reader and activation action.", nameof(contribution));
+            return host.RegisterUi(owner, resources, contribution, false);
+        }
+        public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) => host.RegisterSettingControl(owner, resources, control);
+        public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) => host.RegisterUi(owner, resources, contribution, true);
     }
     private sealed class KeybindService : IPluginKeybindService
     {
@@ -125,5 +170,18 @@ public sealed class PluginExtensionHost
         public CallbackRegistration(string name, Action release) { Name = name; this.release = release; }
         public string Name { get; } public bool IsReleased => released;
         public virtual void Dispose() { if (released) return; released = true; release(); }
+    }
+
+    private sealed class OwnedUiContribution
+    {
+        public OwnedUiContribution(PluginId owner, PluginUiContribution contribution) { Owner = owner; Contribution = contribution; }
+        public PluginId Owner { get; }
+        public PluginUiContribution Contribution { get; }
+    }
+    private sealed class OwnedSettingControl
+    {
+        public OwnedSettingControl(PluginId owner, PluginSettingControl control) { Owner = owner; Control = control; }
+        public PluginId Owner { get; }
+        public PluginSettingControl Control { get; }
     }
 }

@@ -4,6 +4,7 @@ using System.IO;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
+using AlacrityTerraria;
 
 internal static class Program
 {
@@ -13,7 +14,12 @@ internal static class Program
         {
             ManifestRejectsInvalidServerClassification();
             PackageManifestLoadsBeforePluginExecution();
-            LegacyPluginManifestMismatchIsRejected();
+            PluginAssemblyLoaderUsesHostManifestWithoutDllMetadata();
+            HostManifestIsAuthoritativeOverPluginImplementation();
+            UnifiedContextExposesAllHostServices();
+            PluginResourceKindValuesRemainStable();
+            BridgeReflectionResolverCachesSuccessfulLookups();
+            BridgeReflectionResolverReportsUnavailableSignatures();
             TrustMetadataRejectsMalformedHash();
             PatchAppliesAndRollsBackWithMockFiles();
             PatchRefusesUnexpectedContentAndWrongOwner();
@@ -102,10 +108,37 @@ internal static class Program
         }
     }
 
-    private static void LegacyPluginManifestMismatchIsRejected()
+    private static void PluginAssemblyLoaderUsesHostManifestWithoutDllMetadata()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-loader-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string package = Path.Combine(root, "plugins", "alacrity.ui-test");
+            Directory.CreateDirectory(package);
+            string assemblyName = "UiTestPlugin.dll";
+            File.Copy(typeof(Alacrity.UiTestPlugin.UiTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.ui-test\",\"name\":\"UI Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"Alacrity.UiTestPlugin.UiTestPlugin\"}");
+            var packageDescriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root)[0];
+            var plugin = new PluginAssemblyLoader().Load(packageDescriptor);
+            Assert(plugin.GetType().GetProperty("Manifest") == null, "Loaded plugins must not supply authoritative manifest metadata from their DLL.");
+            var resources = new PluginResourceScope();
+            using (var lifecycle = new PluginLifecycleController(plugin, new TestContext(packageDescriptor.Manifest, resources)))
+            {
+                lifecycle.Validate();
+                lifecycle.Initialize();
+                lifecycle.Enable();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void HostManifestIsAuthoritativeOverPluginImplementation()
     {
         var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(CreateManifest(), resources, new List<string>(), false);
+        var plugin = new TestPlugin(resources, new List<string>(), false);
         var hostManifest = new PluginManifest(
             new PluginId("example.plugin"),
             "Example",
@@ -116,16 +149,54 @@ internal static class Program
             capabilities: PluginCapability.Diagnostics,
             permissions: PluginPermission.Clipboard);
         var context = new TestContext(hostManifest, resources);
-        AssertThrows<InvalidOperationException>(() => new PluginLifecycleController(plugin, context));
+        using (var lifecycle = new PluginLifecycleController(plugin, context))
+        {
+            lifecycle.Validate();
+            Assert(lifecycle.Manifest == hostManifest, "The lifecycle must expose the manifest loaded from plugin.json through the host context.");
+        }
+        Assert(typeof(TestPlugin).GetProperty("Manifest") == null, "Plugin implementations must not own a manifest property.");
         resources.Dispose();
+    }
+
+    private static void UnifiedContextExposesAllHostServices()
+    {
+        var resources = new PluginResourceScope();
+        var context = new TestContext(CreateManifest(), resources);
+        Assert(context.Settings != null && context.Storage != null && context.Events != null && context.Commands != null, "The final plugin context must expose settings, storage, events, and commands.");
+        Assert(context.Keybinds != null && context.Ui != null && context.Services != null && context.Multiplayer != null, "The final plugin context must expose keybinds, UI, services, and multiplayer state.");
+        resources.Dispose();
+    }
+
+    private static void PluginResourceKindValuesRemainStable()
+    {
+        Assert((int)PluginResourceKind.Patch == 0 && (int)PluginResourceKind.EventSubscription == 9 && (int)PluginResourceKind.NativeHandle == 7, "Public resource-kind numeric values must remain stable for compiled plugin compatibility.");
+    }
+
+    private static void BridgeReflectionResolverCachesSuccessfulLookups()
+    {
+        var resolver = new BridgeReflectionResolver();
+        Assert(resolver.TryResolveStaticMethod(typeof(BridgeReflectionFixture), "Draw", typeof(void), new[] { typeof(int) }, out var first, out _), "The bridge resolver must find an exact static method.");
+        Assert(resolver.TryResolveStaticMethod(typeof(BridgeReflectionFixture), "Draw", typeof(void), new[] { typeof(int) }, out var second, out _), "The cached bridge lookup must remain available.");
+        Assert(ReferenceEquals(first, second), "Repeated exact bridge lookups must return cached metadata.");
+        Assert(resolver.TryResolveStaticField(typeof(BridgeReflectionFixture), "Counter", typeof(int), out var field, out _), "The bridge resolver must find an exact static field.");
+        Assert(field != null, "Resolved field metadata must be retained.");
+    }
+
+    private static void BridgeReflectionResolverReportsUnavailableSignatures()
+    {
+        var resolver = new BridgeReflectionResolver();
+        Assert(!resolver.TryResolveStaticMethod(typeof(BridgeReflectionFixture), "Draw", typeof(void), Type.EmptyTypes, out _, out var diagnostic), "The bridge resolver must reject an incorrect method signature.");
+        Assert(diagnostic.StartsWith("Unavailable:", StringComparison.Ordinal), "Unavailable bridge members must provide a clear diagnostic.");
+        Assert(!resolver.TryResolveStaticField(typeof(BridgeReflectionFixture), "Counter", typeof(string), out _, out diagnostic), "The bridge resolver must reject an incorrect field type.");
+        Assert(diagnostic.StartsWith("Unavailable:", StringComparison.Ordinal), "Unexpected field types must be reported as unavailable rather than invoked.");
     }
 
     private static void LifecycleCleansResourcesInReverseOrder()
     {
         var order = new List<string>();
         var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(CreateManifest(), resources, order, false);
-        var context = new TestContext(plugin.Manifest, resources);
+        var plugin = new TestPlugin(resources, order, false);
+        var context = new TestContext(CreateManifest(), resources);
         using (var lifecycle = new PluginLifecycleController(plugin, context))
         {
             lifecycle.Validate();
@@ -439,8 +510,9 @@ internal static class Program
     private static void PluginMenuPlacesPluginsBeforeWorkshopAndToggles()
     {
         var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(CreateManifest(), resources, new List<string>(), false);
-        var context = new TestContext(plugin.Manifest, resources);
+        var manifest = CreateManifest();
+        var plugin = new TestPlugin(resources, new List<string>(), false);
+        var context = new TestContext(manifest, resources);
         using (var lifecycle = new PluginLifecycleController(plugin, context))
         {
             lifecycle.Validate();
@@ -451,8 +523,8 @@ internal static class Program
             Assert(menu.MainMenuEntries[4].Id == MainMenuEntryId.Workshop, "Workshop must shift down one slot.");
             Assert(menu.MainMenuEntries[5].Id == MainMenuEntryId.Settings, "Entries after Workshop must shift down.");
             Assert(menu.SettingsEntries[0].IsEnabled && menu.SettingsEntries[0].CanConfigure, "Enabled plugin row should expose toggle/settings state.");
-            Assert(menu.Toggle(plugin.Manifest.Id) == PluginLifecycleState.Disabled, "Plugin row toggle should disable the plugin.");
-            Assert(menu.Toggle(plugin.Manifest.Id) == PluginLifecycleState.Enabled, "A disabled plugin should reinitialize before the menu enables it again.");
+            Assert(menu.Toggle(manifest.Id) == PluginLifecycleState.Disabled, "Plugin row toggle should disable the plugin.");
+            Assert(menu.Toggle(manifest.Id) == PluginLifecycleState.Enabled, "A disabled plugin should reinitialize before the menu enables it again.");
         }
     }
 
@@ -487,8 +559,8 @@ internal static class Program
     {
         var order = new List<string>();
         var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(CreateManifest(), resources, order, true);
-        var context = new TestContext(plugin.Manifest, resources);
+        var plugin = new TestPlugin(resources, order, true);
+        var context = new TestContext(CreateManifest(), resources);
         using (var lifecycle = new PluginLifecycleController(plugin, context))
         {
             lifecycle.Validate();
@@ -502,8 +574,8 @@ internal static class Program
     private static void LifecyclePreservesCallbackFailureAndRecordsCleanupFailure()
     {
         var resources = new PluginResourceScope();
-        var plugin = new CleanupFailurePlugin(CreateManifest(), resources, failDisable: true, failShutdown: false);
-        var context = new TestContext(plugin.Manifest, resources);
+        var plugin = new CleanupFailurePlugin(resources, failDisable: true, failShutdown: false);
+        var context = new TestContext(CreateManifest(), resources);
         var lifecycle = new PluginLifecycleController(plugin, context);
         lifecycle.Validate();
         lifecycle.Initialize();
@@ -519,8 +591,8 @@ internal static class Program
     private static void LifecycleUninstallReachesTerminalStateAfterFailures()
     {
         var resources = new PluginResourceScope();
-        var plugin = new CleanupFailurePlugin(CreateManifest(), resources, failDisable: true, failShutdown: true);
-        var context = new TestContext(plugin.Manifest, resources);
+        var plugin = new CleanupFailurePlugin(resources, failDisable: true, failShutdown: true);
+        var context = new TestContext(CreateManifest(), resources);
         var lifecycle = new PluginLifecycleController(plugin, context);
         lifecycle.Validate();
         lifecycle.Initialize();
@@ -608,16 +680,35 @@ internal static class Program
     {
         var host = new PluginExtensionHost();
         var scope = new PluginResourceScope();
-        var services = host.CreateServices(scope);
+        var manifest = new PluginManifest(
+            new PluginId("extensions.plugin"), "Extensions", new Version(1, 0), "Tests", "Extension registration test", new[] { "1.4.5.6" });
+        var services = host.CreateServices(manifest, scope);
         var received = 0;
         services.Events.Subscribe<string>(_ => received++);
         services.Keybinds.Register(new PluginKeybindDescriptor("toggle", "P", "Toggle"), () => { });
         services.Ui.RegisterOverlay(new PluginUiContribution("overlay", "Overlay"));
+        services.Ui.RegisterSettingsPage(new PluginUiContribution("settings", "Settings"));
+        var activationCount = 0;
+        var interactive = new PluginUiContribution("interactive", "Interactive", () => "Enabled", () => activationCount++);
+        services.Ui.RegisterSettingsControl(interactive);
+        Assert(interactive.IsInteractive, "Interactive settings must retain both host-rendered delegates.");
+        interactive.Activate!();
+        Assert(activationCount == 1, "Interactive settings must retain their activation action.");
+        AssertThrows<ArgumentException>(() => services.Ui.RegisterSettingsControl(new PluginUiContribution("invalid", "Invalid")));
+        var enabled = true;
+        var typed = PluginSettingControl.Toggle("enabled", "Enabled", () => enabled, value => enabled = value);
+        services.Ui.RegisterSettingsControl(typed);
+        Assert(host.GetSettingsControls(manifest.Id).Count == 1, "Typed setting controls must be discoverable by their verified plugin identity.");
+        Assert(PluginColor.TryParseHex("#12ABef", out var color) && color.ToHex() == "#12ABEF", "Plugin colors must round-trip through canonical hexadecimal text.");
+        AssertThrows<ArgumentException>(() => PluginSettingControl.Cycle("invalid-cycle", "Invalid", new[] { "Only" }, () => "Only", _ => { }));
         AssertThrows<InvalidOperationException>(() => services.Keybinds.Register(new PluginKeybindDescriptor("toggle", "O", "Duplicate"), () => { }));
+        Assert(host.GetSettingsPages(manifest.Id).Count == 2, "A plugin's active settings contributions must be discoverable by its verified identity.");
         host.Publish("first");
         scope.ReleaseAll();
         host.Publish("second");
         Assert(received == 1, "Event registrations must be removed with their owning scope.");
+        Assert(host.GetSettingsPages(manifest.Id).Count == 0, "Disabling a plugin must remove its settings-page registrations with the owning scope.");
+        Assert(host.GetSettingsControls(manifest.Id).Count == 0, "Disabling a plugin must remove typed setting controls with the owning scope.");
         scope.Dispose();
     }
 
@@ -832,15 +923,12 @@ internal static class Program
         private readonly List<string> order;
         private readonly bool failOnEnable;
 
-        public TestPlugin(PluginManifest manifest, IPluginResourceScope resources, List<string> order, bool failOnEnable)
+        public TestPlugin(IPluginResourceScope resources, List<string> order, bool failOnEnable)
         {
-            Manifest = manifest;
             this.resources = resources;
             this.order = order;
             this.failOnEnable = failOnEnable;
         }
-
-        public PluginManifest Manifest { get; }
 
         public void Initialize(IPluginContext context)
         {
@@ -858,6 +946,12 @@ internal static class Program
         public void Shutdown() { }
     }
 
+    private static class BridgeReflectionFixture
+    {
+        public static int Counter;
+        public static void Draw(int value) { Counter = value; }
+    }
+
     private sealed class TestContext : IPluginContext
     {
         public TestContext(PluginManifest manifest, IPluginResourceScope resources)
@@ -866,12 +960,26 @@ internal static class Program
             Resources = resources;
             Logger = new TestLogger();
             Services = new PluginServiceHub().CreateRegistry(manifest, resources);
+            Settings = new TestSettings();
+            Storage = new TestStorage();
+            Events = new TestEvents();
+            Commands = new TestCommands();
+            Keybinds = new TestKeybinds();
+            Ui = new TestUi();
+            Multiplayer = new TestMultiplayerSession();
         }
 
         public PluginManifest Manifest { get; }
         public IPluginResourceScope Resources { get; }
         public IPluginLogger Logger { get; }
         public IPluginServiceRegistry Services { get; }
+        public IPluginSettings Settings { get; }
+        public IPluginStorage Storage { get; }
+        public IPluginEventService Events { get; }
+        public IPluginCommandService Commands { get; }
+        public IPluginKeybindService Keybinds { get; }
+        public IPluginUiService Ui { get; }
+        public IMultiplayerSession Multiplayer { get; }
     }
 
     private sealed class CleanupFailurePlugin : IAlacrityPlugin
@@ -880,15 +988,12 @@ internal static class Program
         private readonly bool failDisable;
         private readonly bool failShutdown;
 
-        public CleanupFailurePlugin(PluginManifest manifest, IPluginResourceScope resources, bool failDisable, bool failShutdown)
+        public CleanupFailurePlugin(IPluginResourceScope resources, bool failDisable, bool failShutdown)
         {
-            Manifest = manifest;
             this.resources = resources;
             this.failDisable = failDisable;
             this.failShutdown = failShutdown;
         }
-
-        public PluginManifest Manifest { get; }
 
         public void Initialize(IPluginContext context)
         {
@@ -908,6 +1013,65 @@ internal static class Program
             if (failShutdown)
                 throw new InvalidOperationException("Expected shutdown failure.");
         }
+    }
+
+    private sealed class TestSettings : IPluginSettings
+    {
+        private readonly Dictionary<string, object?> values = new Dictionary<string, object?>();
+        public event EventHandler<PluginSettingChangedEventArgs>? Changed;
+        public T Get<T>(string key, T defaultValue) => values.TryGetValue(key, out var value) && value is T typed ? typed : defaultValue;
+        public void Set<T>(string key, T value) { values.TryGetValue(key, out var oldValue); values[key] = value; Changed?.Invoke(this, new PluginSettingChangedEventArgs(key, oldValue, value)); }
+        public bool Remove(string key) { if (!values.TryGetValue(key, out var value)) return false; values.Remove(key); Changed?.Invoke(this, new PluginSettingChangedEventArgs(key, value, null)); return true; }
+        public void ResetToDefaults() => values.Clear();
+    }
+
+    private sealed class TestStorage : IPluginStorage
+    {
+        public Stream OpenRead(string relativePath) => throw new NotSupportedException();
+        public Stream Create(string relativePath) => throw new NotSupportedException();
+        public bool Exists(string relativePath) => false;
+        public void Delete(string relativePath) { }
+        public IReadOnlyList<string> Enumerate(string relativeDirectory) => Array.Empty<string>();
+    }
+
+    private sealed class TestEvents : IPluginEventService
+    {
+        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null) => new TestRegistration("event");
+    }
+
+    private sealed class TestCommands : IPluginCommandService
+    {
+        public IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler) => new TestRegistration("command");
+    }
+
+    private sealed class TestKeybinds : IPluginKeybindService
+    {
+        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler) => new TestRegistration("keybind");
+    }
+
+    private sealed class TestUi : IPluginUiService
+    {
+        public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) => new TestRegistration("page");
+        public IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution) => new TestRegistration("control");
+        public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) => new TestRegistration("control");
+        public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) => new TestRegistration("overlay");
+    }
+
+    private sealed class TestRegistration : IPluginRegistration
+    {
+        public TestRegistration(string name) { Name = name; }
+        public string Name { get; }
+        public bool IsReleased { get; private set; }
+        public void Dispose() => IsReleased = true;
+    }
+
+    private sealed class TestMultiplayerSession : IMultiplayerSession
+    {
+        public bool IsConnected => false;
+        public bool IsVanillaCompatibleMode => true;
+        public bool IsAlacrityAwareServer => false;
+        public ServerIdentity? Server => null;
+        public ServerPluginPolicySnapshot? ActivePolicy => null;
     }
 
     private sealed class TestLogger : IPluginLogger

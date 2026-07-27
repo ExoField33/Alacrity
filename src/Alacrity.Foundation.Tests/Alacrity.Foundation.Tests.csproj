@@ -10,5 +10,9 @@
     <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
     <ProjectReference Include="..\Alacrity.Core\Alacrity.Core.csproj" />
     <ProjectReference Include="..\Alacrity.App\Alacrity.App.csproj" />
+    <ProjectReference Include="..\Alacrity.UiTestPlugin\Alacrity.UiTestPlugin.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Alacrity.TerrariaIntegration\BridgeReflectionContracts.cs" Link="BridgeReflectionContracts.cs" />
   </ItemGroup>
 </Project>

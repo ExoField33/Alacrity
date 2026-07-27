@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using Microsoft.Xna.Framework;
@@ -8,41 +9,44 @@ using Terraria;
 
 namespace AlacrityTerraria
 {
-    // The injected entry point must stay independent of the SDK/Core assemblies.
-    // They are loaded only after the user opens Plugins, so an unavailable plugin
-    // dependency cannot prevent Terraria from reaching its normal main menu.
+    // The injected entry point stays independent from SDK/Core until the optional Plugins UI is opened.
+    // Every reflected member is exact-signature checked and cached so unavailable bridge code falls back to Terraria.
     public static class PluginUiRuntime
     {
-        private static FieldInfo _menuMode;
+        private const int PluginMenuMode = 888;
+        private const int IngamePluginsCategory = 777016;
+        private static readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
         private static FieldInfo _versionNumber;
         private static Assembly _bridgeAssembly;
-        private static MethodInfo _open;
-        private static MethodInfo _openIngamePluginSettings;
-        private static MethodInfo _drawIngamePluginSettings;
-        private static MethodInfo _drawNotifications;
-        private static MethodInfo _handlePluginMenuInput;
+        private static Action _open;
+        private static Action _openIngamePluginSettings;
+        private static Action<SpriteBatch> _drawIngamePluginSettings;
+        private static Action<SpriteBatch> _drawNotifications;
+        private static Func<bool> _handlePluginMenuInput;
         private static Action<Color, float> _drawVersionNumber;
         private static bool _versionRendererResolved;
         private static bool _bridgeLoadAttempted;
-        private static FieldInfo _ingameOptionsCategory;
-        private const int IngamePluginsCategory = 777016;
+        private static string _lastDiagnostic;
+
+        /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
+        public static string LastBridgeDiagnostic { get { return _lastDiagnostic ?? string.Empty; } }
 
         public static bool HandleInput()
         {
             try
             {
-                FieldInfo menuMode = GetMenuModeField();
-                if (menuMode == null)
+                FieldInfo menuMode;
+                if (!TryGetMenuModeField(out menuMode))
                     return true;
 
-                int currentMenu = ReadMenuMode(menuMode);
-                if (currentMenu == 888)
-                    return HandlePluginMenuInput();
-                return true;
+                return ReadMenuMode(menuMode) == PluginMenuMode ? HandlePluginMenuInput() : true;
             }
-            catch
+            catch (Exception exception)
             {
-                SetMenuMode(GetMenuModeField(), 0);
+                RecordFailure("Plugin-menu input", exception);
+                FieldInfo menuMode;
+                if (TryGetMenuModeField(out menuMode))
+                    SetMenuMode(menuMode, 0);
                 return true;
             }
         }
@@ -51,28 +55,25 @@ namespace AlacrityTerraria
         {
             try
             {
-                if (EnsureBridge())
-                {
-                    SoundEngine.PlaySound(10, -1, -1, 1, 1f, 0f);
-                    _open.Invoke(null, null);
-                }
+                if (!EnsureBridge())
+                    return;
+
+                SoundEngine.PlaySound(10, -1, -1, 1, 1f, 0f);
+                _open();
             }
-            catch
+            catch (Exception exception)
             {
-                // A failed optional UI bridge must leave the native main menu usable.
+                RecordFailure("Open plugin manager", exception);
             }
         }
 
         public static void DrawAlacrityVersion(Color color, float verticalOffset, string versionText)
         {
-            if (string.IsNullOrWhiteSpace(versionText))
+            if (string.IsNullOrWhiteSpace(versionText) || !EnsureVersionRenderer())
                 return;
 
             try
             {
-                if (!EnsureVersionRenderer())
-                    return;
-
                 string originalVersion = (string)_versionNumber.GetValue(null);
                 try
                 {
@@ -84,28 +85,28 @@ namespace AlacrityTerraria
                     _versionNumber.SetValue(null, originalVersion);
                 }
             }
-            catch
+            catch (Exception exception)
             {
-                // Optional branding must never disrupt Terraria's native version rendering.
+                RecordFailure("Draw Alacrity version", exception);
             }
         }
 
         public static void OpenIngamePluginSettings()
         {
+            SetIngamePluginsCategory();
             try
             {
-                SetIngamePluginsCategory();
                 if (!EnsureBridge() || _openIngamePluginSettings == null)
                 {
                     RestoreIngameOptionsCategory();
                     return;
                 }
 
-                _openIngamePluginSettings.Invoke(null, null);
+                _openIngamePluginSettings();
             }
-            catch
+            catch (Exception exception)
             {
-                // A failed optional category must return to vanilla settings instead of a blank panel.
+                RecordFailure("Open in-game plugin settings", exception);
                 RestoreIngameOptionsCategory();
             }
         }
@@ -123,11 +124,11 @@ namespace AlacrityTerraria
                     return;
                 }
 
-                _drawIngamePluginSettings.Invoke(null, new object[] { spriteBatch });
+                _drawIngamePluginSettings(spriteBatch);
             }
-            catch
+            catch (Exception exception)
             {
-                // The vanilla settings screen remains available if the optional panel fails.
+                RecordFailure("Draw in-game plugin settings", exception);
                 RestoreIngameOptionsCategory();
             }
         }
@@ -141,11 +142,11 @@ namespace AlacrityTerraria
             try
             {
                 if (EnsureBridge() && _drawNotifications != null)
-                    _drawNotifications.Invoke(null, new object[] { spriteBatch });
+                    _drawNotifications(spriteBatch);
             }
-            catch
+            catch (Exception exception)
             {
-                // Notifications are optional presentation and must never interrupt Terraria UI drawing.
+                RecordFailure("Draw plugin notifications", exception);
             }
         }
 
@@ -155,17 +156,23 @@ namespace AlacrityTerraria
                 return _drawVersionNumber != null && _versionNumber != null;
 
             _versionRendererResolved = true;
-            _versionNumber = typeof(Main).GetField("versionNumber", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            MethodInfo renderer = typeof(Main).GetMethod(
-                "DrawVersionNumber",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { typeof(Color), typeof(float) },
-                null);
-            if (_versionNumber == null || renderer == null)
+            string diagnostic;
+            MethodInfo renderer;
+            if (!Reflection.TryResolveStaticField(typeof(Main), "versionNumber", typeof(string), out _versionNumber, out diagnostic) ||
+                !Reflection.TryResolveStaticMethod(typeof(Main), "DrawVersionNumber", typeof(void), new[] { typeof(Color), typeof(float) }, out renderer, out diagnostic))
+            {
+                RecordUnavailable(diagnostic);
                 return false;
+            }
 
-            _drawVersionNumber = (Action<Color, float>)Delegate.CreateDelegate(typeof(Action<Color, float>), renderer);
+            Delegate callback;
+            if (!Reflection.TryCreateDelegate(renderer, typeof(Action<Color, float>), out callback, out diagnostic))
+            {
+                RecordUnavailable(diagnostic);
+                return false;
+            }
+
+            _drawVersionNumber = (Action<Color, float>)callback;
             return true;
         }
 
@@ -179,83 +186,140 @@ namespace AlacrityTerraria
             _bridgeLoadAttempted = true;
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "Alacrity.PluginUiCoreBridge.dll");
             if (!File.Exists(path))
+            {
+                RecordUnavailable("Unavailable: Alacrity.PluginUiCoreBridge.dll was not found at " + path + ".");
                 return false;
+            }
 
             try
             {
                 _bridgeAssembly = Assembly.LoadFrom(path);
-                Type bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", true);
-                _open = bridgeType.GetMethod("Open", BindingFlags.Public | BindingFlags.Static);
-                _openIngamePluginSettings = bridgeType.GetMethod("OpenIngamePluginSettings", BindingFlags.Public | BindingFlags.Static);
-                _drawIngamePluginSettings = bridgeType.GetMethod("DrawIngamePluginSettings", BindingFlags.Public | BindingFlags.Static);
-                _drawNotifications = bridgeType.GetMethod("DrawNotifications", BindingFlags.Public | BindingFlags.Static);
-                _handlePluginMenuInput = bridgeType.GetMethod("HandlePluginMenuInput", BindingFlags.Public | BindingFlags.Static);
-                return _open != null;
+                Type bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                if (bridgeType == null)
+                {
+                    RecordUnavailable("Unavailable: the UI bridge does not contain AlacrityTerraria.PluginUiRuntime.");
+                    return false;
+                }
+
+                string diagnostic;
+                MethodInfo open;
+                MethodInfo openIngame;
+                MethodInfo drawIngame;
+                MethodInfo drawNotifications;
+                MethodInfo handleInput;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "Open", typeof(void), Type.EmptyTypes, out open, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "OpenIngamePluginSettings", typeof(void), Type.EmptyTypes, out openIngame, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "DrawIngamePluginSettings", typeof(void), new[] { typeof(SpriteBatch) }, out drawIngame, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "DrawNotifications", typeof(void), new[] { typeof(SpriteBatch) }, out drawNotifications, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "HandlePluginMenuInput", typeof(bool), Type.EmptyTypes, out handleInput, out diagnostic))
+                {
+                    RecordUnavailable(diagnostic);
+                    ClearBridgeDelegates();
+                    return false;
+                }
+
+                Delegate callback;
+                if (!Reflection.TryCreateDelegate(open, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
+                _open = (Action)callback;
+                if (!Reflection.TryCreateDelegate(openIngame, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
+                _openIngamePluginSettings = (Action)callback;
+                if (!Reflection.TryCreateDelegate(drawIngame, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
+                _drawIngamePluginSettings = (Action<SpriteBatch>)callback;
+                if (!Reflection.TryCreateDelegate(drawNotifications, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
+                _drawNotifications = (Action<SpriteBatch>)callback;
+                if (!Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
+                _handlePluginMenuInput = (Func<bool>)callback;
+                return true;
             }
-            catch
+            catch (Exception exception)
             {
+                ClearBridgeDelegates();
                 _bridgeAssembly = null;
-                _open = null;
-                _openIngamePluginSettings = null;
-                _drawIngamePluginSettings = null;
-                _drawNotifications = null;
-                _handlePluginMenuInput = null;
+                RecordFailure("Load UI bridge", exception);
                 return false;
             }
         }
 
+        private static void ClearBridgeDelegates()
+        {
+            _open = null;
+            _openIngamePluginSettings = null;
+            _drawIngamePluginSettings = null;
+            _drawNotifications = null;
+            _handlePluginMenuInput = null;
+        }
+
         private static bool HandlePluginMenuInput()
         {
-            if (!EnsureBridge() || _handlePluginMenuInput == null)
-                return true;
-
-            return (bool)_handlePluginMenuInput.Invoke(null, null);
+            return EnsureBridge() && _handlePluginMenuInput != null ? _handlePluginMenuInput() : true;
         }
 
         private static bool IsIngamePluginsCategory()
         {
-            FieldInfo category = GetIngameOptionsCategoryField();
-            return category != null && (int)category.GetValue(null) == IngamePluginsCategory;
+            FieldInfo category;
+            return TryGetIngameOptionsCategoryField(out category) && (int)category.GetValue(null) == IngamePluginsCategory;
         }
 
         private static void SetIngamePluginsCategory()
         {
-            FieldInfo category = GetIngameOptionsCategoryField();
-            if (category != null)
+            FieldInfo category;
+            if (TryGetIngameOptionsCategoryField(out category))
                 category.SetValue(null, IngamePluginsCategory);
         }
 
         private static void RestoreIngameOptionsCategory()
         {
-            FieldInfo category = GetIngameOptionsCategoryField();
-            if (category != null)
+            FieldInfo category;
+            if (TryGetIngameOptionsCategoryField(out category))
                 category.SetValue(null, 0);
         }
 
-        private static FieldInfo GetIngameOptionsCategoryField()
+        private static bool TryGetIngameOptionsCategoryField(out FieldInfo field)
         {
-            return _ingameOptionsCategory ?? (_ingameOptionsCategory = typeof(IngameOptions).GetField(
-                "category",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
+            string diagnostic;
+            bool available = Reflection.TryResolveStaticField(typeof(IngameOptions), "category", typeof(int), out field, out diagnostic);
+            if (!available) RecordUnavailable(diagnostic);
+            return available;
         }
 
-        private static FieldInfo GetMenuModeField()
+        private static bool TryGetMenuModeField(out FieldInfo field)
         {
-            return _menuMode ?? (_menuMode = typeof(Main).GetField(
-                "menuMode",
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
+            string diagnostic;
+            bool available = Reflection.TryResolveStaticField(typeof(Main), "menuMode", typeof(int), out field, out diagnostic);
+            if (!available) RecordUnavailable(diagnostic);
+            return available;
         }
 
-        private static int ReadMenuMode(FieldInfo field)
+        private static int ReadMenuMode(FieldInfo field) { return (int)field.GetValue(null); }
+        private static void SetMenuMode(FieldInfo field, int value) { field.SetValue(null, value); }
+
+        private static void RecordUnavailable(string diagnostic)
         {
-            return field == null ? 0 : (int)field.GetValue(null);
+            if (string.IsNullOrWhiteSpace(diagnostic))
+                diagnostic = "Unavailable: a required Alacrity UI bridge member could not be resolved.";
+            RecordDiagnostic(diagnostic);
         }
 
-        private static void SetMenuMode(FieldInfo field, int value)
+        private static void RecordFailure(string operation, Exception exception)
         {
-            if (field != null)
-                field.SetValue(null, value);
+            RecordDiagnostic("Failed: " + operation + ": " + exception.GetType().Name + ": " + exception.Message, exception);
         }
 
+        private static void RecordDiagnostic(string diagnostic, Exception exception = null)
+        {
+            if (string.Equals(_lastDiagnostic, diagnostic, StringComparison.Ordinal))
+                return;
+
+            _lastDiagnostic = diagnostic;
+            try
+            {
+                string detail = exception == null ? diagnostic : diagnostic + Environment.NewLine + exception;
+                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "alacrity-plugin-ui-error.log"), detail);
+            }
+            catch (Exception writeFailure)
+            {
+                Debug.WriteLine("Alacrity UI diagnostic logging failed: " + writeFailure.Message);
+            }
+        }
     }
 }
