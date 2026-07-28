@@ -34,5 +34,7 @@
 
   <ItemGroup>
     <Compile Include="AlacrityPluginUiCoreBridge.cs" />
+    <Compile Include="TileStorage.cs" />
+    <Compile Include="TileDataCompatibility.cs" />
   </ItemGroup>
 </Project>

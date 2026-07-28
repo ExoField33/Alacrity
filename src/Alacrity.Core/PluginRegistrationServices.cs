@@ -10,24 +10,25 @@ public sealed class PluginExtensionHost
 {
     private readonly object gate = new object();
     private readonly Dictionary<Type, List<EventHandlerRegistration>> eventHandlers = new Dictionary<Type, List<EventHandlerRegistration>>();
-    private readonly Dictionary<string, PluginKeybindDescriptor> keybinds = new Dictionary<string, PluginKeybindDescriptor>(StringComparer.Ordinal);
+    private readonly Dictionary<string, OwnedKeybind> keybinds = new Dictionary<string, OwnedKeybind>(StringComparer.Ordinal);
     private readonly List<OwnedUiContribution> settingsPages = new List<OwnedUiContribution>();
     private readonly List<OwnedSettingControl> settingsControls = new List<OwnedSettingControl>();
     private readonly List<OwnedUiContribution> overlays = new List<OwnedUiContribution>();
-
-    /// <summary>Creates scoped UI, event, and keybind service facades owned by one enable scope.</summary>
-    public PluginExtensionServices CreateServices(IPluginResourceScope resources)
-    {
-        if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return CreateServices(default(PluginId), resources);
-    }
 
     /// <summary>Creates scope-owned extension services associated with one verified plugin manifest.</summary>
     public PluginExtensionServices CreateServices(PluginManifest manifest, IPluginResourceScope resources)
     {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
-        if (resources == null) throw new ArgumentNullException(nameof(resources));
+        manifest.Validate();
         return CreateServices(manifest.Id, resources);
+    }
+
+    /// <summary>Creates scope-owned extension services for a validated plugin identity.</summary>
+    public PluginExtensionServices CreateServices(PluginId owner, IPluginResourceScope resources)
+    {
+        EnsureOwner(owner);
+        if (resources == null) throw new ArgumentNullException(nameof(resources));
+        return new PluginExtensionServices(new EventService(this, owner, resources), new UiService(this, owner, resources), new KeybindService(this, owner, resources));
     }
 
     /// <summary>Returns settings-page contributions still owned by the specified active plugin.</summary>
@@ -44,6 +45,13 @@ public sealed class PluginExtensionHost
             return settingsControls.Where(control => control.Owner == pluginId).Select(control => control.Control).ToArray();
     }
 
+    /// <summary>Returns overlay contributions still owned by the specified active plugin.</summary>
+    public IReadOnlyList<PluginUiContribution> GetOverlays(PluginId pluginId)
+    {
+        lock (gate)
+            return overlays.Where(overlay => overlay.Owner == pluginId).Select(overlay => overlay.Contribution).ToArray();
+    }
+
     /// <summary>Publishes an immutable host event snapshot to current subscribers.</summary>
     public void Publish<TEvent>(TEvent snapshot)
     {
@@ -57,10 +65,11 @@ public sealed class PluginExtensionHost
         }
     }
 
-    private IPluginRegistration Subscribe<TEvent>(IPluginResourceScope resources, Action<TEvent> handler, PluginEventOptions? options)
+    private IPluginRegistration Subscribe<TEvent>(PluginId owner, IPluginResourceScope resources, Action<TEvent> handler, PluginEventOptions? options)
     {
+        EnsureOwner(owner);
         if (handler == null) throw new ArgumentNullException(nameof(handler));
-        var registration = new EventHandlerRegistration(typeof(TEvent), value => handler((TEvent)value!), options?.Once == true, RemoveEvent);
+        var registration = new EventHandlerRegistration(owner, typeof(TEvent), value => handler((TEvent)value!), options?.Once == true, RemoveEvent);
         lock (gate)
         {
             if (!eventHandlers.TryGetValue(typeof(TEvent), out var handlers))
@@ -73,13 +82,9 @@ public sealed class PluginExtensionHost
         return Own(resources, registration, PluginResourceKind.EventSubscription);
     }
 
-    private PluginExtensionServices CreateServices(PluginId owner, IPluginResourceScope resources)
-    {
-        return new PluginExtensionServices(new EventService(this, resources), new UiService(this, owner, resources), new KeybindService(this, resources));
-    }
-
     private IPluginRegistration RegisterUi(PluginId owner, IPluginResourceScope resources, PluginUiContribution contribution, bool overlay)
     {
+        EnsureOwner(owner);
         if (contribution == null) throw new ArgumentNullException(nameof(contribution));
         var entry = new OwnedUiContribution(owner, contribution);
         var registration = new CallbackRegistration("ui:" + contribution.Id, () => { lock (gate) (overlay ? overlays : settingsPages).Remove(entry); });
@@ -89,6 +94,7 @@ public sealed class PluginExtensionHost
 
     private IPluginRegistration RegisterSettingControl(PluginId owner, IPluginResourceScope resources, PluginSettingControl control)
     {
+        EnsureOwner(owner);
         if (control == null) throw new ArgumentNullException(nameof(control));
         var entry = new OwnedSettingControl(owner, control);
         var registration = new CallbackRegistration("setting:" + control.Id, () => { lock (gate) settingsControls.Remove(entry); });
@@ -96,14 +102,15 @@ public sealed class PluginExtensionHost
         return Own(resources, registration, PluginResourceKind.UserInterface);
     }
 
-    private IPluginRegistration RegisterKeybind(IPluginResourceScope resources, PluginKeybindDescriptor descriptor, Action handler)
+    private IPluginRegistration RegisterKeybind(PluginId owner, IPluginResourceScope resources, PluginKeybindDescriptor descriptor, Action handler)
     {
+        EnsureOwner(owner);
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (handler == null) throw new ArgumentNullException(nameof(handler));
         lock (gate)
         {
             if (keybinds.ContainsKey(descriptor.Id)) throw new InvalidOperationException("A keybind with this ID is already registered: " + descriptor.Id);
-            keybinds.Add(descriptor.Id, descriptor);
+            keybinds.Add(descriptor.Id, new OwnedKeybind(owner, descriptor));
         }
         var registration = new CallbackRegistration("keybind:" + descriptor.Id, () => { lock (gate) keybinds.Remove(descriptor.Id); });
         return Own(resources, registration, PluginResourceKind.Keybind);
@@ -121,6 +128,12 @@ public sealed class PluginExtensionHost
         return registration;
     }
 
+    private static void EnsureOwner(PluginId owner)
+    {
+        if (!owner.IsValid)
+            throw new ArgumentException("A valid owning plugin ID is required.", nameof(owner));
+    }
+
     /// <summary>Scoped general extension services.</summary>
     public sealed class PluginExtensionServices
     {
@@ -132,9 +145,9 @@ public sealed class PluginExtensionHost
 
     private sealed class EventService : IPluginEventService
     {
-        private readonly PluginExtensionHost host; private readonly IPluginResourceScope resources;
-        public EventService(PluginExtensionHost host, IPluginResourceScope resources) { this.host = host; this.resources = resources; }
-        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null) => host.Subscribe(resources, handler, options);
+        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
+        public EventService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
+        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null) => host.Subscribe(owner, resources, handler, options);
     }
     private sealed class UiService : IPluginUiService
     {
@@ -152,15 +165,15 @@ public sealed class PluginExtensionHost
     }
     private sealed class KeybindService : IPluginKeybindService
     {
-        private readonly PluginExtensionHost host; private readonly IPluginResourceScope resources;
-        public KeybindService(PluginExtensionHost host, IPluginResourceScope resources) { this.host = host; this.resources = resources; }
-        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler) => host.RegisterKeybind(resources, descriptor, handler);
+        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
+        public KeybindService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
+        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler) => host.RegisterKeybind(owner, resources, descriptor, handler);
     }
     private sealed class EventHandlerRegistration : CallbackRegistration
     {
         private readonly Action<object?> handler;
-        public EventHandlerRegistration(Type eventType, Action<object?> handler, bool once, Action<EventHandlerRegistration> remove) : base("event:" + eventType.FullName, () => { }) { EventType = eventType; this.handler = handler; Once = once; Remove = remove; }
-        public Type EventType { get; } public bool Once { get; } private Action<EventHandlerRegistration> Remove { get; }
+        public EventHandlerRegistration(PluginId owner, Type eventType, Action<object?> handler, bool once, Action<EventHandlerRegistration> remove) : base("event:" + owner.Value + ":" + eventType.FullName, () => { }) { Owner = owner; EventType = eventType; this.handler = handler; Once = once; Remove = remove; }
+        public PluginId Owner { get; } public Type EventType { get; } public bool Once { get; } private Action<EventHandlerRegistration> Remove { get; }
         public void Invoke(object? value) => handler(value);
         public override void Dispose() { if (IsReleased) return; base.Dispose(); Remove(this); }
     }
@@ -183,5 +196,11 @@ public sealed class PluginExtensionHost
         public OwnedSettingControl(PluginId owner, PluginSettingControl control) { Owner = owner; Control = control; }
         public PluginId Owner { get; }
         public PluginSettingControl Control { get; }
+    }
+    private sealed class OwnedKeybind
+    {
+        public OwnedKeybind(PluginId owner, PluginKeybindDescriptor descriptor) { Owner = owner; Descriptor = descriptor; }
+        public PluginId Owner { get; }
+        public PluginKeybindDescriptor Descriptor { get; }
     }
 }

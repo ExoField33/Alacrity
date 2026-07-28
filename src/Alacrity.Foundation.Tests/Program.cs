@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
@@ -20,6 +21,12 @@ internal static class Program
             PluginResourceKindValuesRemainStable();
             BridgeReflectionResolverCachesSuccessfulLookups();
             BridgeReflectionResolverReportsUnavailableSignatures();
+            TileStoragePreservesCompactDataAndMaterialization();
+            TileReferencePreservesMapAndStandaloneIdentity();
+            TileStorageCopiesAndClearsPredictably();
+            TileStorageBulkOperationsPreserveSnapshots();
+            TileStorageMaterializationBitmapPreservesWordBoundaries();
+            TileStorageRejectsStaleWorldHandles();
             TrustMetadataRejectsMalformedHash();
             PatchAppliesAndRollsBackWithMockFiles();
             PatchRefusesUnexpectedContentAndWrongOwner();
@@ -45,6 +52,7 @@ internal static class Program
             PatchServiceRequiresPermissionTrustAndPolicy();
             ScopedServicesRespectDependenciesAndCleanup();
             ExtensionRegistrationsAreScopeOwned();
+            ExtensionServicesRequireOwnersAndIsolateScopes();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
             DependencyWarningsClearWhenResolved();
@@ -189,6 +197,257 @@ internal static class Program
         Assert(diagnostic.StartsWith("Unavailable:", StringComparison.Ordinal), "Unavailable bridge members must provide a clear diagnostic.");
         Assert(!resolver.TryResolveStaticField(typeof(BridgeReflectionFixture), "Counter", typeof(string), out _, out diagnostic), "The bridge resolver must reject an incorrect field type.");
         Assert(diagnostic.StartsWith("Unavailable:", StringComparison.Ordinal), "Unexpected field types must be reported as unavailable rather than invoked.");
+    }
+
+    private static void TileStoragePreservesCompactDataAndMaterialization()
+    {
+        Assert(System.Runtime.InteropServices.Marshal.SizeOf<TileData>() == 14, "TileData must remain a compact fourteen-byte vanilla state representation.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.Type)).ToInt32() == 0, "Tile type must begin the compact layout.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.Wall)).ToInt32() == 2, "Tile wall must remain adjacent to type.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.TileHeader)).ToInt32() == 4, "Tile header must retain its compact offset.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.FrameX)).ToInt32() == 6, "FrameX must retain its compact offset.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.FrameY)).ToInt32() == 8, "FrameY must retain its compact offset.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.Liquid)).ToInt32() == 10, "Liquid must retain its compact offset.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.Header)).ToInt32() == 11, "Header must retain its compact offset.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.Header2)).ToInt32() == 12, "Header2 must retain its compact offset.");
+        Assert(System.Runtime.InteropServices.Marshal.OffsetOf<TileData>(nameof(TileData.Header3)).ToInt32() == 13, "Header3 must retain its compact offset.");
+        var map = new AlacrityTileMap(4, 3);
+        Assert(map.Count == 12, "The tile map must use one flat storage element per coordinate.");
+        Assert(!map.IsMaterialized(2, 1), "New map coordinates must retain vanilla null-slot semantics until materialized.");
+
+        ref TileData tile = ref map.EnsureMaterialized(2, 1);
+        tile.Type = 321;
+        tile.Wall = 42;
+        tile.TileHeader = 0x8A5A;
+        tile.Header = 3;
+        tile.Header2 = 4;
+        tile.Header3 = 5;
+        tile.Liquid = 255;
+        tile.FrameX = -18;
+        tile.FrameY = 36;
+
+        TileSnapshot snapshot = map.GetSnapshot(2, 1);
+        Assert(snapshot.IsMaterialized && snapshot.Data.Type == 321 && snapshot.Data.FrameX == -18 && snapshot.Data.Header3 == 5, "Tile snapshots must include all compact state and materialization.");
+        AssertThrows<ArgumentOutOfRangeException>(() => map.GetSnapshot(-1, 0));
+        AssertThrows<ArgumentOutOfRangeException>(() => map.GetSnapshot(4, 0));
+    }
+
+    private static void TileStorageCopiesAndClearsPredictably()
+    {
+        var map = new AlacrityTileMap(5, 2);
+        TileData value = default(TileData);
+        value.Type = 7;
+        value.Wall = 8;
+        value.FrameX = 9;
+        map.FillRegion(0, 0, 3, 1, value);
+        map.CopyRegion(0, 0, 3, 1, 1, 0);
+        Assert(map.GetSnapshot(1, 0).Data.Type == 7 && map.GetSnapshot(3, 0).Data.Wall == 8, "Overlapping region copies must preserve source contents.");
+
+        value.Type = 9;
+        map.FillRegion(0, 0, 2, 1, value);
+        map.CopyRegion(0, 0, 2, 1, 0, 1);
+        Assert(map.GetSnapshot(0, 1).Data.Type == 9 && map.GetSnapshot(1, 1).Data.Type == 9, "Vertical region copies must preserve source contents.");
+
+        map.CopyTileData(1, 0, 4, 1);
+        Assert(map.GetSnapshot(4, 1).IsMaterialized && map.GetSnapshot(4, 1).Data.FrameX == 9, "Explicit tile copies must copy contents and materialization.");
+        TileData beforeClear = map.GetSnapshot(4, 1).Data;
+        map.ClearTile(4, 1);
+        TileData afterClear = map.GetSnapshot(4, 1).Data;
+        Assert(map.GetSnapshot(4, 1).IsMaterialized && afterClear.Type == beforeClear.Type && afterClear.Wall == beforeClear.Wall && afterClear.FrameX == beforeClear.FrameX, "ClearTile must retain the vanilla fields Terraria.Tile.ClearTile preserves.");
+        Assert((afterClear.TileHeader & 0x7460) == 0, "ClearTile must clear active, inactive, slope, and half-brick flags.");
+        map.ClearEverything(4, 1);
+        Assert(map.GetSnapshot(4, 1).IsMaterialized && map.GetSnapshot(4, 1).Data.Equals(default(TileData)), "ClearEverything must retain a materialized default tile.");
+        value.TileHeader = 0xFFFF;
+        value.Header = 0xFF;
+        value.Header3 = 0xFF;
+        map.SetSnapshot(0, 1, new TileSnapshot(value, true));
+        map.ClearTileData(0, 1, TileDataMask.Slope | TileDataMask.Wiring | TileDataMask.Actuator);
+        TileData selectivelyCleared = map.GetSnapshot(0, 1).Data;
+        Assert((selectivelyCleared.TileHeader & 0x7BC0) == 0 && (selectivelyCleared.Header & 0x80) == 0 && selectivelyCleared.Type == 9 && selectivelyCleared.Wall == 8, "Selective map clears must preserve unrelated tile state.");
+        map.SetSnapshot(1, 1, new TileSnapshot(value, true));
+        map.CopyPaintAndCoating(0, 1, 1, 1);
+        TileData copiedPaint = map.GetSnapshot(1, 1).Data;
+        Assert(copiedPaint.color() == selectivelyCleared.color() && copiedPaint.invisibleBlock() == selectivelyCleared.invisibleBlock() && copiedPaint.fullbrightBlock() == selectivelyCleared.fullbrightBlock(), "Map paint copies must preserve the source paint and coating state.");
+        map.UnmaterializeTile(4, 1);
+        Assert(!map.GetSnapshot(4, 1).IsMaterialized, "UnmaterializeTile must represent a vanilla null-slot transition.");
+
+        map.ClearRegion(0, 0, 4, 1);
+        Assert(!map.IsMaterialized(0, 0) && !map.IsMaterialized(3, 0), "ClearRegion must reset both values and materialization bits.");
+        AssertThrows<ArgumentOutOfRangeException>(() => map.FillRegion(4, 1, 2, 1, value));
+    }
+
+    private static void TileReferencePreservesMapAndStandaloneIdentity()
+    {
+        var map = new AlacrityTileMap(2, 2);
+        TileReference nullReference = map.GetReference(1, 1);
+        Assert(nullReference.IsNull, "An unmaterialized map coordinate must behave as a null tile reference.");
+        AssertThrows<NullReferenceException>(() => { nullReference.GetData(); });
+
+        TileReference first = map.GetOrCreateReference(1, 1);
+        TileReference alias = first;
+        alias.GetData().Type = 47;
+        Assert(map.GetSnapshot(1, 1).Data.Type == 47, "Copied map references must preserve the same compact tile identity.");
+        Assert(!first.IsNull && !alias.IsNull, "Materialized map references must be non-null.");
+
+        TileData replacement = default(TileData);
+        replacement.Type = 91;
+        map.SetSnapshot(1, 1, new TileSnapshot(replacement, true));
+        Assert(map.GetSnapshot(1, 1).Data.Type == 91, "Replacing a map slot must update the current map value.");
+        Assert(first.GetData().Type == 47 && alias.GetData().Type == 47, "A copied map reference must retain the displaced tile identity after slot replacement.");
+
+        TileReference source = map.GetOrCreateReference(0, 0);
+        source.GetData().Type = 122;
+        map.SetReference(0, 1, source);
+        TileReference assigned = map.GetReference(0, 1);
+        assigned.GetData().Wall = 19;
+        Assert(source.GetData().Wall == 19, "Tile-array assignment must preserve the source tile identity through an alias.");
+        map.SetSnapshot(0, 0, new TileSnapshot(default(TileData), true));
+        Assert(assigned.GetData().Type == 122 && assigned.GetData().Wall == 19, "Replacing the source coordinate must not invalidate a tile identity assigned to another coordinate.");
+
+        map.SetReference(1, 0, assigned);
+        TileReference chained = map.GetReference(1, 0);
+        chained.GetData().FrameX = 144;
+        Assert(assigned.GetData().FrameX == 144, "Chained array assignments must retain one shared tile identity.");
+        map.SetSnapshot(0, 1, new TileSnapshot(default(TileData), true));
+        Assert(chained.GetData().Type == 122 && chained.GetData().FrameX == 144, "Replacing an intermediate alias coordinate must preserve the remaining shared identity.");
+
+        TileReference standalone = TileReference.CreateStandalone();
+        TileReference standaloneAlias = standalone;
+        standaloneAlias.GetData().Wall = 18;
+        Assert(standalone.GetData().Wall == 18, "Copied standalone references must retain class-like mutation identity without entering the world map.");
+        Assert(standalone.GetData().Type == 0 && standalone.GetData().Wall == 18, "A standalone tile must begin with vanilla default raw state.");
+
+        TileReference copiedStandalone = TileReference.CreateCopy(standalone);
+        copiedStandalone.GetData().Wall = 31;
+        Assert(standalone.GetData().Wall == 18 && copiedStandalone.GetData().Wall == 31, "Tile copy construction must copy state without aliasing the source tile identity.");
+        TileReference copiedNull = TileReference.CreateCopy(default(TileReference));
+        Assert(!copiedNull.IsNull && copiedNull.GetData().Equals(default(TileData)), "Copy construction from a null tile must create a default standalone tile.");
+
+        TileReference runtimeTile = TileReferenceRuntime.Create();
+        TileReferenceRuntime.SetTypeValue(runtimeTile, 700);
+        TileReferenceRuntime.SetWall(runtimeTile, 91);
+        TileReferenceRuntime.SetLiquid(runtimeTile, 255);
+        TileReferenceRuntime.SetTileHeader(runtimeTile, 0xA5A5);
+        TileReferenceRuntime.SetHeader(runtimeTile, 0x5A);
+        TileReferenceRuntime.SetHeader2(runtimeTile, 0x81);
+        TileReferenceRuntime.SetHeader3(runtimeTile, 0x42);
+        TileReferenceRuntime.SetFrameX(runtimeTile, -144);
+        TileReferenceRuntime.SetFrameY(runtimeTile, 126);
+        Assert(TileReferenceRuntime.GetTypeValue(runtimeTile) == 700 && TileReferenceRuntime.GetWall(runtimeTile) == 91 && TileReferenceRuntime.GetLiquid(runtimeTile) == 255, "Runtime field lowerings must preserve primary raw tile state.");
+        Assert(TileReferenceRuntime.GetTileHeader(runtimeTile) == 0xA5A5 && TileReferenceRuntime.GetHeader(runtimeTile) == 0x5A && TileReferenceRuntime.GetHeader2(runtimeTile) == 0x81 && TileReferenceRuntime.GetHeader3(runtimeTile) == 0x42, "Runtime field lowerings must preserve every header byte.");
+        Assert(TileReferenceRuntime.GetFrameX(runtimeTile) == -144 && TileReferenceRuntime.GetFrameY(runtimeTile) == 126 && !TileReferenceRuntime.IsNull(runtimeTile), "Runtime field lowerings must preserve signed frames and null semantics.");
+    }
+
+    private static void TileStorageRejectsStaleWorldHandles()
+    {
+        var host = new AlacrityTileStorageHost();
+        AssertThrows<InvalidOperationException>(() => host.GetHandle(0, 0));
+
+        host.Initialize(2, 2);
+        TileHandle oldHandle = host.GetHandle(1, 1);
+        ref TileData tile = ref oldHandle.EnsureMaterialized();
+        tile.Type = 4;
+        Assert(oldHandle.GetSnapshot().Data.Type == 4, "A current tile handle must address its active world map.");
+
+        host.Initialize(2, 2);
+        AssertThrows<InvalidOperationException>(() => oldHandle.GetSnapshot());
+        TileHandle currentHandle = host.GetHandle(1, 1);
+        Assert(!currentHandle.GetSnapshot().IsMaterialized, "A world replacement must not leak old tile state into the next map.");
+
+        host.Reset();
+        AssertThrows<InvalidOperationException>(() => currentHandle.GetSnapshot());
+    }
+
+    private static void TileStorageBulkOperationsPreserveSnapshots()
+    {
+        AssertRegionCopyMatchesSnapshot(1, 1, 3, 2, 2, 1);
+        AssertRegionCopyMatchesSnapshot(2, 1, 3, 2, 1, 1);
+        AssertRegionCopyMatchesSnapshot(1, 0, 3, 2, 1, 1);
+        AssertRegionCopyMatchesSnapshot(1, 1, 3, 2, 1, 0);
+
+        var map = CreatePatternMap();
+        map.ClearRegion(1, 1, 3, 2);
+        for (int y = 1; y < 3; y++)
+        {
+            for (int x = 1; x < 4; x++)
+                Assert(!map.GetSnapshot(x, y).IsMaterialized && map.GetSnapshot(x, y).Data.Equals(default(TileData)), "ClearRegion must clear every value and materialization bit in its bounds.");
+        }
+    }
+
+    private static void AssertRegionCopyMatchesSnapshot(int sourceX, int sourceY, int width, int height, int destinationX, int destinationY)
+    {
+        var map = CreatePatternMap();
+        var before = new TileSnapshot[6, 4];
+        for (int y = 0; y < 4; y++)
+        {
+            for (int x = 0; x < 6; x++)
+                before[x, y] = map.GetSnapshot(x, y);
+        }
+
+        map.CopyRegion(sourceX, sourceY, width, height, destinationX, destinationY);
+        for (int y = 0; y < 4; y++)
+        {
+            for (int x = 0; x < 6; x++)
+            {
+                TileSnapshot expected = before[x, y];
+                if (x >= destinationX && x < destinationX + width && y >= destinationY && y < destinationY + height)
+                    expected = before[sourceX + x - destinationX, sourceY + y - destinationY];
+                TileSnapshot actual = map.GetSnapshot(x, y);
+                Assert(actual.IsMaterialized == expected.IsMaterialized && actual.Data.Equals(expected.Data), "CopyRegion must behave as a snapshot copy for every overlap direction.");
+            }
+        }
+    }
+
+    private static AlacrityTileMap CreatePatternMap()
+    {
+        var map = new AlacrityTileMap(6, 4);
+        for (int y = 0; y < 4; y++)
+        {
+            for (int x = 0; x < 6; x++)
+            {
+                bool materialized = ((x + y) & 1) == 0;
+                TileData data = default(TileData);
+                data.Type = (ushort)(x + y * 6 + 1);
+                data.Wall = (ushort)(100 + x + y * 6);
+                data.TileHeader = (ushort)(x << 12);
+                map.SetSnapshot(x, y, new TileSnapshot(data, materialized));
+            }
+        }
+        return map;
+    }
+
+    private static void TileStorageMaterializationBitmapPreservesWordBoundaries()
+    {
+        var map = new AlacrityTileMap(65, 2);
+        int[] boundaryIndices = { 31, 32, 63, 64, 95, 96, 127, 128, 129 };
+        foreach (int index in boundaryIndices)
+        {
+            int x = index % 65;
+            int y = index / 65;
+            TileData data = default(TileData);
+            data.Type = (ushort)(index + 1);
+            map.SetSnapshot(x, y, new TileSnapshot(data, true));
+        }
+
+        foreach (int index in boundaryIndices)
+        {
+            int x = index % 65;
+            int y = index / 65;
+            Assert(map.GetSnapshot(x, y).IsMaterialized && map.GetSnapshot(x, y).Data.Type == index + 1, "Materialization bits must preserve every word-boundary coordinate.");
+        }
+
+        map.CopyRegion(30, 0, 34, 1, 31, 1);
+        for (int column = 0; column < 34; column++)
+        {
+            TileSnapshot expected = map.GetSnapshot(30 + column, 0);
+            TileSnapshot actual = map.GetSnapshot(31 + column, 1);
+            Assert(actual.IsMaterialized == expected.IsMaterialized && actual.Data.Equals(expected.Data), "Cross-word region copies must preserve snapshot materialization and data.");
+        }
+
+        map.ClearRegion(31, 1, 34, 1);
+        for (int x = 31; x < 65; x++)
+            Assert(!map.GetSnapshot(x, 1).IsMaterialized, "Cross-word region clears must clear every affected materialization bit.");
+        Assert(map.GetSnapshot(31, 0).IsMaterialized && map.GetSnapshot(32, 0).IsMaterialized, "Region clears must not disturb materialization bits outside the requested row.");
     }
 
     private static void LifecycleCleansResourcesInReverseOrder()
@@ -710,6 +969,55 @@ internal static class Program
         Assert(host.GetSettingsPages(manifest.Id).Count == 0, "Disabling a plugin must remove its settings-page registrations with the owning scope.");
         Assert(host.GetSettingsControls(manifest.Id).Count == 0, "Disabling a plugin must remove typed setting controls with the owning scope.");
         scope.Dispose();
+    }
+
+    private static void ExtensionServicesRequireOwnersAndIsolateScopes()
+    {
+        var host = new PluginExtensionHost();
+        var invalidScope = new PluginResourceScope();
+        AssertThrows<ArgumentException>(() => host.CreateServices(default(PluginId), invalidScope));
+        var invalidManifest = new PluginManifest(default, "Invalid", new Version(1, 0), "Tests", "Invalid owner", new[] { "1.4.5.6" });
+        AssertThrows<ArgumentException>(() => host.CreateServices(invalidManifest, invalidScope));
+        invalidScope.Dispose();
+
+        var firstManifest = new PluginManifest(new PluginId("first.extensions"), "First", new Version(1, 0), "Tests", "First extension owner", new[] { "1.4.5.6" });
+        var secondManifest = new PluginManifest(new PluginId("second.extensions"), "Second", new Version(1, 0), "Tests", "Second extension owner", new[] { "1.4.5.6" });
+        var firstScope = new PluginResourceScope();
+        var secondScope = new PluginResourceScope();
+        var first = host.CreateServices(firstManifest, firstScope);
+        var second = host.CreateServices(secondManifest, secondScope);
+        var firstEvents = 0;
+        var secondEvents = 0;
+
+        first.Events.Subscribe<string>(_ => firstEvents++);
+        first.Keybinds.Register(new PluginKeybindDescriptor("first-keybind", "P", "First"), () => { });
+        first.Ui.RegisterSettingsPage(new PluginUiContribution("first-page", "First Page"));
+        first.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("first-control", "First Control", () => true, _ => { }));
+        first.Ui.RegisterOverlay(new PluginUiContribution("first-overlay", "First Overlay"));
+        second.Events.Subscribe<string>(_ => secondEvents++);
+        second.Keybinds.Register(new PluginKeybindDescriptor("second-keybind", "O", "Second"), () => { });
+        second.Ui.RegisterSettingsPage(new PluginUiContribution("second-page", "Second Page"));
+        second.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("second-control", "Second Control", () => true, _ => { }));
+        second.Ui.RegisterOverlay(new PluginUiContribution("second-overlay", "Second Overlay"));
+
+        Assert(host.GetSettingsPages(firstManifest.Id).Single().Id == "first-page", "Settings pages must be attributed to their owning plugin.");
+        Assert(host.GetSettingsControls(firstManifest.Id).Single().Id == "first-control", "Settings controls must be attributed to their owning plugin.");
+        Assert(host.GetOverlays(firstManifest.Id).Single().Id == "first-overlay", "Overlays must be attributed to their owning plugin.");
+        Assert(host.GetSettingsPages(secondManifest.Id).Single().Id == "second-page", "Other plugin contributions must remain separately owned.");
+        host.Publish("before cleanup");
+        Assert(firstEvents == 1 && secondEvents == 1, "Each owned event service must receive host events.");
+
+        firstScope.ReleaseAll();
+        Assert(host.GetSettingsPages(firstManifest.Id).Count == 0 && host.GetSettingsControls(firstManifest.Id).Count == 0 && host.GetOverlays(firstManifest.Id).Count == 0, "Releasing a plugin scope must remove only that plugin's UI registrations.");
+        Assert(host.GetSettingsPages(secondManifest.Id).Count == 1 && host.GetSettingsControls(secondManifest.Id).Count == 1 && host.GetOverlays(secondManifest.Id).Count == 1, "Releasing one plugin scope must preserve other plugins' contributions.");
+        host.Publish("after cleanup");
+        Assert(firstEvents == 1 && secondEvents == 2, "Releasing one plugin scope must remove only its event registrations.");
+
+        var replacementScope = new PluginResourceScope();
+        host.CreateServices(firstManifest.Id, replacementScope).Keybinds.Register(new PluginKeybindDescriptor("first-keybind", "P", "First"), () => { });
+        replacementScope.Dispose();
+        firstScope.Dispose();
+        secondScope.Dispose();
     }
 
     private static void PluginDataAndSettingsStayIsolated()
