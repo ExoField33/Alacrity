@@ -145,6 +145,10 @@ public interface IPluginContext
     IPluginKeybindService Keybinds { get; }
     /// <summary>UI contribution registrations interpreted by the host application.</summary>
     IPluginUiService Ui { get; }
+    /// <summary>Bounded host-owned overlay registrations with no raw rendering access.</summary>
+    IPluginOverlayService Overlays { get; }
+    /// <summary>Host-provided Terraria services with no raw Terraria objects exposed.</summary>
+    ITerrariaServices Terraria { get; }
     /// <summary>Read-only multiplayer session and server policy state.</summary>
     IMultiplayerSession Multiplayer { get; }
 }

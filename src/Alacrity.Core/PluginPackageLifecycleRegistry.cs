@@ -15,6 +15,7 @@ public enum PluginPackageLifecycleState
     Disabled,
     Faulted,
     RecoveryBlocked,
+    Incompatible,
     RestartRequired,
     Uninstalled
 }
@@ -58,6 +59,8 @@ public sealed class PluginPackageLifecycleRegistry
     }
     /// <summary>Marks activation unavailable until patch recovery is resolved.</summary>
     public void MarkRecoveryBlocked(PluginId id, string reason) { var record = Get(id); record.State = PluginPackageLifecycleState.RecoveryBlocked; record.Detail = reason; }
+    /// <summary>Records host-side game-version rejection without treating package code as faulty.</summary>
+    public void MarkIncompatible(PluginId id, string reason) { var record = Get(id); record.State = PluginPackageLifecycleState.Incompatible; record.Detail = reason; }
     /// <summary>Marks a package change that cannot become active until the next restart.</summary>
     public void MarkRestartRequired(PluginId id, string reason) { var record = Get(id); record.State = PluginPackageLifecycleState.RestartRequired; record.Detail = reason; }
     /// <summary>Marks a package removed after host-owned uninstall completes.</summary>

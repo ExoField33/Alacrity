@@ -1,0 +1,279 @@
+# Proposal generated from the 2026-07-22 repository analysis.
+# This is intentionally editable and is not an implementation manifest.
+schemaVersion: 1
+platform:
+  id: alacrity
+  name: Alacrity
+  game: Terraria
+  supportedGameVersion: 1.4.5.6
+  defaultVanillaServerMode: true
+  confidence: high
+
+sharedServices:
+  - id: patch-runtime
+    name: Alacrity Patch Runtime
+    features:
+      - version-gated-patching
+      - patch-ownership-and-rollback
+      - reflection-metadata-cache
+      - lifecycle-and-shutdown
+      - immutable-game-snapshots
+  - id: configuration
+    name: Alacrity Configuration
+    features:
+      - legacy-ini-compatibility-read
+      - atomic-user-data-writes
+      - settings-migration
+  - id: diagnostics
+    name: Alacrity Diagnostics Service
+    features:
+      - rate-limited-feature-errors
+      - patch-status
+      - compatibility-reporting
+
+plugins:
+  - id: better-chat
+    name: Better Chat
+    description: Local chat editing, link interaction, and outgoing prefix convenience.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - chat-caret-navigation
+      - chat-selection
+      - chat-word-editing
+      - clickable-chat-links
+      - chat-link-hover-state
+      - chat-prefix
+    multiplayer:
+      multiplayerSafety: client-presentation-and-input
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: low
+      serverPolicyScopes: [client-ui]
+    confidence: high
+
+  - id: chat-moderation-ui
+    name: Player Visibility Controls
+    description: Local presentation filters for players, projectiles, pets, emotes, and bot-list display.
+    dependencies: [patch-runtime, configuration, tab-list]
+    features:
+      - hidden-player-rendering
+      - hidden-player-projectiles
+      - hidden-player-emotes
+      - hide-all-player-cycle
+      - best-effort-bot-list-filter
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: review-required
+      serverPolicyScopes: [client-visuals]
+    notes:
+      - Bot heuristics are not security or anti-cheat mechanisms.
+      - Must not suppress server packets, simulation, or authoritative state.
+    confidence: medium
+
+  - id: tab-list
+    name: Tab List
+    description: Base hold-Tab player list and its cache, sorting, ping, health, heads, and row controls.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - tab-list-base
+      - player-columns
+      - team-alphabetical-health-sorting
+      - ping-display
+      - player-heads
+      - health-and-respawn-display
+      - ghost-player-display
+      - player-visibility-controls
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: review-required
+      serverPolicyScopes: [client-ui]
+    confidence: high
+
+  - id: inspect-player
+    name: Inspect Player
+    description: On-demand read-only player snapshot and detailed player view.
+    dependencies: [patch-runtime, configuration, tab-list]
+    features:
+      - player-hover-selection
+      - player-information-view
+      - full-player-preview
+      - inventory-and-equipment-view
+      - item-hover-tooltips
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: review-required
+      serverPolicyScopes: [client-ui]
+    notes:
+      - Extract data only when the view is opened or explicitly refreshed.
+      - Never expose writable live Terraria objects through the SDK.
+    confidence: high
+
+  - id: held-item-overlay
+    name: Held Item Overlay
+    description: Emote-layer held-item presentation above remote players.
+    dependencies: [patch-runtime, tab-list, chat-moderation-ui]
+    features: [held-item-emote-layer]
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: low
+      serverPolicyScopes: [client-visuals]
+    confidence: high
+
+  - id: render-controls
+    name: Render Controls
+    description: Optional visual and safe draw-only performance controls.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - dust-rendering-and-simulation-controls
+      - dust-render-exceptions
+      - gore-rendering-and-simulation-controls
+      - damage-number-visibility
+      - entity-screen-culling
+      - dust-screen-culling
+      - special-tile-culling
+      - optimized-draw-black
+    multiplayer:
+      multiplayerSafety: client-rendering-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: low
+      serverPolicyScopes: [client-visuals]
+    notes:
+      - Simulation must continue when a draw-only toggle is disabled.
+      - Draw-black remains optional and benchmark/snapshot gated.
+    confidence: high
+
+  - id: diagnostics-overlay
+    name: Diagnostics Overlay
+    description: Client-only overlays for state inspection and performance debugging.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - npc-player-projectile-hitboxes
+      - npc-target-indicator
+      - npc-target-line
+      - tile-section-overlay
+      - dropped-item-labels
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: review-required
+      serverPolicyScopes: [client-diagnostics]
+    confidence: high
+
+  - id: ui-inspector
+    name: UI Inspector
+    description: Optional highest-priority hovered UI source/reference inspector.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - ui-element-observation
+      - immediate-mode-ui-identification
+      - hovered-element-outline
+      - reference-copy
+    multiplayer:
+      multiplayerSafety: client-diagnostics
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: none
+      serverPolicyScopes: [client-ui]
+    confidence: high
+
+  - id: server-browser
+    name: Server Browser
+    description: Persistent vanilla-compatible saved-server UI with on-demand ping and metadata.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - saved-server-list
+      - server-editor
+      - asynchronous-ping
+      - server-layout-editor
+      - reconnect-action
+    multiplayer:
+      multiplayerSafety: client-ui-and-observation
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: outbound-ping-only
+      competitiveImpact: none
+      serverPolicyScopes: [client-ui]
+    notes:
+      - Ping worker results require synchronized immutable publication.
+      - Server metadata must never be treated as gameplay authority.
+    confidence: high
+
+  - id: inactive-window
+    name: Inactive Window Handling
+    description: Focus-safe input suppression and optional inactive draw throttling.
+    dependencies: [patch-runtime, configuration]
+    features: [unfocused-input-guard, inactive-fps-cap, minimized-draw-reduction]
+    multiplayer:
+      multiplayerSafety: client-lifecycle-sensitive
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: low
+      serverPolicyScopes: [client-performance]
+    confidence: high
+
+  - id: audio-device
+    name: Audio Device Recovery
+    description: Reloads Terraria audio after Windows default endpoint changes.
+    dependencies: [patch-runtime]
+    features: [default-audio-endpoint-watch]
+    multiplayer:
+      multiplayerSafety: client-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: none
+      serverPolicyScopes: [client-audio]
+    confidence: high
+
+  - id: startup-performance
+    name: Startup Performance Experiments
+    description: Optional startup thread and memory experiments; not enabled by migration automatically.
+    dependencies: [patch-runtime, configuration, diagnostics]
+    features: [startup-threading, startup-memory-trim]
+    lifecycle: benchmark-gated
+    multiplayer:
+      multiplayerSafety: client-startup-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: none
+      serverPolicyScopes: [client-performance]
+    notes:
+      - Existing concerns about context switching, forced GC, finalizers, and working-set trimming remain open.
+    confidence: high
+
+restrictedFeatures:
+  - id: dash-keybind-sync
+    name: Dash Keybind Synchronization
+    currentPatch: P27
+    status: do-not-migrate-without-review
+    reason: Changes multiplayer player-control dirty-state and packet timing; outside ordinary client-only scope.
+    requiredReview: [packet-characterization, server-compatibility, security-policy, rollback]
+
+validationRules:
+  - no-duplicate-feature-assignments
+  - no-unassigned-features
+  - no-circular-dependencies
+  - patch-single-owner
+  - explicit-shared-resource-owner
+  - exact-terraria-version-gate
+  - vanilla-server-default

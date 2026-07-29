@@ -53,11 +53,14 @@ internal static class Program
             ScopedServicesRespectDependenciesAndCleanup();
             ExtensionRegistrationsAreScopeOwned();
             ExtensionServicesRequireOwnersAndIsolateScopes();
+            ChatVisibilityFiltersAreScopeOwned();
+            OverlayDispatchIsOrderedIsolatedAndScopeOwned();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
             DependencyWarningsClearWhenResolved();
             NotificationsExpireWithoutPersistence();
             PackageCatalogReadsManifestWithoutAssemblyLoad();
+            IncompatibleGameVersionNeverLoadsAssembly();
             PackageRegistryRetainsHostLoadFailure();
             PresenterProjectsRuntimePackageRows();
             SettingsSchemaMigrationPersistsOnce();
@@ -1020,6 +1023,25 @@ internal static class Program
         secondScope.Dispose();
     }
 
+    private static void ChatVisibilityFiltersAreScopeOwned()
+    {
+        var host = new PluginChatHost();
+        var firstManifest = new PluginManifest(new PluginId("first.chat"), "First", new Version(1, 0), "Tests", "Chat filter", new[] { "1.4.5.6" });
+        var secondManifest = new PluginManifest(new PluginId("second.chat"), "Second", new Version(1, 0), "Tests", "Chat filter", new[] { "1.4.5.6" });
+        var firstScope = new PluginResourceScope();
+        var secondScope = new PluginResourceScope();
+        host.CreateService(firstManifest, firstScope).RegisterMessageFilter(new ChatMessageFilterDescriptor("hide-players"), new TestChatFilter(ChatMessageOrigin.Player));
+        host.CreateService(secondManifest, secondScope).RegisterMessageFilter(new ChatMessageFilterDescriptor("hide-local"), new TestChatFilter(ChatMessageOrigin.LocalSystem));
+        Assert(!host.ShouldDisplay(ChatMessageOrigin.Player), "A scoped chat filter must receive the host-classified player origin.");
+        Assert(!host.ShouldDisplay(ChatMessageOrigin.LocalSystem), "A second plugin filter must independently receive local-system messages.");
+        Assert(host.ShouldDisplay(ChatMessageOrigin.Server), "Unfiltered server messages must remain visible.");
+        firstScope.ReleaseAll();
+        Assert(host.ShouldDisplay(ChatMessageOrigin.Player), "Removing one plugin scope must remove only its chat filter.");
+        Assert(!host.ShouldDisplay(ChatMessageOrigin.LocalSystem), "Remaining plugin filters must stay registered.");
+        firstScope.Dispose();
+        secondScope.Dispose();
+    }
+
     private static void PluginDataAndSettingsStayIsolated()
     {
         var root = Path.Combine(Path.GetTempPath(), "alacrity-data-test-" + Guid.NewGuid().ToString("N"));
@@ -1083,6 +1105,56 @@ internal static class Program
             Assert(catalog.Count == 1 && catalog[0].Manifest.Id == new PluginId("catalog.plugin"), "Catalog discovery must create verified metadata before any assembly is loaded.");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    private static void IncompatibleGameVersionNeverLoadsAssembly()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-version-admission-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string package = Path.Combine(root, "plugins", "version.test");
+            Directory.CreateDirectory(package);
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"version.test\",\"name\":\"Version Test\",\"version\":\"1.0.0\",\"publisher\":\"Tests\",\"description\":\"Compatibility test\",\"supportedGameVersions\":[\"9.9.9\"],\"entryAssembly\":\"missing.dll\",\"entryType\":\"Missing.Plugin\"}");
+            PluginPackageDescriptor descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
+            var runtime = new PluginRuntimeHost(
+                new PluginPackageCatalog(new PluginPackageManifestReader()),
+                new PluginAssemblyLoader(),
+                new PluginHostContextFactory(root, new PluginServiceHub(), new PluginExtensionHost(), new PluginCommandHost()),
+                "1.4.5.6");
+            bool rejected = false;
+            try
+            {
+                _ = runtime.LoadTrusted(descriptor, new PluginTrustVerificationResult(PluginTrustLevel.LocallyTrusted, "test"), new TestLogger(), new TestMultiplayerSession());
+            }
+            catch (PluginGameVersionCompatibilityException)
+            {
+                rejected = true;
+            }
+            Assert(rejected, "An incompatible plugin must be rejected before its missing entry assembly is considered.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void OverlayDispatchIsOrderedIsolatedAndScopeOwned()
+    {
+        var host = new PluginOverlayHost(TimeSpan.Zero);
+        var firstManifest = CreateManifest();
+        var secondManifest = new PluginManifest(new PluginId("second.plugin"), "Second", new Version(1, 0), "Tests", "Second test", new[] { "1.4.5.6" });
+        using var firstScope = new PluginResourceScope();
+        using var secondScope = new PluginResourceScope();
+        var order = new List<string>();
+        host.CreateService(firstManifest, firstScope).Register(new PluginOverlayDescriptor("foreground", PluginOverlayLayer.Foreground), (_, _) => order.Add("first"));
+        host.CreateService(secondManifest, secondScope).Register(new PluginOverlayDescriptor("background", PluginOverlayLayer.Background), (_, _) => order.Add("second"));
+        host.CreateService(secondManifest, secondScope).Register(new PluginOverlayDescriptor("failure", PluginOverlayLayer.WorldMarkers), (_, _) => throw new InvalidOperationException("expected overlay failure"));
+        host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, false, TimeSpan.Zero), new TestLogger());
+        Assert(order.SequenceEqual(new[] { "second", "first" }), "Overlays must dispatch in deterministic layer order and isolate a failing callback.");
+        firstScope.ReleaseAll();
+        order.Clear();
+        host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, false, TimeSpan.Zero));
+        Assert(order.SequenceEqual(new[] { "second" }) && host.CountFor(firstManifest.Id) == 0 && host.CountFor(secondManifest.Id) == 2, "Disabling one scope must remove only that plugin's overlays.");
     }
 
     private static void PackageRegistryRetainsHostLoadFailure()
@@ -1274,6 +1346,8 @@ internal static class Program
             Commands = new TestCommands();
             Keybinds = new TestKeybinds();
             Ui = new TestUi();
+            Overlays = new TestOverlays();
+            Terraria = new TestTerrariaServices();
             Multiplayer = new TestMultiplayerSession();
         }
 
@@ -1287,6 +1361,8 @@ internal static class Program
         public IPluginCommandService Commands { get; }
         public IPluginKeybindService Keybinds { get; }
         public IPluginUiService Ui { get; }
+        public IPluginOverlayService Overlays { get; }
+        public ITerrariaServices Terraria { get; }
         public IMultiplayerSession Multiplayer { get; }
     }
 
@@ -1363,6 +1439,40 @@ internal static class Program
         public IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution) => new TestRegistration("control");
         public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) => new TestRegistration("control");
         public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) => new TestRegistration("overlay");
+    }
+
+    private sealed class TestOverlays : IPluginOverlayService
+    {
+        public IPluginRegistration Register(PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw) => new TestRegistration("overlay:" + descriptor.Id);
+    }
+
+    private sealed class TestTerrariaServices : ITerrariaServices
+    {
+        public IPluginChatService Chat { get; } = new TestChatService();
+    }
+
+    private sealed class TestChatService : IPluginChatService
+    {
+        public IPluginRegistration RegisterInputEditor(ChatInputEditorDescriptor descriptor, IChatInputEditor editor) => new TestRegistration("chat-editor");
+        public IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator) => new TestRegistration("chat-decorator");
+        public IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter) => new TestRegistration("chat-filter");
+        public IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler) => new TestRegistration("chat-link");
+    }
+
+    private sealed class TestChatFilter : IChatMessageFilter
+    {
+        private readonly ChatMessageOrigin hidden;
+        public TestChatFilter(ChatMessageOrigin hidden) { this.hidden = hidden; }
+        public bool ShouldDisplay(ChatMessageOrigin origin) => origin != hidden;
+    }
+
+    private sealed class TestOverlayCanvas : IPluginOverlayCanvas
+    {
+        public void DrawText(string text, float x, float y, PluginOverlayColor color, float scale = 1f) { }
+        public void FillRectangle(float x, float y, float width, float height, PluginOverlayColor color) { }
+        public void DrawLine(float startX, float startY, float endX, float endY, PluginOverlayColor color, float thickness = 1f) { }
+        public void DrawAsset(string approvedAssetId, float x, float y, float scale = 1f, PluginOverlayColor? tint = null) { }
+        public void DrawWorldMarker(float worldX, float worldY, string text, PluginOverlayColor color) { }
     }
 
     private sealed class TestRegistration : IPluginRegistration

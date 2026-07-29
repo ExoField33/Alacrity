@@ -28,7 +28,14 @@ public sealed class PluginManagerRuntime
         registry.MarkTrusted(id, trust);
         var record = registry.Records.Single(record => record.Manifest.Id == id);
         if (record.State == PluginPackageLifecycleState.Faulted) return record;
-        registry.MarkLoaded(id, runtimeHost.LoadTrusted(record.Package, trust, logger, multiplayer));
+        try
+        {
+            registry.MarkLoaded(id, runtimeHost.LoadTrusted(record.Package, trust, logger, multiplayer));
+        }
+        catch (PluginGameVersionCompatibilityException exception)
+        {
+            registry.MarkIncompatible(id, exception.Message);
+        }
         return registry.Records.Single(candidate => candidate.Manifest.Id == id);
     }
     /// <summary>Enables a loaded package through recovery and dependency gating.</summary>

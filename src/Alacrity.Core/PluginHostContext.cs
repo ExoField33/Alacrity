@@ -6,7 +6,7 @@ namespace Alacrity.Core;
 /// <summary>Concrete host context assembled from verified package metadata and scope-owned services.</summary>
 public sealed class PluginHostContext : IPluginContext
 {
-    internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
+    internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginOverlayService overlays, ITerrariaServices terraria, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
     {
         Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
         Logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -17,6 +17,8 @@ public sealed class PluginHostContext : IPluginContext
         Commands = commands ?? throw new ArgumentNullException(nameof(commands));
         Keybinds = keybinds ?? throw new ArgumentNullException(nameof(keybinds));
         Ui = ui ?? throw new ArgumentNullException(nameof(ui));
+        Overlays = overlays ?? throw new ArgumentNullException(nameof(overlays));
+        Terraria = terraria ?? throw new ArgumentNullException(nameof(terraria));
         Services = services ?? throw new ArgumentNullException(nameof(services));
         Multiplayer = multiplayer ?? throw new ArgumentNullException(nameof(multiplayer));
     }
@@ -29,6 +31,8 @@ public sealed class PluginHostContext : IPluginContext
     public IPluginCommandService Commands { get; }
     public IPluginKeybindService Keybinds { get; }
     public IPluginUiService Ui { get; }
+    public IPluginOverlayService Overlays { get; }
+    public ITerrariaServices Terraria { get; }
     public IPluginServiceRegistry Services { get; }
     public IMultiplayerSession Multiplayer { get; }
 }
@@ -40,14 +44,18 @@ public sealed class PluginHostContextFactory
     private readonly PluginServiceHub services;
     private readonly PluginExtensionHost extensions;
     private readonly PluginCommandHost commands;
+    private readonly PluginOverlayHost overlays;
+    private readonly PluginChatHost chat;
 
-    public PluginHostContextFactory(string alacrityRoot, PluginServiceHub services, PluginExtensionHost extensions, PluginCommandHost commands)
+    public PluginHostContextFactory(string alacrityRoot, PluginServiceHub services, PluginExtensionHost extensions, PluginCommandHost commands, PluginOverlayHost? overlays = null, PluginChatHost? chat = null)
     {
         if (string.IsNullOrWhiteSpace(alacrityRoot)) throw new ArgumentException("An Alacrity root is required.", nameof(alacrityRoot));
         this.alacrityRoot = alacrityRoot;
         this.services = services ?? throw new ArgumentNullException(nameof(services));
         this.extensions = extensions ?? throw new ArgumentNullException(nameof(extensions));
         this.commands = commands ?? throw new ArgumentNullException(nameof(commands));
+        this.overlays = overlays ?? new PluginOverlayHost();
+        this.chat = chat ?? new PluginChatHost();
     }
 
     /// <summary>Creates a context after manifest verification and before plugin initialization.</summary>
@@ -60,6 +68,6 @@ public sealed class PluginHostContextFactory
         return new PluginHostContext(manifest, logger, resources,
             new PluginSettingsStore(alacrityRoot, manifest.Id), new PluginDataStore(alacrityRoot, manifest.Id),
             extensionServices.Events, commands.CreateService(resources), extensionServices.Keybinds,
-            extensionServices.Ui, services.CreateRegistry(manifest, resources), multiplayer);
+            extensionServices.Ui, overlays.CreateService(manifest, resources), new PluginTerrariaServices(chat.CreateService(manifest, resources)), services.CreateRegistry(manifest, resources), multiplayer);
     }
 }

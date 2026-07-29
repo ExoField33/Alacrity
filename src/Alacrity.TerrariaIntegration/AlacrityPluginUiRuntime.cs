@@ -23,6 +23,17 @@ namespace AlacrityTerraria
         private static Action<SpriteBatch> _drawIngamePluginSettings;
         private static Action<SpriteBatch> _drawNotifications;
         private static Func<bool> _handlePluginMenuInput;
+        private static Func<bool> _isBetterChatActive;
+        private static Func<string, bool, string> _processPlayerChatInput;
+        private static Func<string, string> _formatPlayerChatText;
+        private static Func<object, Color, string, object> _decorateChatMessage;
+        private static Func<byte, bool> _shouldDisplayNetworkChatMessage;
+        private static Func<bool> _shouldDisplayLocalChatMessage;
+        private static Action<object> _handleChatSnippetHover;
+        private static Func<object, bool> _handleChatSnippetClick;
+        private static Func<object, Color, Color> _getChatSnippetVisibleColor;
+        private static Action<object, object> _copyChatSnippetContext;
+        private static bool _chatBridgeResolved;
         private static Action<Color, float> _drawVersionNumber;
         private static bool _versionRendererResolved;
         private static bool _bridgeLoadAttempted;
@@ -150,6 +161,62 @@ namespace AlacrityTerraria
             }
         }
 
+        // These methods are called only from version-locked chat IL patches. They remain no-ops
+        // when the optional Core bridge or BetterChat package is unavailable.
+        public static bool IsBetterChatActive()
+        {
+            return EnsureChatBridge() && _isBetterChatActive != null && _isBetterChatActive();
+        }
+
+        public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
+        {
+            return EnsureChatBridge() && _processPlayerChatInput != null ? _processPlayerChatInput(text, allowMultiLine) : text;
+        }
+
+        public static string FormatPlayerChatText(string text)
+        {
+            if (EnsureChatBridge() && _formatPlayerChatText != null)
+                return _formatPlayerChatText(text);
+            return Main.instance != null && Main.instance.textBlinkerState == 1 ? (text ?? string.Empty) + "|" : text;
+        }
+
+        public static object DecorateChatMessage(object snippets, Color baseColor, string originalMessage)
+        {
+            return EnsureChatBridge() && _decorateChatMessage != null ? _decorateChatMessage(snippets, baseColor, originalMessage) : snippets;
+        }
+
+        public static bool ShouldDisplayNetworkChatMessage(byte messageAuthor)
+        {
+            return EnsureChatBridge() && _shouldDisplayNetworkChatMessage != null ? _shouldDisplayNetworkChatMessage(messageAuthor) : true;
+        }
+
+        public static bool ShouldDisplayLocalChatMessage()
+        {
+            return EnsureChatBridge() && _shouldDisplayLocalChatMessage != null ? _shouldDisplayLocalChatMessage() : true;
+        }
+
+        public static void HandleChatSnippetHover(object snippet)
+        {
+            if (EnsureChatBridge() && _handleChatSnippetHover != null)
+                _handleChatSnippetHover(snippet);
+        }
+
+        public static bool HandleChatSnippetClick(object snippet)
+        {
+            return EnsureChatBridge() && _handleChatSnippetClick != null && _handleChatSnippetClick(snippet);
+        }
+
+        public static Color GetChatSnippetVisibleColor(object snippet, Color color)
+        {
+            return EnsureChatBridge() && _getChatSnippetVisibleColor != null ? _getChatSnippetVisibleColor(snippet, color) : color;
+        }
+
+        public static void CopyChatSnippetContext(object source, object copy)
+        {
+            if (EnsureChatBridge() && _copyChatSnippetContext != null)
+                _copyChatSnippetContext(source, copy);
+        }
+
         private static bool EnsureVersionRenderer()
         {
             if (_versionRendererResolved)
@@ -240,6 +307,50 @@ namespace AlacrityTerraria
             }
         }
 
+        private static bool EnsureChatBridge()
+        {
+            if (_chatBridgeResolved)
+                return _isBetterChatActive != null;
+            _chatBridgeResolved = true;
+            if (!EnsureBridge())
+                return false;
+
+            try
+            {
+                Type bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                string diagnostic;
+                MethodInfo method;
+                Delegate callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "IsBetterChatActive", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); return false; }
+                _isBetterChatActive = (Func<bool>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "ProcessPlayerChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _processPlayerChatInput = (Func<string, bool, string>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "FormatPlayerChatText", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _formatPlayerChatText = (Func<string, string>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "DecorateChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _decorateChatMessage = (Func<object, Color, string, object>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayNetworkChatMessage", typeof(bool), new[] { typeof(byte) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<byte, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _shouldDisplayNetworkChatMessage = (Func<byte, bool>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayLocalChatMessage", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _shouldDisplayLocalChatMessage = (Func<bool>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "HandleChatSnippetHover", typeof(void), new[] { typeof(object) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Action<object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _handleChatSnippetHover = (Action<object>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "HandleChatSnippetClick", typeof(bool), new[] { typeof(object) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _handleChatSnippetClick = (Func<object, bool>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "GetChatSnippetVisibleColor", typeof(Color), new[] { typeof(object), typeof(Color) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, Color, Color>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _getChatSnippetVisibleColor = (Func<object, Color, Color>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "CopyChatSnippetContext", typeof(void), new[] { typeof(object), typeof(object) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Action<object, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _copyChatSnippetContext = (Action<object, object>)callback;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Resolve BetterChat bridge", exception);
+                ClearChatDelegates();
+                return false;
+            }
+        }
+
         private static void ClearBridgeDelegates()
         {
             _open = null;
@@ -247,6 +358,21 @@ namespace AlacrityTerraria
             _drawIngamePluginSettings = null;
             _drawNotifications = null;
             _handlePluginMenuInput = null;
+            ClearChatDelegates();
+        }
+
+        private static void ClearChatDelegates()
+        {
+            _isBetterChatActive = null;
+            _processPlayerChatInput = null;
+            _formatPlayerChatText = null;
+            _decorateChatMessage = null;
+            _shouldDisplayNetworkChatMessage = null;
+            _shouldDisplayLocalChatMessage = null;
+            _handleChatSnippetHover = null;
+            _handleChatSnippetClick = null;
+            _getChatSnippetVisibleColor = null;
+            _copyChatSnippetContext = null;
         }
 
         private static bool HandlePluginMenuInput()

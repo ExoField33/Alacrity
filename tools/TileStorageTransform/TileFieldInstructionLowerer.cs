@@ -39,7 +39,39 @@ public static class TileFieldInstructionLowerer
             }
         }
 
+        NormalizeInModuleMethodReferences(tileType.Module);
         return rewritten;
+    }
+
+    private static void NormalizeInModuleMethodReferences(ModuleDefinition module)
+    {
+        foreach (TypeDefinition type in Flatten(module.Types))
+        {
+            foreach (MethodDefinition method in type.Methods.Where(candidate => candidate.HasBody))
+            {
+                foreach (Instruction instruction in method.Body.Instructions)
+                {
+                    if (instruction.Operand is not MethodReference reference || reference is MethodDefinition)
+                        continue;
+
+                    MethodDefinition? definition;
+                    try { definition = reference.Resolve(); }
+                    catch (AssemblyResolutionException) { continue; }
+                    if (definition?.Module == module)
+                        instruction.Operand = definition;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<TypeDefinition> Flatten(IEnumerable<TypeDefinition> types)
+    {
+        foreach (TypeDefinition type in types)
+        {
+            yield return type;
+            foreach (TypeDefinition nested in Flatten(type.NestedTypes))
+                yield return nested;
+        }
     }
 
     private static void ValidateRuntimeSignature(TypeDefinition tileType, FieldReference field, MethodDefinition method, bool isSetter)

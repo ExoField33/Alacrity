@@ -26,6 +26,8 @@ public static class TileMethodInstructionLowerer
 
             method.Parameters.Insert(0, new ParameterDefinition("tile", ParameterAttributes.None, tileType));
             method.Attributes |= MethodAttributes.Static;
+            method.HasThis = false;
+            method.ExplicitThis = false;
             convertedMethods.Add(method);
         }
 

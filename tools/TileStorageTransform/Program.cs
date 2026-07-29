@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using Mono.Cecil;
 
 internal static class Program
 {
@@ -9,10 +10,12 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 4 && string.Equals(args[0], "--manifest", StringComparison.Ordinal))
+                return CreateMigrationManifest(args[1], args[2], args[3]);
             if (args.Length == 5 && string.Equals(args[0], "--copy", StringComparison.Ordinal))
                 return CreateCopyOnlyOutput(args[1], args[2], args[3], args[4]);
             if (args.Length != 3)
-                throw new ArgumentException("Usage: TileStorageTransform <Terraria.exe> <audit.json> <plan.json> | --copy <Terraria.exe> <audit.json> <plan.json> <output.exe>");
+                throw new ArgumentException("Usage: TileStorageTransform <Terraria.exe> <audit.json> <plan.json> | --manifest <Terraria.exe> <audit.json> <manifest.json> | --copy <Terraria.exe> <audit.json> <plan.json> <output.exe>");
 
             string executablePath = Path.GetFullPath(args[0]);
             string auditPath = Path.GetFullPath(args[1]);
@@ -80,6 +83,29 @@ internal static class Program
             throw new InvalidOperationException("The transformation plan is not ready. No output executable was created.");
 
         throw new InvalidOperationException("No verified tile IL lowerer is registered. No output executable was created.");
+    }
+
+    private static int CreateMigrationManifest(string executableArgument, string auditArgument, string outputArgument)
+    {
+        string executablePath = Path.GetFullPath(executableArgument);
+        string auditPath = Path.GetFullPath(auditArgument);
+        string outputPath = Path.GetFullPath(outputArgument);
+        VerifyInput(executablePath, auditPath);
+        TileStorageAuditSnapshot audit = JsonSerializer.Deserialize<TileStorageAuditSnapshot>(File.ReadAllText(auditPath))
+            ?? throw new InvalidOperationException("Tile-storage audit JSON was empty or invalid.");
+        if (!string.Equals(audit.Sha256, ComputeSha256(executablePath), StringComparison.Ordinal))
+            throw new InvalidOperationException("The audit does not belong to the supplied Terraria.exe.");
+
+        TileMigrationManifest manifest = TileMigrationManifestBuilder.Create(audit);
+        string? outputDirectory = Path.GetDirectoryName(outputPath);
+        if (string.IsNullOrEmpty(outputDirectory))
+            throw new InvalidOperationException("The manifest output path must include a directory.");
+        Directory.CreateDirectory(outputDirectory);
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"Wrote {outputPath}");
+        Console.WriteLine($"Migration domains: methods={manifest.MethodDomains.Count}, signatures={manifest.SignatureDomains.Count}, fields={manifest.TileReferenceFields.Count}, runtime={manifest.RuntimeDomains.Count}.");
+        Console.WriteLine("The manifest is planning-only. No executable was created or modified.");
+        return 0;
     }
 
     private static string ComputeSha256(string path)
@@ -459,5 +485,39 @@ public sealed class CopyOnlyPatchReceipt
         if (!string.Equals(currentHash, OutputHash, StringComparison.Ordinal))
             throw new InvalidOperationException("The output executable changed after the transaction and will not be deleted.");
         File.Delete(OutputPath);
+    }
+}
+
+/// <summary>
+/// Writes a verified Cecil transform only to a staging copy. This boundary is
+/// intentionally generic: a concrete lowerer must still prove every plan
+/// operation before the command-line tool may publish a Terraria output.
+/// </summary>
+public sealed class CecilStagingPatchTransaction
+{
+    private readonly CopyOnlyPatchTransaction transaction;
+
+    public CecilStagingPatchTransaction(string inputPath, string outputPath, string expectedInputHash)
+    {
+        transaction = new CopyOnlyPatchTransaction(inputPath, outputPath, expectedInputHash);
+    }
+
+    public CopyOnlyPatchReceipt Commit(TileTransformationPlan plan, Action<AssemblyDefinition, TileTransformationPlan> rewrite)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(rewrite);
+        if (!plan.CanTransform)
+            throw new InvalidOperationException("The transformation plan is not complete. No staging assembly was rewritten.");
+        if (string.IsNullOrWhiteSpace(plan.InputSha256))
+            throw new InvalidOperationException("The transformation plan is not bound to an input hash.");
+
+        return transaction.Commit(stagingPath =>
+        {
+            using AssemblyDefinition assembly = AssemblyDefinition.ReadAssembly(stagingPath, new ReaderParameters { InMemory = true });
+            rewrite(assembly, plan);
+            using var output = new MemoryStream();
+            assembly.Write(output);
+            File.WriteAllBytes(stagingPath, output.ToArray());
+        });
     }
 }

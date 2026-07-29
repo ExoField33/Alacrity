@@ -29,6 +29,7 @@ namespace AlacrityTerraria
         private static PluginNotificationCenter _notifications;
         private static PluginDependencyDiagnostics _diagnostics;
         private static PluginExtensionHost _extensions;
+        private static PluginChatHost _chat;
         private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
         private static readonly Color ResourcePackBorder = new Color(13, 20, 44) * 0.8f;
@@ -49,6 +50,126 @@ namespace AlacrityTerraria
         private static float _ingameDescriptionScroll;
         private static string _ingameHoveredSettingId;
         private static bool _enabledStateRestored;
+        private static bool _chatCatalogInitialized;
+
+        /// <summary>Returns whether an enabled plugin owns a chat editor. The injected hook calls this only while player chat is focused.</summary>
+        public static bool IsBetterChatActive()
+        {
+            try
+            {
+                EnsureChatRuntime();
+                return _chat != null && _chat.HasInputEditors;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("BetterChat activation", exception);
+                return false;
+            }
+        }
+
+        /// <summary>Processes player-chat input through the enabled scoped chat editor registrations.</summary>
+        public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
+        {
+            try
+            {
+                EnsureChatRuntime();
+                return _chat != null && _chat.HasInputEditors ? BetterChatRuntime.Process(_chat, text, allowMultiLine) : text;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("BetterChat input", exception);
+                return text;
+            }
+        }
+
+        /// <summary>Creates draw-only chat markup. It never modifies Main.chatText or outgoing packet text.</summary>
+        public static string FormatPlayerChatText(string text)
+        {
+            try { return BetterChatRuntime.FormatForDraw(IsBetterChatActive(), text); }
+            catch (Exception exception) { ReportOptionalUiFailure("BetterChat draw text", exception); return text; }
+        }
+
+        /// <summary>Decorates parsed normal chat snippets outside the draw loop.</summary>
+        public static object DecorateChatMessage(object snippets, Color baseColor, string originalMessage)
+        {
+            try
+            {
+                EnsureChatRuntime();
+                return _chat != null && _chat.HasMessageDecorators ? BetterChatRuntime.Decorate(_chat, snippets, baseColor, originalMessage) : snippets;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("BetterChat message decoration", exception);
+                return snippets;
+            }
+        }
+
+        /// <summary>Filters network chat before Terraria creates overhead or scrolling-chat entries.</summary>
+        public static bool ShouldDisplayNetworkChatMessage(byte messageAuthor)
+        {
+            try
+            {
+                EnsureChatRuntime();
+                if (_chat == null || !_chat.HasMessageFilters) return true;
+                return _chat.ShouldDisplay(messageAuthor == byte.MaxValue ? ChatMessageOrigin.Server : ChatMessageOrigin.Player);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("BetterChat network visibility", exception);
+                return true;
+            }
+        }
+
+        /// <summary>Filters client-originated system messages without affecting network receive behavior.</summary>
+        public static bool ShouldDisplayLocalChatMessage()
+        {
+            try
+            {
+                EnsureChatRuntime();
+                return _chat == null || !_chat.HasMessageFilters || _chat.ShouldDisplay(ChatMessageOrigin.LocalSystem);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("BetterChat local visibility", exception);
+                return true;
+            }
+        }
+
+        /// <summary>Shows bounded vanilla-style hover feedback and handles copy-on-right-click.</summary>
+        public static void HandleChatSnippetHover(object snippet)
+        {
+            try { if (IsBetterChatActive()) BetterChatRuntime.Hover(snippet); }
+            catch (Exception exception) { ReportOptionalUiFailure("BetterChat hover", exception); }
+        }
+
+        /// <summary>Activates only validated http or https links registered by an enabled plugin.</summary>
+        public static bool HandleChatSnippetClick(object snippet)
+        {
+            try
+            {
+                EnsureChatRuntime();
+                return _chat != null && _chat.HasLinkHandlers && BetterChatRuntime.Click(_chat, snippet);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("BetterChat link activation", exception);
+                return false;
+            }
+        }
+
+        /// <summary>Applies the current hover highlight without mutating the original snippet color.</summary>
+        public static Color GetChatSnippetVisibleColor(object snippet, Color color)
+        {
+            try { return IsBetterChatActive() ? BetterChatRuntime.VisibleColor(snippet, color) : color; }
+            catch (Exception exception) { ReportOptionalUiFailure("BetterChat hover color", exception); return color; }
+        }
+
+        /// <summary>Transfers parse-time line ownership when Terraria clones a snippet during layout.</summary>
+        public static void CopyChatSnippetContext(object source, object copy)
+        {
+            try { BetterChatRuntime.CopyContext(source, copy); }
+            catch (Exception exception) { ReportOptionalUiFailure("BetterChat snippet copy", exception); }
+        }
 
         public static void Open()
         {
@@ -628,7 +749,8 @@ namespace AlacrityTerraria
             Directory.CreateDirectory(patchDirectory);
             var patchHost = PatchHost.CreateManaged(root, Path.Combine(patchDirectory, "journal.json"));
             _extensions = new PluginExtensionHost();
-            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), _extensions, new PluginCommandHost());
+            _chat = new PluginChatHost();
+            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), _extensions, new PluginCommandHost(), null, _chat);
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
@@ -659,6 +781,15 @@ namespace AlacrityTerraria
                 }
             }
             RestoreEnabledPlugins();
+        }
+
+        private static void EnsureChatRuntime()
+        {
+            EnsurePluginManager();
+            if (_chatCatalogInitialized)
+                return;
+            _chatCatalogInitialized = true;
+            RefreshPluginCatalog();
         }
 
         private static string PluginStatePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-state.json");
@@ -859,19 +990,21 @@ namespace AlacrityTerraria
                 root.Append(footer);
                 var back = CreateFooterButton("Back", 0.7f, false, Close);
                 PlaceFooterButton(back, 0);
-                back.SetSnapPoint("GoBack", 0, null, null);
+                back.SetSnapPoint("GoBack", 0);
                 footer.Append(back);
 
                 var manage = CreateFooterButton("Manage Plugins", 0.48f, !_addRemoveView, () => { _addRemoveView = false; BuildPage(); });
                 PlaceFooterButton(manage, 1);
+                manage.SetSnapPoint("ManagePlugins", 0);
                 footer.Append(manage);
                 var addRemove = CreateFooterButton("Add / Remove Plugins", 0.34f, _addRemoveView, () => { _addRemoveView = true; BuildPage(); });
                 PlaceFooterButton(addRemove, 2);
+                addRemove.SetSnapPoint("AddRemovePlugins", 0);
                 footer.Append(addRemove);
 
                 var folder = CreateFooterButton("Open Folder", 0.48f, false, OpenPluginsFolder);
                 PlaceFooterButton(folder, 3);
-                folder.SetSnapPoint("OpenFolder", 0, null, null);
+                folder.SetSnapPoint("OpenFolder", 0);
                 footer.Append(folder);
 
                 _settingsHint = new UIText("", 0.7f, false) {
@@ -895,17 +1028,13 @@ namespace AlacrityTerraria
                 button.OverflowHidden = true;
             }
 
-            private static UIPanel CreateFooterButton(string text, float textScale, bool selected, Action activate)
+            private static UITextPanel<string> CreateFooterButton(string text, float textScale, bool selected, Action activate)
             {
-                var button = new UIPanel { BackgroundColor = selected ? new Color(73, 94, 171) : new Color(63, 82, 151) * 0.8f, OverflowHidden = true };
-                // Match UITextPanel's native 12px inset and large-font baseline without allowing the caption to size the button.
-                button.SetPadding(12f);
-                var label = new UIText(text, textScale, true) {
-                    HAlign = 0.5f,
-                    Top = new StyleDimension(10f * textScale * (1f - textScale), 0f),
+                var button = new UITextPanel<string>(text, textScale, large: true) {
+                    BackgroundColor = selected ? new Color(73, 94, 171) : new Color(63, 82, 151) * 0.8f,
                     OverflowHidden = true
                 };
-                button.Append(label);
+                button.SetPadding(12f);
                 button.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
                 button.OnMouseOut += (evt, element) => {
                     var panel = (UIPanel)element;
@@ -953,40 +1082,79 @@ namespace AlacrityTerraria
                 int startId = 3000;
                 int nextId = startId;
                 var allPoints = GetSnapPoints();
+
+                if (_addRemoveView)
+                {
+                    SetupPackageGamepadPoints(spriteBatch, allPoints, startId, ref nextId);
+                    return;
+                }
+
                 var availablePoints = _availableList.GetSnapPoints();
                 _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, availablePoints, _availableList);
                 var enabledPoints = _enabledList.GetSnapPoints();
                 _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, enabledPoints, _enabledList);
 
                 var availableDescription = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, availablePoints, "DescriptionOff");
-                var availableSettings = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, availablePoints, "SettingsOff");
                 var availableToggle = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, availablePoints, "ToggleToOn");
                 var enabledDescription = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, enabledPoints, "DescriptionOn");
                 var enabledSettings = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, enabledPoints, "SettingsOn");
                 var enabledToggle = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, enabledPoints, "ToggleToOff");
-                UILinkPoint back = null;
-                UILinkPoint folder = null;
-                foreach (SnapPoint point in allPoints)
-                {
-                    if (point.Name == "GoBack")
-                        back = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                    else if (point.Name == "OpenFolder")
-                        folder = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                }
+                GetFooterLinkPoints(allPoints, ref nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder);
 
-                _gamepadHelper.LinkVerticalStrips(availableDescription, availableSettings, 0);
-                _gamepadHelper.LinkVerticalStrips(availableSettings, availableToggle, 0);
+                // Disabled plugins intentionally have no settings action. Link their two actual actions directly.
+                _gamepadHelper.LinkVerticalStrips(availableDescription, availableToggle, 0);
                 _gamepadHelper.LinkVerticalStrips(availableToggle, enabledDescription, 0);
                 _gamepadHelper.LinkVerticalStrips(enabledDescription, enabledSettings, 0);
                 _gamepadHelper.LinkVerticalStrips(enabledSettings, enabledToggle, 0);
                 _gamepadHelper.LinkVerticalStripBottomSideToSingle(availableToggle, back);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(availableSettings, back);
                 _gamepadHelper.LinkVerticalStripBottomSideToSingle(availableDescription, back);
                 _gamepadHelper.LinkVerticalStripBottomSideToSingle(enabledToggle, folder);
                 _gamepadHelper.LinkVerticalStripBottomSideToSingle(enabledSettings, folder);
                 _gamepadHelper.LinkVerticalStripBottomSideToSingle(enabledDescription, folder);
-                _gamepadHelper.PairLeftRight(back, folder);
                 _gamepadHelper.MoveToVisuallyClosestPoint(startId, nextId);
+            }
+
+            private void SetupPackageGamepadPoints(SpriteBatch spriteBatch, List<SnapPoint> allPoints, int startId, ref int nextId)
+            {
+                var packagePoints = _packageList.GetSnapPoints();
+                _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, packagePoints, _packageList);
+                var description = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, packagePoints, "PackageDescription");
+                var uninstall = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, packagePoints, "PackageUninstall");
+                GetFooterLinkPoints(allPoints, ref nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder);
+
+                _gamepadHelper.LinkVerticalStrips(description, uninstall, 0);
+                _gamepadHelper.LinkVerticalStripBottomSideToSingle(description, back);
+                _gamepadHelper.LinkVerticalStripBottomSideToSingle(uninstall, folder);
+                LinkFooterStrip(back, manage, addRemove, folder);
+                _gamepadHelper.MoveToVisuallyClosestPoint(startId, nextId);
+            }
+
+            private void GetFooterLinkPoints(List<SnapPoint> allPoints, ref int nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder)
+            {
+                back = null;
+                manage = null;
+                addRemove = null;
+                folder = null;
+                foreach (SnapPoint point in allPoints)
+                {
+                    if (point.Name == "GoBack")
+                        back = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                    else if (point.Name == "ManagePlugins")
+                        manage = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                    else if (point.Name == "AddRemovePlugins")
+                        addRemove = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                    else if (point.Name == "OpenFolder")
+                        folder = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                }
+
+                LinkFooterStrip(back, manage, addRemove, folder);
+            }
+
+            private void LinkFooterStrip(UILinkPoint back, UILinkPoint manage, UILinkPoint addRemove, UILinkPoint folder)
+            {
+                _gamepadHelper.PairLeftRight(back, manage);
+                _gamepadHelper.PairLeftRight(manage, addRemove);
+                _gamepadHelper.PairLeftRight(addRemove, folder);
             }
 
             private void RefreshLists()
