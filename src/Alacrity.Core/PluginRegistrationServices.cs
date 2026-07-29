@@ -11,6 +11,9 @@ public sealed class PluginExtensionHost
     private readonly object gate = new object();
     private readonly Dictionary<Type, List<EventHandlerRegistration>> eventHandlers = new Dictionary<Type, List<EventHandlerRegistration>>();
     private readonly Dictionary<string, OwnedKeybind> keybinds = new Dictionary<string, OwnedKeybind>(StringComparer.Ordinal);
+    private IReadOnlyList<PluginKeybindRegistration> keybindSnapshot = Array.Empty<PluginKeybindRegistration>();
+    private bool keybindSnapshotDirty = true;
+    private long keybindVersion;
     private readonly List<OwnedUiContribution> settingsPages = new List<OwnedUiContribution>();
     private readonly List<OwnedSettingControl> settingsControls = new List<OwnedSettingControl>();
     private readonly List<OwnedUiContribution> overlays = new List<OwnedUiContribution>();
@@ -52,6 +55,93 @@ public sealed class PluginExtensionHost
     {
         lock (gate)
             return overlays.Where(overlay => overlay.Owner == pluginId).Select(overlay => overlay.Contribution).ToArray();
+    }
+
+    /// <summary>Returns active keybind rows in deterministic plugin and registration order for the Terraria controls adapter.</summary>
+    public IReadOnlyList<PluginKeybindRegistration> GetKeybinds()
+    {
+        lock (gate)
+        {
+            if (keybindSnapshotDirty)
+            {
+                keybindSnapshot = Array.AsReadOnly(keybinds.Values
+                    .OrderBy(keybind => keybind.Owner.Value, StringComparer.Ordinal)
+                    .ThenBy(keybind => keybind.Sequence)
+                    .Select(keybind => new PluginKeybindRegistration(keybind.Owner, keybind.Heading, keybind.Descriptor))
+                    .ToArray());
+                keybindSnapshotDirty = false;
+            }
+
+            return keybindSnapshot;
+        }
+    }
+
+    /// <summary>Changes whenever the host-owned keybind registry gains or loses a registration.</summary>
+    public long KeybindVersion
+    {
+        get
+        {
+            lock (gate)
+                return keybindVersion;
+        }
+    }
+
+    /// <summary>
+    /// Invokes a registered keybind by its host-qualified ID. Input adapters call this only after
+    /// they have observed a fresh user key press; plugin code cannot invoke another plugin's binding.
+    /// </summary>
+    public bool TryInvokeKeybind(string hostId, out Exception? failure)
+    {
+        if (string.IsNullOrWhiteSpace(hostId)) throw new ArgumentException("A host keybind ID is required.", nameof(hostId));
+
+        OwnedKeybind? keybind;
+        lock (gate)
+            keybinds.TryGetValue(hostId, out keybind);
+
+        if (keybind == null)
+        {
+            failure = null;
+            return false;
+        }
+
+        try
+        {
+            keybind.PressHandler?.Invoke();
+            failure = null;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            return false;
+        }
+    }
+
+    /// <summary>Delivers a state transition to a registered held keybind.</summary>
+    public bool TrySetKeybindState(string hostId, bool isDown, out Exception? failure)
+    {
+        if (string.IsNullOrWhiteSpace(hostId)) throw new ArgumentException("A host keybind ID is required.", nameof(hostId));
+
+        OwnedKeybind? keybind;
+        lock (gate)
+            keybinds.TryGetValue(hostId, out keybind);
+        if (keybind == null)
+        {
+            failure = null;
+            return false;
+        }
+
+        try
+        {
+            keybind.StateHandler?.Invoke(isDown);
+            failure = null;
+            return keybind.StateHandler != null;
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            return false;
+        }
     }
 
     /// <summary>Publishes an immutable host event snapshot to current subscribers.</summary>
@@ -104,18 +194,39 @@ public sealed class PluginExtensionHost
         return Own(resources, registration, PluginResourceKind.UserInterface);
     }
 
-    private IPluginRegistration RegisterKeybind(PluginId owner, IPluginResourceScope resources, PluginKeybindDescriptor descriptor, Action handler)
+    private IPluginRegistration RegisterKeybind(PluginId owner, string heading, IPluginResourceScope resources, PluginKeybindDescriptor descriptor, Action? handler, Action<bool>? stateHandler)
     {
         EnsureOwner(owner);
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
-        if (handler == null) throw new ArgumentNullException(nameof(handler));
+        if (handler == null && stateHandler == null) throw new ArgumentException("A keybind handler is required.");
+        if (descriptor.Activation == PluginKeybindActivation.Hold && stateHandler == null) throw new ArgumentException("Held keybinds require a state handler.", nameof(stateHandler));
+        if (descriptor.Activation == PluginKeybindActivation.Press && handler == null) throw new ArgumentException("Press keybinds require a press handler.", nameof(handler));
         lock (gate)
         {
-            if (keybinds.ContainsKey(descriptor.Id)) throw new InvalidOperationException("A keybind with this ID is already registered: " + descriptor.Id);
-            keybinds.Add(descriptor.Id, new OwnedKeybind(owner, descriptor));
+            string hostId = GetHostKeybindId(owner, descriptor);
+            if (keybinds.ContainsKey(hostId)) throw new InvalidOperationException("A keybind with this ID is already registered by this plugin: " + descriptor.Id);
+            keybinds.Add(hostId, new OwnedKeybind(owner, heading, descriptor, handler, stateHandler, keybinds.Count));
+            keybindSnapshotDirty = true;
+            keybindVersion++;
         }
-        var registration = new CallbackRegistration("keybind:" + descriptor.Id, () => { lock (gate) keybinds.Remove(descriptor.Id); });
+        string registeredHostId = GetHostKeybindId(owner, descriptor);
+        var registration = new CallbackRegistration("keybind:" + registeredHostId, () =>
+        {
+            lock (gate)
+            {
+                if (keybinds.Remove(registeredHostId))
+                {
+                    keybindSnapshotDirty = true;
+                    keybindVersion++;
+                }
+            }
+        });
         return Own(resources, registration, PluginResourceKind.Keybind);
+    }
+
+    private static string GetHostKeybindId(PluginId owner, PluginKeybindDescriptor descriptor)
+    {
+        return owner.Value + "." + descriptor.Id;
     }
 
     private void RemoveEvent(EventHandlerRegistration registration)
@@ -179,7 +290,14 @@ public sealed class PluginExtensionHost
         {
             if (manifest == null || (manifest.Capabilities & PluginCapability.Input) == 0)
                 throw new UnauthorizedAccessException("Keybind registrations require the Input capability.");
-            return host.RegisterKeybind(owner, resources, descriptor, handler);
+            return host.RegisterKeybind(owner, manifest.Name, resources, descriptor, handler, null);
+        }
+
+        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action<bool> stateHandler)
+        {
+            if (manifest == null || (manifest.Capabilities & PluginCapability.Input) == 0)
+                throw new UnauthorizedAccessException("Keybind registrations require the Input capability.");
+            return host.RegisterKeybind(owner, manifest.Name, resources, descriptor, null, stateHandler);
         }
     }
     private sealed class EventHandlerRegistration : CallbackRegistration
@@ -212,8 +330,12 @@ public sealed class PluginExtensionHost
     }
     private sealed class OwnedKeybind
     {
-        public OwnedKeybind(PluginId owner, PluginKeybindDescriptor descriptor) { Owner = owner; Descriptor = descriptor; }
+        public OwnedKeybind(PluginId owner, string heading, PluginKeybindDescriptor descriptor, Action? pressHandler, Action<bool>? stateHandler, long sequence) { Owner = owner; Heading = heading; Descriptor = descriptor; PressHandler = pressHandler; StateHandler = stateHandler; Sequence = sequence; }
         public PluginId Owner { get; }
+        public string Heading { get; }
         public PluginKeybindDescriptor Descriptor { get; }
+        public Action? PressHandler { get; }
+        public Action<bool>? StateHandler { get; }
+        public long Sequence { get; }
     }
 }

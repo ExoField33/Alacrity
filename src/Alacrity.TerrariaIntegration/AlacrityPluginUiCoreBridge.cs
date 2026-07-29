@@ -4,12 +4,16 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using Terraria.Audio;
+using Terraria.GameContent;
+using Terraria.GameContent.UI.Chat;
 using Terraria.GameContent.UI.States;
 using Terraria.ID;
 using Microsoft.Xna.Framework;
@@ -17,7 +21,9 @@ using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Terraria;
 using Terraria.GameContent.UI.Elements;
+using Terraria.GameInput;
 using Terraria.UI;
+using Terraria.UI.Chat;
 using Terraria.UI.Gamepad;
 using Terraria.Utilities;
 
@@ -30,6 +36,7 @@ namespace AlacrityTerraria
         private static PluginNotificationCenter _notifications;
         private static PluginDependencyDiagnostics _diagnostics;
         private static PluginExtensionHost _extensions;
+        private static PluginServiceHub _serviceHub;
         private static PluginChatHost _chat;
         private static PluginUserInteractionHost _userInteraction;
         private static IPluginUserInteractionService _betterChatUserInteraction;
@@ -42,6 +49,8 @@ namespace AlacrityTerraria
         private static MethodInfo _assetFrame;
         private static PropertyInfo _assetValue;
         private static FieldInfo _mainAssetsField;
+        private static bool _pingLookupAttempted;
+        private static PropertyInfo _currentPingProperty;
         private static readonly HashSet<string> ReportedOptionalUiFailures = new HashSet<string>(StringComparer.Ordinal);
         private static Texture2D _ingameBlankTexture;
         private static bool _pluginMenuOpen;
@@ -57,6 +66,15 @@ namespace AlacrityTerraria
         private static readonly PluginId BetterChatPluginId = new PluginId("alacrity.better-chat");
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
+        private static readonly Dictionary<string, bool> KeybindDownState = new Dictionary<string, bool>(StringComparer.Ordinal);
+        private static long _keybindRegistryVersion = -1;
+        private static readonly ConditionalWeakTable<UIManageControls, KeybindControlsState> KeybindControlsStates = new ConditionalWeakTable<UIManageControls, KeybindControlsState>();
+        private static FieldInfo _controlsListField;
+        private static FieldInfo _controlsKeyboardField;
+        private static FieldInfo _controlsGameplayField;
+        private static readonly object KeybindPersistenceGate = new object();
+        private static readonly Dictionary<string, List<string>> PersistedPluginKeybinds = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        private static bool _pluginKeybindsLoaded;
 
         /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
         public static void BootstrapPluginRuntime()
@@ -289,6 +307,270 @@ namespace AlacrityTerraria
                 Utils.DrawBorderString(spriteBatch, notification.Message, new Vector2(Main.screenWidth - 18, y), Color.LightGoldenrodYellow, 0.72f, 1f, 0f, -1);
                 y += 24;
             }
+        }
+
+        /// <summary>Draws the Player List only while its owning plugin has published an active presentation service.</summary>
+        public static void DrawPlayerList(SpriteBatch spriteBatch)
+        {
+            if (spriteBatch == null || _serviceHub == null ||
+                !_serviceHub.TryGetHostService<IPlayerListService>(out var playerList))
+            {
+                PlayerListRuntime.Reset();
+                return;
+            }
+
+            try
+            {
+                PlayerListRuntime.Draw(spriteBatch, playerList);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Player List draw", exception);
+            }
+        }
+
+        /// <summary>
+        /// Appends verified plugin bindings to Terraria's native controls list. The controls adapter
+        /// is deliberately optional: a changed UI signature leaves vanilla controls untouched.
+        /// </summary>
+        public static void AppendPluginKeybindControls(UIManageControls controls)
+        {
+            if (!Volatile.Read(ref _runtimeBootstrapped) || _extensions == null || controls == null)
+                return;
+
+            try
+            {
+                var keybinds = _extensions.GetKeybinds();
+                if (keybinds.Count == 0 || !TryGetControlsList(controls, out var list))
+                    return;
+
+                long version = _extensions.KeybindVersion;
+                var state = KeybindControlsStates.GetOrCreateValue(controls);
+                if (state.Version == version && list.Any(element => element is PluginKeybindControlGroup))
+                    return;
+
+                foreach (var existing in list.Where(element => element is PluginKeybindControlGroup).ToArray())
+                    list.Remove(existing);
+
+                var mode = GetControlsInputMode(controls);
+                int index = 10000;
+                foreach (var group in keybinds.GroupBy(keybind => keybind.Heading, StringComparer.Ordinal))
+                    list.Add(CreatePluginKeybindGroup(index++, group.Key, group.ToArray(), mode));
+                state.Version = version;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin controls-menu adapter", exception);
+            }
+        }
+
+        private static bool TryGetControlsList(UIManageControls controls, out UIList list)
+        {
+            list = null;
+            _controlsListField ??= typeof(UIManageControls).GetField("_uilist", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (_controlsListField == null || _controlsListField.FieldType != typeof(UIList))
+                throw new MissingFieldException(typeof(UIManageControls).FullName, "_uilist");
+            list = _controlsListField.GetValue(controls) as UIList;
+            return list != null;
+        }
+
+        private static InputMode GetControlsInputMode(UIManageControls controls)
+        {
+            _controlsKeyboardField ??= typeof(UIManageControls).GetField("OnKeyboard", BindingFlags.Instance | BindingFlags.NonPublic);
+            _controlsGameplayField ??= typeof(UIManageControls).GetField("OnGameplay", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (_controlsKeyboardField?.FieldType != typeof(bool) || _controlsGameplayField?.FieldType != typeof(bool))
+                throw new MissingFieldException(typeof(UIManageControls).FullName, "OnKeyboard/OnGameplay");
+
+            bool keyboard = (bool)_controlsKeyboardField.GetValue(controls);
+            bool gameplay = (bool)_controlsGameplayField.GetValue(controls);
+            if (keyboard)
+                return gameplay ? InputMode.Keyboard : InputMode.KeyboardUI;
+            return gameplay ? InputMode.XBoxGamepad : InputMode.XBoxGamepadUI;
+        }
+
+        private static UIElement CreatePluginKeybindGroup(int index, string heading, IReadOnlyList<PluginKeybindRegistration> keybinds, InputMode mode)
+        {
+            var group = new PluginKeybindControlGroup(index) { HAlign = 0.5f, Width = StyleDimension.Fill, Height = new StyleDimension(2000f, 0f) };
+            var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-16f, 1f), VAlign = 1f, BackgroundColor = Color.Lerp(new Color(33, 43, 79) * 0.8f, Color.MediumPurple, 0.18f) };
+            group.Append(panel);
+            var rows = new UIList { OverflowHidden = false, Width = StyleDimension.Fill, Height = new StyleDimension(-8f, 1f), VAlign = 1f, ListPadding = 5f };
+            panel.Append(rows);
+            foreach (var keybind in keybinds)
+            {
+                EnsureInputBinding(keybind, mode);
+                var row = new UISortableElement(index) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f), HAlign = 0.5f };
+                var item = new PluginKeybindingListItem(keybind, mode, panel.BackgroundColor) { Width = StyleDimension.Fill, Height = StyleDimension.Fill };
+                item.SetSnapPoint("Wide", index);
+                row.Append(item);
+                rows.Add(row);
+            }
+
+            panel.BackgroundColor = panel.BackgroundColor.MultiplyRGBA(new Color(111, 111, 111));
+            group.Append(new UITextPanel<string>(heading, 0.7f) { VAlign = 0f, HAlign = 0.5f });
+            group.Recalculate();
+            group.Height = new StyleDimension(rows.GetTotalHeight() + 46f, 0f);
+            return group;
+        }
+
+        private static void EnsureInputBinding(PluginKeybindRegistration keybind, InputMode mode)
+        {
+            var configuration = PlayerInput.CurrentProfile.InputModes[mode];
+            if (!configuration.KeyStatus.ContainsKey(keybind.HostId))
+            {
+                EnsurePluginKeybindsLoaded();
+                List<string> bindings;
+                lock (KeybindPersistenceGate)
+                    bindings = PersistedPluginKeybinds.TryGetValue(GetPersistedKeybindKey(keybind, mode), out var saved) ? new List<string>(saved) : mode == InputMode.Keyboard ? new List<string> { keybind.Descriptor.DefaultBinding } : new List<string>();
+                configuration.KeyStatus.Add(keybind.HostId, bindings);
+            }
+        }
+
+        private static void ObservePluginKeybindBindings(PluginKeybindRegistration keybind, InputMode mode, IReadOnlyList<string> bindings)
+        {
+            EnsurePluginKeybindsLoaded();
+            string key = GetPersistedKeybindKey(keybind, mode);
+            lock (KeybindPersistenceGate)
+            {
+                if (PersistedPluginKeybinds.TryGetValue(key, out var current) && current.SequenceEqual(bindings, StringComparer.Ordinal))
+                    return;
+                PersistedPluginKeybinds[key] = bindings.ToList();
+                SavePluginKeybinds();
+            }
+        }
+
+        private static string GetPersistedKeybindKey(PluginKeybindRegistration keybind, InputMode mode) => ((int)mode).ToString() + ":" + keybind.HostId;
+
+        private static string PluginKeybindsPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-keybinds.dat");
+
+        private static void EnsurePluginKeybindsLoaded()
+        {
+            lock (KeybindPersistenceGate)
+            {
+                if (_pluginKeybindsLoaded)
+                    return;
+                _pluginKeybindsLoaded = true;
+                try
+                {
+                    if (!File.Exists(PluginKeybindsPath))
+                        return;
+                    foreach (string line in File.ReadAllLines(PluginKeybindsPath))
+                    {
+                        string[] parts = line.Split('|');
+                        if (parts.Length != 2)
+                            continue;
+                        string key = Encoding.UTF8.GetString(Convert.FromBase64String(parts[0]));
+                        var bindings = new List<string>();
+                        if (!string.IsNullOrEmpty(parts[1]))
+                            foreach (string encoded in parts[1].Split(','))
+                                bindings.Add(Encoding.UTF8.GetString(Convert.FromBase64String(encoded)));
+                        PersistedPluginKeybinds[key] = bindings;
+                    }
+                }
+                catch (Exception exception)
+                {
+                    ReportOptionalUiFailure("Plugin keybind persistence load", exception);
+                    PersistedPluginKeybinds.Clear();
+                }
+            }
+        }
+
+        private static void SavePluginKeybinds()
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(PluginKeybindsPath));
+                var lines = PersistedPluginKeybinds.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => Convert.ToBase64String(Encoding.UTF8.GetBytes(pair.Key)) + "|" + string.Join(",", pair.Value.Select(binding => Convert.ToBase64String(Encoding.UTF8.GetBytes(binding))))).ToArray();
+                File.WriteAllLines(PluginKeybindsPath, lines);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin keybind persistence save", exception);
+            }
+        }
+
+        /// <summary>
+        /// Polls host-owned plugin bindings at the established gameplay UI boundary. The native
+        /// input profile remains the source of persisted bindings; no plugin receives raw input.
+        /// </summary>
+        public static void UpdatePluginKeybinds()
+        {
+            if (!Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown) || _extensions == null)
+                return;
+            if (Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
+                return;
+
+            try
+            {
+                var keybinds = _extensions.GetKeybinds();
+                if (keybinds.Count == 0)
+                {
+                    KeybindDownState.Clear();
+                    return;
+                }
+
+                if (_keybindRegistryVersion != _extensions.KeybindVersion)
+                    RemoveStaleKeybindState(keybinds, _extensions.KeybindVersion);
+
+                var keyboardState = Keyboard.GetState();
+                foreach (var keybind in keybinds)
+                {
+                    bool isDown = IsKeybindDown(keybind, keyboardState);
+                    bool wasDown = KeybindDownState.TryGetValue(keybind.HostId, out var previous) && previous;
+                    KeybindDownState[keybind.HostId] = isDown;
+                    bool changed = isDown != wasDown;
+                    bool invoked;
+                    Exception failure;
+                    if (keybind.Descriptor.Activation == PluginKeybindActivation.Hold)
+                    {
+                        if (!changed)
+                            continue;
+                        invoked = _extensions.TrySetKeybindState(keybind.HostId, isDown, out failure);
+                    }
+                    else
+                    {
+                        if (!isDown || wasDown)
+                            continue;
+                        invoked = _extensions.TryInvokeKeybind(keybind.HostId, out failure);
+                    }
+
+                    if (!invoked && failure != null)
+                    {
+                        _notifications?.Publish("Plugin keybind failed: " + keybind.Heading, TimeSpan.FromSeconds(4));
+                        ReportOptionalUiFailure("Plugin keybind " + keybind.HostId, failure);
+                    }
+                }
+
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin keybind dispatch", exception);
+            }
+        }
+
+        private static void RemoveStaleKeybindState(IReadOnlyList<PluginKeybindRegistration> keybinds, long version)
+        {
+            var active = new HashSet<string>(keybinds.Select(keybind => keybind.HostId), StringComparer.Ordinal);
+            foreach (var stale in KeybindDownState.Keys.Where(key => !active.Contains(key)).ToArray())
+                KeybindDownState.Remove(stale);
+            _keybindRegistryVersion = version;
+        }
+
+        private static bool IsKeybindDown(PluginKeybindRegistration keybind, KeyboardState keyboardState)
+        {
+            var configuration = PlayerInput.CurrentProfile?.InputModes[Terraria.GameInput.InputMode.Keyboard];
+            if (configuration == null)
+                return false;
+
+            EnsureInputBinding(keybind, InputMode.Keyboard);
+            var bindings = configuration.KeyStatus[keybind.HostId];
+
+            foreach (var binding in bindings)
+            {
+                if (Enum.TryParse(binding, true, out Keys key) && keyboardState.IsKeyDown(key))
+                    return true;
+            }
+
+            return false;
         }
 
         private static void OpenDescription(PluginManagerRow plugin)
@@ -679,13 +961,36 @@ namespace AlacrityTerraria
             return (Texture2D)_assetValue.GetValue(asset, null);
         }
 
+        internal static Texture2D RequestApprovedTexture(string path) => RequestTextureValue(path);
+
+        internal static int GetCurrentPing()
+        {
+            try
+            {
+                if (!_pingLookupAttempted)
+                {
+                    _pingLookupAttempted = true;
+                    Type pingType = Type.GetType("Terraria.Net.Ping, Terraria", throwOnError: false);
+                    _currentPingProperty = pingType?.GetProperty("CurrentPing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                }
+
+                object value = _currentPingProperty?.GetValue(null, null);
+                return value is int ping ? ping : 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
         private static object GetMainAssets()
         {
-            _mainAssetsField = _mainAssetsField ?? typeof(Main).GetField("Assets", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            _mainAssetsField = _mainAssetsField ?? typeof(Main).GetField("Assets", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
             if (_mainAssetsField == null)
                 throw new MissingFieldException(typeof(Main).FullName, "Assets");
 
-            object assets = _mainAssetsField.GetValue(null);
+            object owner = _mainAssetsField.IsStatic ? null : Main.instance;
+            object assets = _mainAssetsField.GetValue(owner);
             if (assets == null)
                 throw new InvalidOperationException("Terraria Main.Assets is unavailable.");
             return assets;
@@ -797,10 +1102,11 @@ namespace AlacrityTerraria
             Directory.CreateDirectory(patchDirectory);
             var patchHost = PatchHost.CreateManaged(root, Path.Combine(patchDirectory, "journal.json"));
             _extensions = new PluginExtensionHost();
+            _serviceHub = new PluginServiceHub();
             _chat = new PluginChatHost();
             var overlays = new PluginOverlayHost();
             _userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
-            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), _extensions, new PluginCommandHost(), overlays, _chat, _userInteraction);
+            var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, new PluginCommandHost(), overlays, _chat, _userInteraction);
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
@@ -940,6 +1246,88 @@ namespace AlacrityTerraria
                 return new HashSet<string>(Regex.Matches(json, "\\\"id\\\"\\s*:\\s*\\\"([a-z0-9.-]+)\\\"\\s*,\\s*\\\"enabled\\\"\\s*:\\s*true", RegexOptions.CultureInvariant).Cast<Match>().Select(match => match.Groups[1].Value), StringComparer.Ordinal);
             }
             return File.Exists(LegacyEnabledPluginsPath) ? new HashSet<string>(File.ReadAllLines(LegacyEnabledPluginsPath), StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        private sealed class KeybindControlsState
+        {
+            public long Version = -1;
+        }
+
+        private sealed class PluginKeybindControlGroup : UISortableElement
+        {
+            public PluginKeybindControlGroup(int order) : base(order) { }
+        }
+
+        /// <summary>Native controls-list row with a verified plugin label and Terraria's own rebind flow.</summary>
+        private sealed class PluginKeybindingListItem : UIElement
+        {
+            private readonly PluginKeybindRegistration keybind;
+            private readonly InputMode mode;
+            private readonly Color color;
+
+            public PluginKeybindingListItem(PluginKeybindRegistration keybind, InputMode mode, Color color)
+            {
+                this.keybind = keybind;
+                this.mode = mode;
+                this.color = color;
+                OnLeftClick += Listen;
+            }
+
+            private void Listen(UIMouseEvent _, UIElement __)
+            {
+                if (PlayerInput.CurrentProfile.AllowEditing)
+                    PlayerInput.ListenFor(keybind.HostId, mode);
+                else
+                    PlayerInput.ListenFor(null, mode);
+            }
+
+            protected override void DrawSelf(SpriteBatch spriteBatch)
+            {
+                var dimensions = GetDimensions();
+                EnsureInputBinding(keybind, mode);
+                bool listening = PlayerInput.ListeningTrigger == keybind.HostId;
+                var textColor = listening ? Color.Gold : (IsMouseHovering ? Color.White : Color.Silver);
+                textColor = Color.Lerp(textColor, Color.White, IsMouseHovering ? 0.5f : 0f);
+                var panelColor = IsMouseHovering ? color : color.MultiplyRGBA(new Color(180, 180, 180));
+                var textScale = new Vector2(0.8f);
+                Utils.DrawSettingsPanel(spriteBatch, dimensions.Position(), dimensions.Width + 1f, panelColor);
+                var namePosition = dimensions.Position() + new Vector2(8f, 8f);
+                Utils.DrawBorderString(spriteBatch, keybind.Descriptor.DisplayName, namePosition, textColor, textScale.X, 0f, 0f, -1);
+
+                var bindings = PlayerInput.CurrentProfile.InputModes[mode].KeyStatus[keybind.HostId];
+                ObservePluginKeybindBindings(keybind, mode, bindings);
+                string bindingText = DescribeBindings(bindings, mode);
+                if (string.IsNullOrEmpty(bindingText))
+                {
+                    bindingText = Lang.menu[195].Value;
+                    if (!listening)
+                        textColor = new Color(80, 80, 80);
+                }
+
+                var size = new Vector2(bindingText.Length * 11f * textScale.X, 18f * textScale.Y);
+                var bindingPosition = new Vector2(dimensions.X + dimensions.Width - size.X - 10f, dimensions.Y + 8f);
+                if (mode == InputMode.XBoxGamepad || mode == InputMode.XBoxGamepadUI)
+                    bindingPosition.Y -= 3f;
+                float previousGlyphScale = GlyphTagHandler.GlyphsScale;
+                try
+                {
+                    GlyphTagHandler.GlyphsScale = 0.85f;
+                    Utils.DrawBorderString(spriteBatch, bindingText, bindingPosition, textColor, textScale.X, 0f, 0f, -1);
+                }
+                finally
+                {
+                    GlyphTagHandler.GlyphsScale = previousGlyphScale;
+                }
+            }
+
+            private static string DescribeBindings(IReadOnlyList<string> bindings, InputMode mode)
+            {
+                if (bindings.Count == 0)
+                    return string.Empty;
+                if (mode == InputMode.XBoxGamepad || mode == InputMode.XBoxGamepadUI)
+                    return string.Join("/", bindings.Select(GlyphTagHandler.GenerateTag));
+                return string.Join("/", bindings);
+            }
         }
 
         private sealed class PluginSelectionMenu : UIState

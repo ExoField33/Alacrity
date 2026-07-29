@@ -145,17 +145,30 @@ public interface IPluginKeybindService
 {
     /// <summary>Registers a keybind owned by the current plugin.</summary>
     IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler);
+
+    /// <summary>Registers a held keybind that receives true on press and false on release.</summary>
+    IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action<bool> stateHandler);
+}
+
+/// <summary>Determines whether a plugin keybind is invoked once or tracks its held state.</summary>
+public enum PluginKeybindActivation
+{
+    /// <summary>Invokes the handler once for each fresh press.</summary>
+    Press,
+    /// <summary>Invokes the handler when the binding is pressed and released.</summary>
+    Hold
 }
 
 /// <summary>Immutable keybind declaration.</summary>
 public sealed class PluginKeybindDescriptor
 {
     /// <summary>Creates a keybind declaration.</summary>
-    public PluginKeybindDescriptor(string id, string defaultBinding, string displayName)
+    public PluginKeybindDescriptor(string id, string defaultBinding, string displayName, PluginKeybindActivation activation = PluginKeybindActivation.Press)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A keybind ID is required.", nameof(id)) : id;
         DefaultBinding = string.IsNullOrWhiteSpace(defaultBinding) ? throw new ArgumentException("A default binding is required.", nameof(defaultBinding)) : defaultBinding;
         DisplayName = string.IsNullOrWhiteSpace(displayName) ? throw new ArgumentException("A display name is required.", nameof(displayName)) : displayName;
+        Activation = activation;
     }
 
     /// <summary>Stable keybind identifier within the current plugin.</summary>
@@ -166,6 +179,32 @@ public sealed class PluginKeybindDescriptor
 
     /// <summary>User-facing label.</summary>
     public string DisplayName { get; }
+
+    /// <summary>Whether this binding activates once or follows its held state.</summary>
+    public PluginKeybindActivation Activation { get; }
+}
+
+/// <summary>Immutable host-provided keybind row used by Terraria's controls-menu adapter.</summary>
+public sealed class PluginKeybindRegistration
+{
+    /// <summary>Creates a row owned by a verified plugin package.</summary>
+    public PluginKeybindRegistration(PluginId owner, string heading, PluginKeybindDescriptor descriptor)
+    {
+        if (!owner.IsValid) throw new ArgumentException("A valid plugin owner is required.", nameof(owner));
+        Owner = owner;
+        Heading = string.IsNullOrWhiteSpace(heading) ? throw new ArgumentException("A heading is required.", nameof(heading)) : heading;
+        Descriptor = descriptor ?? throw new ArgumentNullException(nameof(descriptor));
+    }
+
+    /// <summary>Verified plugin package that owns this binding.</summary>
+    public PluginId Owner { get; }
+    /// <summary>Plugin heading appended after Terraria's built-in control groups.</summary>
+    public string Heading { get; }
+    /// <summary>Binding declaration and default.</summary>
+    public PluginKeybindDescriptor Descriptor { get; }
+
+    /// <summary>Stable host key used by Terraria input-profile adapters. It is unique across plugin packages.</summary>
+    public string HostId => Owner.Value + "." + Descriptor.Id;
 }
 
 /// <summary>Registers UI contributions; the host controls actual layout and rendering.</summary>
@@ -332,6 +371,7 @@ public sealed class PluginSettingControl
     {
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Color) { GetColor = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetColor = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
     }
+
 }
 
 /// <summary>Host-mediated service publication and discovery.</summary>

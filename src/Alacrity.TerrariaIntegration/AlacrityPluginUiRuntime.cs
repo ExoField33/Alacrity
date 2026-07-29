@@ -6,6 +6,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria.Audio;
 using Terraria;
+using Terraria.GameContent.UI.States;
 
 namespace AlacrityTerraria
 {
@@ -22,6 +23,9 @@ namespace AlacrityTerraria
         private static Action _openIngamePluginSettings;
         private static Action<SpriteBatch> _drawIngamePluginSettings;
         private static Action<SpriteBatch> _drawNotifications;
+        private static Action<SpriteBatch> _drawPlayerList;
+        private static Action _updatePluginKeybinds;
+        private static Action<UIManageControls> _appendPluginKeybindControls;
         private static Func<bool> _handlePluginMenuInput;
         private static Func<bool> _isBetterChatActive;
         private static Func<string, bool, string> _processPlayerChatInput;
@@ -177,17 +181,42 @@ namespace AlacrityTerraria
         /// <summary>Draws transient Core notifications at the established gameplay UI boundary.</summary>
         public static void DrawNotifications(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || Main.gameMenu)
+            if (spriteBatch == null)
                 return;
 
             try
             {
-                if (EnsureBridge() && _drawNotifications != null)
-                    _drawNotifications(spriteBatch);
+                if (EnsureBridge())
+                {
+                    if (!Main.gameMenu)
+                    {
+                        _updatePluginKeybinds?.Invoke();
+                        _drawNotifications?.Invoke(spriteBatch);
+                        _drawPlayerList?.Invoke(spriteBatch);
+                    }
+                }
             }
             catch (Exception exception)
             {
                 RecordFailure("Draw plugin notifications", exception);
+            }
+        }
+
+        /// <summary>Version-locked controls-menu entry point. It remains a no-op when the optional bridge is unavailable.</summary>
+        public static void AppendPluginKeybindControls(UIManageControls controls)
+        {
+            if (controls == null)
+                return;
+
+            try
+            {
+                BootstrapPluginRuntime();
+                if (EnsureBridge())
+                    _appendPluginKeybindControls?.Invoke(controls);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Append plugin keybind controls", exception);
             }
         }
 
@@ -324,8 +353,17 @@ namespace AlacrityTerraria
                 _drawIngamePluginSettings = (Action<SpriteBatch>)callback;
                 if (!Reflection.TryCreateDelegate(drawNotifications, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
                 _drawNotifications = (Action<SpriteBatch>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "DrawPlayerList", typeof(void), new[] { typeof(SpriteBatch) }, out var drawPlayerList, out _) &&
+                    Reflection.TryCreateDelegate(drawPlayerList, typeof(Action<SpriteBatch>), out callback, out _))
+                    _drawPlayerList = (Action<SpriteBatch>)callback;
                 if (!Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
                 _handlePluginMenuInput = (Func<bool>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "UpdatePluginKeybinds", typeof(void), Type.EmptyTypes, out var updatePluginKeybinds, out _) &&
+                    Reflection.TryCreateDelegate(updatePluginKeybinds, typeof(Action), out callback, out _))
+                    _updatePluginKeybinds = (Action)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "AppendPluginKeybindControls", typeof(void), new[] { typeof(UIManageControls) }, out var appendPluginKeybindControls, out _) &&
+                    Reflection.TryCreateDelegate(appendPluginKeybindControls, typeof(Action<UIManageControls>), out callback, out _))
+                    _appendPluginKeybindControls = (Action<UIManageControls>)callback;
                 return true;
             }
             catch (Exception exception)
@@ -387,6 +425,9 @@ namespace AlacrityTerraria
             _openIngamePluginSettings = null;
             _drawIngamePluginSettings = null;
             _drawNotifications = null;
+            _drawPlayerList = null;
+            _updatePluginKeybinds = null;
+            _appendPluginKeybindControls = null;
             _handlePluginMenuInput = null;
             ClearChatDelegates();
         }

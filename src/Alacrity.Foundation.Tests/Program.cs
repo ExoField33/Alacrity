@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Alacrity.App;
 using Alacrity.BetterChat;
+using Alacrity.PlayerList;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using AlacrityTerraria;
@@ -18,6 +19,7 @@ internal static class Program
         {
             ManifestRejectsInvalidServerClassification();
             PackageManifestLoadsBeforePluginExecution();
+            BundledPluginManifestsRemainValid();
             PluginAssemblyLoaderUsesHostManifestWithoutDllMetadata();
             AsyncPluginAssemblyLoaderUsesSharedRuntimeController();
             HostManifestIsAuthoritativeOverPluginImplementation();
@@ -59,12 +61,14 @@ internal static class Program
             ScopedServicesRespectDependenciesAndCleanup();
             ExtensionRegistrationsAreScopeOwned();
             ExtensionServicesRequireOwnersAndIsolateScopes();
+            KeybindsAreOwnedQualifiedAndScopeReleased();
             ChatVisibilityFiltersAreScopeOwned();
             ChatOwnershipCompositionAndPermissionEnforcement();
             UserInteractionServicesRequirePermissionsAndValidateLinks();
             PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue();
             BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
             BetterChatCachesDefaultsWithoutRewritingSettings();
+            PlayerListPublishesPresentationSettingsAndDefaults();
             OverlayDispatchIsOrderedIsolatedAndScopeOwned();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
@@ -127,6 +131,18 @@ internal static class Program
         {
             if (Directory.Exists(root))
                 Directory.Delete(root, true);
+        }
+    }
+
+    private static void BundledPluginManifestsRemainValid()
+    {
+        string alacrityRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        string packagesRoot = Path.Combine(alacrityRoot, "Plugins");
+        var reader = new PluginPackageManifestReader();
+        foreach (string packageDirectory in Directory.GetDirectories(packagesRoot))
+        {
+            PluginManifest manifest = reader.ReadFromPackage(packageDirectory);
+            Assert(manifest.Id.IsValid, "Bundled package manifests must retain valid plugin identities.");
         }
     }
 
@@ -1107,6 +1123,39 @@ internal static class Program
         secondScope.Dispose();
     }
 
+    private static void KeybindsAreOwnedQualifiedAndScopeReleased()
+    {
+        var host = new PluginExtensionHost();
+        var firstManifest = new PluginManifest(new PluginId("first.keybinds"), "First Controls", new Version(1, 0), "Tests", "First keybind owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.Input);
+        var secondManifest = new PluginManifest(new PluginId("second.keybinds"), "Second Controls", new Version(1, 0), "Tests", "Second keybind owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.Input);
+        var firstScope = new PluginResourceScope();
+        var secondScope = new PluginResourceScope();
+        var firstInvocations = 0;
+        var secondInvocations = 0;
+
+        host.CreateServices(firstManifest, firstScope).Keybinds.Register(new PluginKeybindDescriptor("toggle", "T", "Toggle First"), () => firstInvocations++);
+        host.CreateServices(secondManifest, secondScope).Keybinds.Register(new PluginKeybindDescriptor("toggle", "Y", "Toggle Second"), () => secondInvocations++);
+
+        var rows = host.GetKeybinds();
+        Assert(rows.Count == 2, "Different plugins may reuse a local keybind ID without sharing registrations.");
+        Assert(rows[0].HostId == "first.keybinds.toggle" && rows[0].Heading == "First Controls", "The native controls adapter must receive the verified plugin heading and qualified keybind ID.");
+        Assert(rows[1].HostId == "second.keybinds.toggle" && rows[1].Heading == "Second Controls", "Each plugin's controls heading must remain independently owned.");
+        Assert(host.TryInvokeKeybind("first.keybinds.toggle", out var failure) && failure == null && firstInvocations == 1 && secondInvocations == 0, "A host keybind dispatch must invoke only its owning plugin handler.");
+        Assert(!host.TryInvokeKeybind("missing.plugin.toggle", out failure) && failure == null, "Unknown host keybind IDs must be ignored without throwing.");
+
+        var heldStates = new List<bool>();
+        host.CreateServices(firstManifest, firstScope).Keybinds.Register(new PluginKeybindDescriptor("held", "U", "Held", PluginKeybindActivation.Hold), isDown => heldStates.Add(isDown));
+        Assert(host.TrySetKeybindState("first.keybinds.held", true, out failure) && failure == null, "Held keybinds must receive their press transition.");
+        Assert(host.TrySetKeybindState("first.keybinds.held", false, out failure) && failure == null && heldStates.SequenceEqual(new[] { true, false }), "Held keybinds must receive a matching release transition.");
+
+        firstScope.ReleaseAll();
+        Assert(host.GetKeybinds().Count == 1 && !host.TryInvokeKeybind("first.keybinds.toggle", out failure), "Releasing a plugin scope must remove only that plugin's keybind registrations.");
+        Assert(host.TryInvokeKeybind("second.keybinds.toggle", out failure) && failure == null && secondInvocations == 1, "Other plugins' keybind registrations must survive unrelated cleanup.");
+
+        firstScope.Dispose();
+        secondScope.Dispose();
+    }
+
     private static void ChatVisibilityFiltersAreScopeOwned()
     {
         var host = new PluginChatHost();
@@ -1214,6 +1263,25 @@ internal static class Program
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    private static void PlayerListPublishesPresentationSettingsAndDefaults()
+    {
+        var manifest = new PluginManifest(new PluginId("alacrity.player-list"), "Player List", new Version(1, 0), "Tests", "Displays the currently online players", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation, permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer);
+        using var scope = new PluginResourceScope();
+        var context = new TestContext(manifest, scope);
+        var plugin = new PlayerListPlugin();
+        plugin.Initialize(context);
+        Assert(plugin.PlayersPerColumn == 14 && plugin.RowWidth == 260 && Math.Abs(plugin.TextScale - 1.2f) < 0.001f && plugin.ShowPlayerHeads && plugin.ShowPing, "Player List must retain its documented default presentation settings.");
+        Assert(context.Services.TryGet<IPlayerListService>(out var service) && ReferenceEquals(plugin, service), "Player List must publish its stable provider contract for dependent plugins.");
+        plugin.ToggleVisibility();
+        Assert(plugin.IsVisible, "The Display Play List binding must toggle local presentation visibility.");
+        plugin.CycleSortMode();
+        Assert(plugin.SortMode == PlayerListSortMode.Team, "The sort cycle must advance deterministically from alphabetical to team order.");
+        plugin.ToggleBotFiltering();
+        Assert(plugin.HideBots, "The player-list bot control must update the provider state used by the renderer.");
+        plugin.Disable();
+        Assert(!plugin.IsVisible, "Disabling Player List must immediately remove its visible presentation state.");
     }
 
     private static void UserInteractionServicesRequirePermissionsAndValidateLinks()
@@ -1668,6 +1736,7 @@ internal static class Program
     private sealed class TestKeybinds : IPluginKeybindService
     {
         public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler) => new TestRegistration("keybind");
+        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action<bool> stateHandler) => new TestRegistration("keybind-state");
     }
 
     private sealed class TestUi : IPluginUiService

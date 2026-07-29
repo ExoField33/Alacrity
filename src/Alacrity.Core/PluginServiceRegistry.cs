@@ -19,6 +19,22 @@ public sealed class PluginServiceHub
         return new ScopedRegistry(this, manifest, resources);
     }
 
+    /// <summary>Returns a host-owned public service without granting plugin code cross-plugin access.</summary>
+    public bool TryGetHostService<TService>(out TService? service) where TService : class
+    {
+        lock (gate)
+        {
+            if (!services.TryGetValue(typeof(TService), out var published))
+            {
+                service = null;
+                return false;
+            }
+
+            service = (TService)published.Service;
+            return true;
+        }
+    }
+
     private IPluginRegistration Publish<TService>(PluginManifest publisher, IPluginResourceScope resources, TService service) where TService : class
     {
         if (service == null) throw new ArgumentNullException(nameof(service));
