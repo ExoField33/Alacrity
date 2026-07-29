@@ -38,6 +38,7 @@ namespace AlacrityTerraria
         private static bool _versionRendererResolved;
         private static bool _bridgeLoadAttempted;
         private static string _lastDiagnostic;
+        private static bool _shutdownHooked;
 
         /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
         public static string LastBridgeDiagnostic { get { return _lastDiagnostic ?? string.Empty; } }
@@ -60,6 +61,35 @@ namespace AlacrityTerraria
                     SetMenuMode(menuMode, 0);
                 return true;
             }
+        }
+
+        /// <summary>Version-locked startup entry point. It is safe to call more than once.</summary>
+        public static void BootstrapPluginRuntime()
+        {
+            try
+            {
+                if (!EnsureBridge()) return;
+                if (!_shutdownHooked)
+                {
+                    AppDomain.CurrentDomain.ProcessExit += (_, __) => ShutdownPluginRuntime();
+                    _shutdownHooked = true;
+                }
+                var bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                if (bridgeType == null) return;
+                var bootstrap = bridgeType.GetMethod("BootstrapPluginRuntime", BindingFlags.Public | BindingFlags.Static);
+                bootstrap?.Invoke(null, null);
+            }
+            catch (Exception exception) { RecordFailure("Plugin runtime startup", exception); }
+        }
+
+        private static void ShutdownPluginRuntime()
+        {
+            try
+            {
+                var bridgeType = _bridgeAssembly?.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                bridgeType?.GetMethod("ShutdownPluginRuntime", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+            }
+            catch (Exception exception) { RecordFailure("Plugin runtime shutdown", exception); }
         }
 
         public static void OpenPluginManager()

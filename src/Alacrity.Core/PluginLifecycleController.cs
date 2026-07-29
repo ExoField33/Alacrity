@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -11,19 +13,39 @@ namespace Alacrity.Core;
 /// </summary>
 public sealed class PluginLifecycleController : IDisposable
 {
-    private readonly IAlacrityPlugin plugin;
+    private readonly IAlacrityPlugin? plugin;
+    private readonly IAsyncAlacrityPlugin? asyncPlugin;
     private readonly IPluginContext context;
+    private readonly TimeSpan asyncCallbackTimeout;
     private bool initialized;
     private bool hasInitialized;
     private bool shutdownCalled;
     private bool shutdown;
 
     public PluginLifecycleController(IAlacrityPlugin plugin, IPluginContext context)
+        : this((object)plugin, context, null)
     {
-        this.plugin = plugin ?? throw new ArgumentNullException(nameof(plugin));
+    }
+
+    public PluginLifecycleController(IAsyncAlacrityPlugin plugin, IPluginContext context, TimeSpan? asyncCallbackTimeout = null)
+        : this((object)plugin, context, asyncCallbackTimeout)
+    {
+    }
+
+    /// <summary>Creates one lifecycle state machine for exactly one supported callback contract.</summary>
+    public PluginLifecycleController(object plugin, IPluginContext context, TimeSpan? asyncCallbackTimeout = null)
+    {
+        if (plugin == null) throw new ArgumentNullException(nameof(plugin));
         this.context = context ?? throw new ArgumentNullException(nameof(context));
         if (context.Manifest == null)
             throw new ArgumentException("A host-owned manifest is required.", nameof(context));
+        this.plugin = plugin as IAlacrityPlugin;
+        this.asyncPlugin = plugin as IAsyncAlacrityPlugin;
+        if ((this.plugin == null) == (this.asyncPlugin == null))
+            throw new ArgumentException("A plugin entry must implement exactly one lifecycle contract.", nameof(plugin));
+        this.asyncCallbackTimeout = asyncCallbackTimeout ?? TimeSpan.FromSeconds(5);
+        if (this.asyncCallbackTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(asyncCallbackTimeout));
         State = PluginLifecycleState.Discovered;
         LastOperation = new PluginOperationResult("Construct", State, null, null);
     }
@@ -35,6 +57,9 @@ public sealed class PluginLifecycleController : IDisposable
 
     /// <summary>Diagnostic outcome of the most recent lifecycle operation.</summary>
     public PluginOperationResult LastOperation { get; private set; }
+
+    /// <summary>Whether this controller invokes the asynchronous callback contract.</summary>
+    public bool UsesAsyncLifecycle => asyncPlugin != null;
 
     public void Validate()
     {
@@ -57,11 +82,12 @@ public sealed class PluginLifecycleController : IDisposable
 
     public void Initialize()
     {
+        EnsureSynchronousLifecycle();
         EnsureNotShutdown();
         EnsureState(PluginLifecycleState.Disabled);
         try
         {
-            plugin.Initialize(context);
+            plugin!.Initialize(context);
             initialized = true;
             hasInitialized = true;
             Record("Initialize", null, null);
@@ -78,6 +104,7 @@ public sealed class PluginLifecycleController : IDisposable
 
     public void Enable()
     {
+        EnsureSynchronousLifecycle();
         EnsureNotShutdown();
         EnsureState(PluginLifecycleState.Disabled);
         if (!initialized)
@@ -91,7 +118,7 @@ public sealed class PluginLifecycleController : IDisposable
         Transition(PluginLifecycleState.Enabling);
         try
         {
-            plugin.Enable();
+            plugin!.Enable();
             Transition(PluginLifecycleState.Enabled);
             Record("Enable", null, null);
         }
@@ -107,6 +134,7 @@ public sealed class PluginLifecycleController : IDisposable
 
     public void Disable()
     {
+        EnsureSynchronousLifecycle();
         EnsureNotShutdown();
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
@@ -114,7 +142,7 @@ public sealed class PluginLifecycleController : IDisposable
         Exception? callbackFailure = null;
         try
         {
-            plugin.Disable();
+            plugin!.Disable();
         }
         catch (Exception exception)
         {
@@ -132,13 +160,14 @@ public sealed class PluginLifecycleController : IDisposable
 
     public void Uninstall()
     {
+        EnsureSynchronousLifecycle();
         EnsureNotShutdown();
         var cleanupFailures = new List<PluginCleanupFailure>();
         Exception? callbackFailure = null;
         State = PluginLifecycleState.Uninstalling;
 
         if (initialized && hasInitialized)
-            InvokeCallback("Disable", plugin.Disable, ref callbackFailure);
+            InvokeCallback("Disable", plugin!.Disable, ref callbackFailure);
 
         cleanupFailures.AddRange(ForceReleaseResources());
         if (hasInitialized && !shutdownCalled)
@@ -158,12 +187,18 @@ public sealed class PluginLifecycleController : IDisposable
         if (shutdown)
             return;
 
+        if (UsesAsyncLifecycle)
+        {
+            DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            return;
+        }
+
         var cleanupFailures = new List<PluginCleanupFailure>();
         Exception? callbackFailure = null;
         try
         {
             if (initialized && hasInitialized)
-                InvokeCallback("Disable", plugin.Disable, ref callbackFailure);
+                InvokeCallback("Disable", plugin!.Disable, ref callbackFailure);
             cleanupFailures.AddRange(ForceReleaseResources());
             if (hasInitialized && !shutdownCalled)
                 InvokeShutdown(cleanupFailures, ref callbackFailure);
@@ -208,7 +243,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         try
         {
-            plugin.Shutdown();
+            plugin!.Shutdown();
         }
         catch (Exception exception)
         {
@@ -221,6 +256,143 @@ public sealed class PluginLifecycleController : IDisposable
         {
             shutdownCalled = true;
         }
+    }
+
+    /// <summary>Initializes either lifecycle contract without scheduling synchronous plugins onto worker threads.</summary>
+    public async Task InitializeAsync(CancellationToken cancellationToken)
+    {
+        if (!UsesAsyncLifecycle) { Initialize(); return; }
+        EnsureNotShutdown();
+        EnsureState(PluginLifecycleState.Disabled);
+        try
+        {
+            await InvokeAsync("Initialize", token => asyncPlugin!.InitializeAsync(context, token), cancellationToken).ConfigureAwait(false);
+            initialized = true;
+            hasInitialized = true;
+            Record("Initialize", null, null);
+        }
+        catch (Exception exception)
+        {
+            initialized = false;
+            State = PluginLifecycleState.Faulted;
+            var cleanupFailures = ForceReleaseResources();
+            Record("Initialize", exception, cleanupFailures);
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
+    }
+
+    /// <summary>Enables either lifecycle contract after initialization.</summary>
+    public async Task EnableAsync(CancellationToken cancellationToken)
+    {
+        if (!UsesAsyncLifecycle) { Enable(); return; }
+        EnsureNotShutdown();
+        EnsureState(PluginLifecycleState.Disabled);
+        if (!initialized)
+        {
+            if (!hasInitialized) throw new InvalidOperationException("A plugin must be initialized before it can be enabled.");
+            await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        Transition(PluginLifecycleState.Enabling);
+        try
+        {
+            await InvokeAsync("Enable", token => asyncPlugin!.EnableAsync(token), cancellationToken).ConfigureAwait(false);
+            Transition(PluginLifecycleState.Enabled);
+            Record("Enable", null, null);
+        }
+        catch (Exception exception)
+        {
+            initialized = false;
+            State = PluginLifecycleState.Faulted;
+            var cleanupFailures = ForceReleaseResources();
+            Record("Enable", exception, cleanupFailures);
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
+    }
+
+    /// <summary>Disables an asynchronous plugin with cancellation and bounded callback wait time.</summary>
+    public async Task DisableAsync(CancellationToken cancellationToken)
+    {
+        if (!UsesAsyncLifecycle) { Disable(); return; }
+        EnsureNotShutdown();
+        EnsureState(PluginLifecycleState.Enabled);
+        Transition(PluginLifecycleState.Disabling);
+        Exception? callbackFailure = null;
+        try { await InvokeAsync("Disable", token => asyncPlugin!.DisableAsync(token), cancellationToken).ConfigureAwait(false); }
+        catch (Exception exception) { callbackFailure = exception; }
+
+        var cleanupFailures = ForceReleaseResources();
+        initialized = false;
+        State = callbackFailure == null && cleanupFailures.Count == 0 ? PluginLifecycleState.Disabled : PluginLifecycleState.Faulted;
+        Record("Disable", callbackFailure, cleanupFailures);
+        Rethrow(callbackFailure, cleanupFailures);
+    }
+
+    /// <summary>Shuts down an asynchronous plugin and always releases host-owned resources.</summary>
+    public async Task DisposeAsync(CancellationToken cancellationToken)
+    {
+        if (!UsesAsyncLifecycle) { Dispose(); return; }
+        if (shutdown) return;
+        var cleanupFailures = new List<PluginCleanupFailure>();
+        Exception? callbackFailure = null;
+        try
+        {
+            if (initialized && hasInitialized)
+            {
+                try { await InvokeAsync("Disable", token => asyncPlugin!.DisableAsync(token), cancellationToken).ConfigureAwait(false); }
+                catch (Exception exception) { callbackFailure = exception; }
+            }
+            cleanupFailures.AddRange(ForceReleaseResources());
+            if (hasInitialized && !shutdownCalled)
+            {
+                try { await InvokeAsync("Shutdown", token => asyncPlugin!.ShutdownAsync(token), cancellationToken).ConfigureAwait(false); }
+                catch (Exception exception)
+                {
+                    if (callbackFailure == null) callbackFailure = exception;
+                    else cleanupFailures.Add(new PluginCleanupFailure("Shutdown", exception));
+                }
+                finally { shutdownCalled = true; }
+            }
+            cleanupFailures.AddRange(ForceDisposeResources());
+        }
+        finally
+        {
+            initialized = false;
+            shutdown = true;
+            State = PluginLifecycleState.Uninstalled;
+            Record("Dispose", callbackFailure, cleanupFailures);
+        }
+    }
+
+    /// <summary>Uninstalls an asynchronous plugin after its callbacks and owned resources have been released.</summary>
+    public async Task UninstallAsync(CancellationToken cancellationToken)
+    {
+        if (!UsesAsyncLifecycle) { Uninstall(); return; }
+        EnsureNotShutdown();
+        State = PluginLifecycleState.Uninstalling;
+        await DisposeAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task InvokeAsync(string operation, Func<CancellationToken, Task> callback, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var timeout = new CancellationTokenSource();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        Task task = callback(linked.Token) ?? throw new InvalidOperationException(operation + " returned a null task.");
+        Task completed = await Task.WhenAny(task, Task.Delay(asyncCallbackTimeout, cancellationToken)).ConfigureAwait(false);
+        if (!ReferenceEquals(completed, task))
+        {
+            timeout.Cancel();
+            ObserveFault(task);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new TimeoutException(operation + " exceeded the host callback timeout of " + asyncCallbackTimeout + ".");
+        }
+        await task.ConfigureAwait(false);
+    }
+
+    private static void ObserveFault(Task task)
+    {
+        task.ContinueWith(completed => _ = completed.Exception, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
     }
 
     private static void InvokeCallback(string operation, Action callback, ref Exception? callbackFailure)
@@ -253,6 +425,12 @@ public sealed class PluginLifecycleController : IDisposable
     {
         if (shutdown || State == PluginLifecycleState.Uninstalled)
             throw new ObjectDisposedException(nameof(PluginLifecycleController));
+    }
+
+    private void EnsureSynchronousLifecycle()
+    {
+        if (UsesAsyncLifecycle)
+            throw new InvalidOperationException("This plugin uses IAsyncAlacrityPlugin. Use the asynchronous lifecycle methods.");
     }
 
     private void EnsureState(PluginLifecycleState expected)

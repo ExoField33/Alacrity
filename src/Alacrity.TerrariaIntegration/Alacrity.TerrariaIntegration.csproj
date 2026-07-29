@@ -36,6 +36,7 @@
   <ItemGroup>
     <Compile Include="AlacrityPluginUiCoreBridge.cs" />
     <Compile Include="BetterChatRuntime.cs" />
+    <Compile Include="PluginUserInteractionBackend.cs" />
     <Compile Include="TileStorage.cs" />
     <Compile Include="TileDataCompatibility.cs" />
   </ItemGroup>

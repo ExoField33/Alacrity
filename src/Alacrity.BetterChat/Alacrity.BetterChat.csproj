@@ -5,6 +5,16 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <PluginPackageDirectory>$(MSBuildProjectDirectory)\..\..\Plugins\alacrity.better-chat</PluginPackageDirectory>
+  </PropertyGroup>
+
+  <Target Name="BuildPluginPackage" AfterTargets="Build">
+    <MakeDir Directories="$(PluginPackageDirectory)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginPackageDirectory)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\plugin.json" DestinationFolder="$(PluginPackageDirectory)" />
+  </Target>
   <ItemGroup>
     <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
   </ItemGroup>

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
@@ -30,6 +31,8 @@ namespace AlacrityTerraria
         private static PluginDependencyDiagnostics _diagnostics;
         private static PluginExtensionHost _extensions;
         private static PluginChatHost _chat;
+        private static PluginUserInteractionHost _userInteraction;
+        private static IPluginUserInteractionService _betterChatUserInteraction;
         private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
         private static readonly Color ResourcePackBorder = new Color(13, 20, 44) * 0.8f;
@@ -50,7 +53,47 @@ namespace AlacrityTerraria
         private static float _ingameDescriptionScroll;
         private static string _ingameHoveredSettingId;
         private static bool _enabledStateRestored;
-        private static bool _chatCatalogInitialized;
+        private static readonly object RuntimeGate = new object();
+        private static bool _runtimeBootstrapped;
+        private static bool _runtimeShuttingDown;
+
+        /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
+        public static void BootstrapPluginRuntime()
+        {
+            lock (RuntimeGate)
+            {
+                if (_runtimeBootstrapped || _runtimeShuttingDown)
+                    return;
+                EnsurePluginManager();
+                RefreshPluginCatalog();
+                _runtimeBootstrapped = true;
+            }
+        }
+
+        /// <summary>Best-effort process-exit cleanup. Individual plugin failures never block Terraria shutdown.</summary>
+        public static void ShutdownPluginRuntime()
+        {
+            lock (RuntimeGate)
+            {
+                if (_runtimeShuttingDown)
+                    return;
+                _runtimeShuttingDown = true;
+                if (_runtime == null)
+                    return;
+                using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                foreach (var record in GetShutdownOrder())
+                {
+                    try
+                    {
+                        if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
+                            record.Controller.DisposeAsync(cancellation.Token).GetAwaiter().GetResult();
+                        else
+                            record.Controller?.Dispose();
+                    }
+                    catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
+                }
+            }
+        }
 
         /// <summary>Returns whether an enabled plugin owns a chat editor. The injected hook calls this only while player chat is focused.</summary>
         public static bool IsBetterChatActive()
@@ -73,7 +116,7 @@ namespace AlacrityTerraria
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditors ? BetterChatRuntime.Process(_chat, text, allowMultiLine) : text;
+                return _chat != null && _chat.HasInputEditors ? BetterChatRuntime.Process(_chat, GetBetterChatUserInteraction(), text, allowMultiLine) : text;
             }
             catch (Exception exception)
             {
@@ -138,7 +181,7 @@ namespace AlacrityTerraria
         /// <summary>Shows bounded vanilla-style hover feedback and handles copy-on-right-click.</summary>
         public static void HandleChatSnippetHover(object snippet)
         {
-            try { if (IsBetterChatActive()) BetterChatRuntime.Hover(snippet); }
+            try { if (IsBetterChatActive()) BetterChatRuntime.Hover(snippet, GetBetterChatUserInteraction()); }
             catch (Exception exception) { ReportOptionalUiFailure("BetterChat hover", exception); }
         }
 
@@ -750,11 +793,24 @@ namespace AlacrityTerraria
             var patchHost = PatchHost.CreateManaged(root, Path.Combine(patchDirectory, "journal.json"));
             _extensions = new PluginExtensionHost();
             _chat = new PluginChatHost();
-            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), _extensions, new PluginCommandHost(), null, _chat);
+            var overlays = new PluginOverlayHost();
+            _userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
+            var contexts = new PluginHostContextFactory(root, new PluginServiceHub(), _extensions, new PluginCommandHost(), overlays, _chat, _userInteraction);
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
             _menu = new PluginManagementMenu(_runtime);
+        }
+
+        private static IPluginUserInteractionService GetBetterChatUserInteraction()
+        {
+            if (_betterChatUserInteraction != null)
+                return _betterChatUserInteraction;
+
+            var record = _runtime == null ? null : _runtime.Registry.Records.FirstOrDefault(candidate => candidate.Manifest.Id.Value == "alacrity.better-chat");
+            return record == null || _userInteraction == null
+                ? new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(new PluginManifest(new PluginId("alacrity.unavailable"), "Unavailable", new Version(1, 0), "Alacrity", "Unavailable", new[] { "1.4.5.6" }))
+                : (_betterChatUserInteraction = _userInteraction.CreateService(record.Manifest));
         }
 
         private static void RefreshPluginCatalog()
@@ -785,11 +841,7 @@ namespace AlacrityTerraria
 
         private static void EnsureChatRuntime()
         {
-            EnsurePluginManager();
-            if (_chatCatalogInitialized)
-                return;
-            _chatCatalogInitialized = true;
-            RefreshPluginCatalog();
+            BootstrapPluginRuntime();
         }
 
         private static string PluginStatePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-state.json");
@@ -803,13 +855,57 @@ namespace AlacrityTerraria
             {
                 var requested = ReadEnabledPluginIds();
                 foreach (var record in _runtime.Registry.Records.Where(record => requested.Contains(record.Manifest.Id.Value) && (record.State == PluginPackageLifecycleState.Loaded || record.State == PluginPackageLifecycleState.Disabled)).ToArray())
-                    _runtime.Enable(record.Manifest.Id);
+                    EnablePlugin(record.Manifest.Id);
                 if (!File.Exists(PluginStatePath) && File.Exists(LegacyEnabledPluginsPath))
                     PersistEnabledPlugins();
             }
             catch (Exception exception)
             {
                 _notifications.Publish("Unable to restore enabled plugins: " + exception.Message, TimeSpan.FromSeconds(4));
+            }
+        }
+
+        private static void EnablePlugin(PluginId id)
+        {
+            var record = _runtime.Registry.Records.Single(record => record.Manifest.Id == id);
+            if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
+            {
+                using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                _runtime.EnableAsync(id, cancellation.Token).GetAwaiter().GetResult();
+            }
+            else
+                _runtime.Enable(id);
+        }
+
+        private static void DisablePlugin(PluginId id)
+        {
+            var record = _runtime.Registry.Records.Single(record => record.Manifest.Id == id);
+            if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
+            {
+                using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                _runtime.DisableAsync(id, cancellation.Token).GetAwaiter().GetResult();
+            }
+            else
+                _runtime.Disable(id);
+        }
+
+        private static IEnumerable<PluginPackageRuntimeRecord> GetShutdownOrder()
+        {
+            if (_runtime == null) return Array.Empty<PluginPackageRuntimeRecord>();
+            var records = _runtime.Registry.Records.ToDictionary(record => record.Manifest.Id);
+            var visited = new HashSet<PluginId>();
+            var dependencyFirst = new List<PluginPackageRuntimeRecord>();
+            foreach (var record in records.Values)
+                Visit(record);
+            dependencyFirst.Reverse();
+            return dependencyFirst;
+
+            void Visit(PluginPackageRuntimeRecord record)
+            {
+                if (!visited.Add(record.Manifest.Id)) return;
+                foreach (var dependency in record.Manifest.Dependencies)
+                    if (records.TryGetValue(dependency.Id, out var dependencyRecord)) Visit(dependencyRecord);
+                dependencyFirst.Add(record);
             }
         }
 
@@ -1186,6 +1282,7 @@ namespace AlacrityTerraria
             {
                 var row = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(92f, 0f), BackgroundColor = ResourcePackBackground, BorderColor = ResourcePackBorder };
                 row.SetPadding(5f);
+                AppendDependencyBadge(row, plugin);
                 var name = new UIText(plugin.Name, 0.9f, false) { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(4f, 0f) };
                 var author = new UIText(plugin.Author, 0.65f, false) { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(28f, 0f) };
                 row.Append(name); row.Append(author);
@@ -1237,6 +1334,7 @@ namespace AlacrityTerraria
                 };
                 row.SetPadding(5f);
                 row.OverflowHidden = true;
+                AppendDependencyBadge(row, plugin);
                 row.OnMouseOver += (evt, element) => {
                     row.BackgroundColor = ResourcePackHoverBackground;
                     row.BorderColor = ResourcePackHoverBorder;
@@ -1297,9 +1395,9 @@ namespace AlacrityTerraria
                         try
                         {
                             if (plugin.IsEnabled)
-                                _runtime.Disable(plugin.Id);
+                                DisablePlugin(plugin.Id);
                             else
-                                _runtime.Enable(plugin.Id);
+                                EnablePlugin(plugin.Id);
                             PersistEnabledPlugins();
                             RefreshRuntimeStatusHint(true);
                         }
@@ -1318,6 +1416,56 @@ namespace AlacrityTerraria
                 }
                 content.Append(toggle);
                 return row;
+            }
+
+            private void AppendDependencyBadge(UIPanel row, PluginManagerRow plugin)
+            {
+                var dependencies = _runtime.Registry.Records.FirstOrDefault(record => record.Manifest.Id == plugin.Id)?.Manifest.Dependencies;
+                if (dependencies == null || dependencies.Count == 0)
+                    return;
+
+                var badge = new UIPanel {
+                    Width = new StyleDimension(22f, 0f),
+                    Height = new StyleDimension(22f, 0f),
+                    HAlign = 1f,
+                    VAlign = 0f,
+                    Left = new StyleDimension(-5f, 0f),
+                    Top = new StyleDimension(5f, 0f)
+                };
+                badge.SetPadding(2f);
+                badge.BackgroundColor = new Color(63, 82, 151) * 0.8f;
+                badge.BorderColor = Color.Black;
+                try
+                {
+                    var image = (UIElement)Activator.CreateInstance(typeof(UIImage), RequestTexture("Images/UI/Wires_6"));
+                    image.Width = StyleDimension.Fill;
+                    image.Height = StyleDimension.Fill;
+                    image.IgnoresMouseInteraction = true;
+                    typeof(UIImage).GetProperty("ScaleToFit", BindingFlags.Public | BindingFlags.Instance)?.SetValue(image, true, null);
+                    badge.Append(image);
+                }
+                catch (Exception exception)
+                {
+                    ReportOptionalUiFailure("Create dependency badge", exception);
+                    return;
+                }
+
+                string tooltip = "Dependencies: \n" + string.Join("\n", dependencies.Select(dependency => {
+                    var dependencyRecord = _runtime.Registry.Records.FirstOrDefault(record => record.Manifest.Id == dependency.Id);
+                    return "-" + (dependencyRecord == null ? dependency.Id.Value : dependencyRecord.Manifest.Name);
+                }));
+                badge.OnMouseOver += (evt, element) => {
+                    var panel = (UIPanel)element;
+                    panel.BackgroundColor = new Color(73, 94, 171);
+                    panel.BorderColor = Colors.FancyUIFatButtonMouseOver;
+                };
+                badge.OnMouseOut += (evt, element) => {
+                    var panel = (UIPanel)element;
+                    panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
+                    panel.BorderColor = Color.Black;
+                };
+                badge.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText(tooltip); };
+                row.Append(badge);
             }
 
             private void OpenSettings(PluginManagerRow plugin)
@@ -1697,11 +1845,11 @@ namespace AlacrityTerraria
                 };
                 content.Append(version);
 
-                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-112f, 1f), VAlign = 1f, ListPadding = 14f, PaddingRight = 12f, ManualSortMethod = items => { } };
+                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-112f, 1f), VAlign = 1f, Top = new StyleDimension(-8f, 0f), ListPadding = 14f, PaddingRight = 12f, ManualSortMethod = items => { } };
                 list.Add(CreateSection("Description", _plugin.Description, true));
                 list.Add(CreateSection("Changelog", _plugin.Changelog, false));
                 content.Append(list);
-                var scrollbar = new UIScrollbar { Height = new StyleDimension(-112f, 1f), HAlign = 1f, VAlign = 1f };
+                var scrollbar = new UIScrollbar { Height = new StyleDimension(-112f, 1f), HAlign = 1f, VAlign = 1f, Top = new StyleDimension(-8f, 0f) };
                 content.Append(scrollbar);
                 list.SetScrollbar(scrollbar);
 
@@ -1727,13 +1875,8 @@ namespace AlacrityTerraria
                 float dividerSpace = includeDivider ? 14f : 0f;
                 var section = new UIElement { Width = StyleDimension.Fill, Height = new StyleDimension(38f + bodyHeight + dividerSpace, 0f) };
                 section.Append(new UIText(heading, 0.68f, true) { Width = StyleDimension.Fill, Height = new StyleDimension(20f, 0f) });
-                section.Append(new UIText(value, 0.75f, false) { Width = StyleDimension.Fill, Top = new StyleDimension(30f, 0f), IsWrapped = true, WrappedTextBottomPadding = 0f });
-                if (includeDivider)
-                {
-                    var divider = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(2f, 0f), Top = new StyleDimension(34f + bodyHeight, 0f), BackgroundColor = new Color(104, 123, 192) * 0.65f, BorderColor = Color.Transparent, IgnoresMouseInteraction = true };
-                    divider.SetPadding(0f);
-                    section.Append(divider);
-                }
+                // The description shifts up by eight pixels; the changelog body shifts up by four after its heading moves with the section.
+                section.Append(new UIText(value, 0.75f, false) { Width = StyleDimension.Fill, Top = new StyleDimension(includeDivider ? 30f : 34f, 0f), IsWrapped = true, WrappedTextBottomPadding = 0f });
                 return section;
             }
 

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -46,11 +48,29 @@ public sealed class PluginManagerRuntime
         foreach (var controller in controllers) registry.Synchronize(controller.Key);
         return result;
     }
+
+    /// <summary>Enables packages using the async-aware lifecycle path.</summary>
+    public async Task<PluginEnableResult> EnableAsync(PluginId id, CancellationToken cancellationToken)
+    {
+        var controllers = registry.Records.Where(record => record.Controller != null).ToDictionary(record => record.Manifest.Id, record => record.Controller!);
+        var result = await activation.EnableAsync(id, registry.Records.Where(record => record.State != PluginPackageLifecycleState.Uninstalled).Select(record => record.Manifest).ToArray(), controllers, cancellationToken).ConfigureAwait(false);
+        foreach (var controller in controllers) registry.Synchronize(controller.Key);
+        return result;
+    }
     /// <summary>Disables a loaded enabled package without affecting other packages.</summary>
     public void Disable(PluginId id)
     {
         var record = registry.Records.Single(record => record.Manifest.Id == id);
         if (record.Controller?.State == PluginLifecycleState.Enabled) record.Controller.Disable();
+        registry.Synchronize(id);
+    }
+
+    /// <summary>Disables one package through the async-aware lifecycle path.</summary>
+    public async Task DisableAsync(PluginId id, CancellationToken cancellationToken)
+    {
+        var record = registry.Records.Single(record => record.Manifest.Id == id);
+        if (record.Controller?.State == PluginLifecycleState.Enabled)
+            await record.Controller.DisableAsync(cancellationToken).ConfigureAwait(false);
         registry.Synchronize(id);
     }
 
@@ -62,7 +82,12 @@ public sealed class PluginManagerRuntime
     {
         var record = registry.Records.Single(record => record.Manifest.Id == id);
         if (record.Controller?.State == PluginLifecycleState.Enabled)
-            record.Controller.Disable();
+        {
+            if (record.Controller.UsesAsyncLifecycle)
+                record.Controller.DisableAsync(CancellationToken.None).GetAwaiter().GetResult();
+            else
+                record.Controller.Disable();
+        }
         registry.MarkRestartRequired(id, "Plugin reload requires restarting Alacrity because loaded assemblies cannot be unloaded safely.");
     }
 
@@ -80,6 +105,19 @@ public sealed class PluginManagerRuntime
         if (record.Controller != null && record.Controller.State != PluginLifecycleState.Uninstalled)
             record.Controller.Uninstall();
 
+        uninstallService.Execute(uninstallService.Plan(id, removeUserData));
+        registry.MarkUninstalled(id);
+    }
+
+    /// <summary>Uninstalls an async plugin through its cancellable lifecycle before removing package files.</summary>
+    public async Task UninstallAsync(PluginId id, PluginUninstallService uninstallService, bool removeUserData, CancellationToken cancellationToken)
+    {
+        if (uninstallService == null) throw new ArgumentNullException(nameof(uninstallService));
+        var record = registry.Records.Single(record => record.Manifest.Id == id);
+        var enabledDependent = registry.Records.FirstOrDefault(candidate => candidate.State == PluginPackageLifecycleState.Enabled && candidate.Manifest.Dependencies.Any(dependency => dependency.Id == id));
+        if (enabledDependent != null) throw new InvalidOperationException("Cannot uninstall " + id + " while enabled plugin " + enabledDependent.Manifest.Id + " requires it.");
+        if (record.Controller != null && record.Controller.State != PluginLifecycleState.Uninstalled)
+            await record.Controller.UninstallAsync(cancellationToken).ConfigureAwait(false);
         uninstallService.Execute(uninstallService.Plan(id, removeUserData));
         registry.MarkUninstalled(id);
     }

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -40,6 +42,43 @@ public sealed class PluginEnableExecutor
             for (var index = newlyEnabled.Count - 1; index >= 0; index--)
             {
                 try { newlyEnabled[index].Disable(); }
+                catch (Exception rollbackFailure) { rollbackFailures.Add(rollbackFailure); }
+            }
+            return new PluginEnableResult(false, exception, Array.Empty<PluginEnableNotification>(), rollbackFailures);
+        }
+    }
+
+    /// <summary>Asynchronously enables a dependency plan without scheduling synchronous callbacks onto worker threads.</summary>
+    public async Task<PluginEnableResult> ExecuteAsync(PluginEnablePlan plan, IReadOnlyDictionary<PluginId, PluginLifecycleController> controllers, CancellationToken cancellationToken)
+    {
+        if (plan == null) throw new ArgumentNullException(nameof(plan));
+        if (controllers == null) throw new ArgumentNullException(nameof(controllers));
+        var newlyEnabled = new List<PluginLifecycleController>();
+        var notifications = new List<PluginEnableNotification>();
+        try
+        {
+            foreach (var id in plan.OrderedPlugins)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!controllers.TryGetValue(id, out var controller)) throw new InvalidOperationException("No lifecycle controller is registered for " + id + ".");
+                if (controller.State == PluginLifecycleState.Enabled) continue;
+                if (controller.State == PluginLifecycleState.Discovered) controller.Validate();
+                if (controller.State != PluginLifecycleState.Disabled) throw new InvalidOperationException("Plugin cannot be enabled from state " + controller.State + ": " + id + ".");
+                await controller.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                await controller.EnableAsync(cancellationToken).ConfigureAwait(false);
+                newlyEnabled.Add(controller);
+                foreach (var notification in plan.Notifications)
+                    if (notification.Dependency == id) notifications.Add(notification);
+            }
+            foreach (var notification in notifications) this.notifications?.Publish(notification.Message, TimeSpan.FromSeconds(6));
+            return new PluginEnableResult(true, null, notifications, Array.Empty<Exception>());
+        }
+        catch (Exception exception)
+        {
+            var rollbackFailures = new List<Exception>();
+            for (var index = newlyEnabled.Count - 1; index >= 0; index--)
+            {
+                try { await newlyEnabled[index].DisableAsync(CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception rollbackFailure) { rollbackFailures.Add(rollbackFailure); }
             }
             return new PluginEnableResult(false, exception, Array.Empty<PluginEnableNotification>(), rollbackFailures);

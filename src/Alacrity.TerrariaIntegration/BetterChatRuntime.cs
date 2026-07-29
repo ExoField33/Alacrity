@@ -28,7 +28,7 @@ namespace AlacrityTerraria
         private const int RepeatDelayMilliseconds = 320;
         private const int RepeatIntervalMilliseconds = 38;
 
-        internal static string Process(PluginChatHost host, string oldString, bool allowMultiLine)
+        internal static string Process(PluginChatHost host, IPluginUserInteractionService userInteraction, string oldString, bool allowMultiLine)
         {
             string text = oldString ?? string.Empty;
             SynchronizeCaret(text);
@@ -51,17 +51,19 @@ namespace AlacrityTerraria
                 }
                 else if (Pressed(current, previous, Keys.V))
                 {
-                    text = Insert(text, ReadClipboard());
+                    userInteraction.TryReadClipboard(out string pasted);
+                    text = Insert(text, NormalizeInput(pasted, allowMultiLine));
                 }
                 else if (Pressed(current, previous, Keys.C) || Pressed(current, previous, Keys.Insert))
                 {
-                    WriteClipboard(SelectedOrAll(text));
+                    userInteraction.TryWriteClipboard(SelectedOrAll(text));
                 }
                 else if (Pressed(current, previous, Keys.X))
                 {
-                    WriteClipboard(SelectedOrAll(text));
-                    text = HasSelection ? DeleteSelection(text) : string.Empty;
-                    if (!HasSelection)
+                    userInteraction.TryWriteClipboard(SelectedOrAll(text));
+                    bool hadSelection = HasSelection;
+                    text = hadSelection ? DeleteSelection(text) : string.Empty;
+                    if (!hadSelection)
                         _caret = 0;
                 }
             }
@@ -76,7 +78,7 @@ namespace AlacrityTerraria
                     else if (key == 27)
                         Main.inputTextEscape = true;
                     else if (key >= 32 && key != 127)
-                        text = Insert(text, Main.keyString[index] ?? string.Empty);
+                        text = Insert(text, NormalizeInput(Main.keyString[index] ?? string.Empty, allowMultiLine));
                 }
             }
 
@@ -154,7 +156,7 @@ namespace AlacrityTerraria
             return snippets;
         }
 
-        internal static void Hover(object value)
+        internal static void Hover(object value, IPluginUserInteractionService userInteraction)
         {
             if (!(value is TextSnippet snippet))
                 return;
@@ -163,7 +165,7 @@ namespace AlacrityTerraria
             _hoveredTick = Environment.TickCount;
             if (Main.mouseRight && Main.mouseRightRelease)
             {
-                WriteClipboard(_hoveredMessage);
+                userInteraction.TryWriteClipboard(_hoveredMessage);
                 Main.mouseRightRelease = false;
             }
         }
@@ -219,7 +221,7 @@ namespace AlacrityTerraria
         private static string RemoveBefore(string text, bool control)
         {
             if (_caret == 0) return text;
-            int start = control ? PreviousWord(text, _caret) : PreviousScalar(text, _caret);
+            int start = control ? PreviousWord(text, _caret) : PreviousUnit(text, _caret);
             text = text.Remove(start, _caret - start);
             _caret = start;
             return text;
@@ -228,7 +230,7 @@ namespace AlacrityTerraria
         private static string RemoveAfter(string text, bool control)
         {
             if (_caret >= text.Length) return text;
-            int end = control ? NextWord(text, _caret) : NextScalar(text, _caret);
+            int end = control ? NextWord(text, _caret) : NextUnit(text, _caret);
             return text.Remove(_caret, end - _caret);
         }
 
@@ -241,8 +243,23 @@ namespace AlacrityTerraria
             return text.Remove(start, end - start);
         }
 
-        private static int PreviousWord(string text, int index) { while (index > 0 && char.IsWhiteSpace(text, PreviousScalar(text, index))) index = PreviousScalar(text, index); while (index > 0 && !char.IsWhiteSpace(text, PreviousScalar(text, index))) index = PreviousScalar(text, index); return index; }
-        private static int NextWord(string text, int index) { while (index < text.Length && !char.IsWhiteSpace(text, index)) index = NextScalar(text, index); while (index < text.Length && char.IsWhiteSpace(text, index)) index = NextScalar(text, index); return index; }
+        private static int PreviousWord(string text, int index) { while (index > 0 && char.IsWhiteSpace(text, PreviousUnit(text, index))) index = PreviousUnit(text, index); while (index > 0 && !char.IsWhiteSpace(text, PreviousUnit(text, index))) index = PreviousUnit(text, index); return index; }
+        private static int NextWord(string text, int index) { while (index < text.Length && !char.IsWhiteSpace(text, index)) index = NextUnit(text, index); while (index < text.Length && char.IsWhiteSpace(text, index)) index = NextUnit(text, index); return index; }
+        private static int PreviousUnit(string text, int index) { return TryGetChatTagAt(text, Math.Max(0, index - 1), out int start, out _) ? start : PreviousScalar(text, index); }
+        private static int NextUnit(string text, int index) { return TryGetChatTagAt(text, Math.Min(index, text.Length - 1), out _, out int end) ? end : NextScalar(text, index); }
+        private static bool TryGetChatTagAt(string text, int index, out int start, out int end)
+        {
+            start = end = -1;
+            if (string.IsNullOrEmpty(text) || index < 0 || index >= text.Length) return false;
+            int opening = text.LastIndexOf('[', index);
+            if (opening < 0 || opening + 3 >= text.Length) return false;
+            char kind = text[opening + 1];
+            char syntax = text[opening + 2];
+            if ((kind != 'i' && kind != 'g') || (syntax != ':' && !(kind == 'i' && syntax == '/'))) return false;
+            int closing = text.IndexOf(']', opening + 3);
+            if (closing < 0 || index > closing) return false;
+            start = opening; end = closing + 1; return true;
+        }
         private static int PreviousScalar(string text, int index) => index > 1 && char.IsLowSurrogate(text[index - 1]) && char.IsHighSurrogate(text[index - 2]) ? index - 2 : Math.Max(0, index - 1);
         private static int NextScalar(string text, int index) => index + 1 < text.Length && char.IsHighSurrogate(text[index]) && char.IsLowSurrogate(text[index + 1]) ? index + 2 : Math.Min(text.Length, index + 1);
         private static bool Pressed(KeyboardState current, KeyboardState old, Keys key) => current.IsKeyDown(key) && !old.IsKeyDown(key);
@@ -275,9 +292,7 @@ namespace AlacrityTerraria
         private static int Elapsed(int current, int previous) => unchecked(current - previous);
         private static int Clamp(int value, int minimum, int maximum) => value < minimum ? minimum : value > maximum ? maximum : value;
         private static string EscapeTagText(string value) => (value ?? string.Empty).Replace("\\", "\\\\").Replace("]", "\\]");
-        private static string ReadClipboard() { try { return System.Windows.Forms.Clipboard.ContainsText() ? System.Windows.Forms.Clipboard.GetText() : string.Empty; } catch { return string.Empty; } }
-        private static void WriteClipboard(string value) { try { System.Windows.Forms.Clipboard.SetText(value ?? string.Empty); } catch { } }
-
+        private static string NormalizeInput(string value, bool allowMultiLine) => allowMultiLine ? value : (value ?? string.Empty).Replace("\r", string.Empty).Replace("\n", " ");
         private sealed class ChatLineContext
         {
             internal ChatLineContext(string text) { Text = text ?? string.Empty; }

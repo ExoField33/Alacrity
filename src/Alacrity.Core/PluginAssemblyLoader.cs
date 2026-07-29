@@ -8,6 +8,14 @@ namespace Alacrity.Core;
 /// <summary>Loads the manifest-declared entry type only after package verification and activation gating.</summary>
 public sealed class PluginAssemblyLoader
 {
+    private readonly IPluginLoadContext loadContext;
+
+    public PluginAssemblyLoader(IPluginLoadContext? loadContext = null)
+    {
+        this.loadContext = loadContext ?? new NetFrameworkPluginLoadContext();
+    }
+
+    public IPluginLoadContext LoadContext => loadContext;
     /// <summary>Loads either supported lifecycle contract and rejects ambiguous entries.</summary>
     public object LoadAny(PluginPackageDescriptor package)
     {
@@ -18,7 +26,7 @@ public sealed class PluginAssemblyLoader
         var prefix = Path.GetFullPath(package.PackageDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!assemblyPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new UnauthorizedAccessException("Plugin entry assembly escapes its package directory.");
         if (!File.Exists(assemblyPath)) throw new FileNotFoundException("The manifest-declared entry assembly is missing.", assemblyPath);
-        var type = Assembly.LoadFrom(assemblyPath).GetType(manifest.EntryType, true);
+        var type = loadContext.Load(assemblyPath).GetType(manifest.EntryType, true);
         bool synchronous = typeof(IAlacrityPlugin).IsAssignableFrom(type);
         bool asynchronous = typeof(IAsyncAlacrityPlugin).IsAssignableFrom(type);
         if (synchronous == asynchronous) throw new InvalidOperationException(synchronous ? "The manifest-declared entry type implements both plugin lifecycle contracts." : "The manifest-declared entry type does not implement a supported plugin lifecycle contract.");

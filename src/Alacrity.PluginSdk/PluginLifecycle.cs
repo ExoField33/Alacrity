@@ -147,6 +147,8 @@ public interface IPluginContext
     IPluginUiService Ui { get; }
     /// <summary>Bounded host-owned overlay registrations with no raw rendering access.</summary>
     IPluginOverlayService Overlays { get; }
+    /// <summary>Permission-gated clipboard and external-link operations owned by the host.</summary>
+    IPluginUserInteractionService UserInteraction { get; }
     /// <summary>Host-provided Terraria services with no raw Terraria objects exposed.</summary>
     ITerrariaServices Terraria { get; }
     /// <summary>Read-only multiplayer session and server policy state.</summary>

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
@@ -16,6 +18,7 @@ internal static class Program
             ManifestRejectsInvalidServerClassification();
             PackageManifestLoadsBeforePluginExecution();
             PluginAssemblyLoaderUsesHostManifestWithoutDllMetadata();
+            AsyncPluginAssemblyLoaderUsesSharedRuntimeController();
             HostManifestIsAuthoritativeOverPluginImplementation();
             UnifiedContextExposesAllHostServices();
             PluginResourceKindValuesRemainStable();
@@ -46,6 +49,7 @@ internal static class Program
             LifecycleFailureFaultsAndCleansResources();
             LifecyclePreservesCallbackFailureAndRecordsCleanupFailure();
             LifecycleUninstallReachesTerminalStateAfterFailures();
+            AsyncLifecycleSupportsMixedActivationCancellationAndTimeout();
             ResourceScopeReleasesChildrenInParentOrder();
             ResourceScopeRecordsIndividualCleanupFailures();
             ActivationTransactionRollsBackInReverseOrder();
@@ -54,6 +58,7 @@ internal static class Program
             ExtensionRegistrationsAreScopeOwned();
             ExtensionServicesRequireOwnersAndIsolateScopes();
             ChatVisibilityFiltersAreScopeOwned();
+            UserInteractionServicesRequirePermissionsAndValidateLinks();
             OverlayDispatchIsOrderedIsolatedAndScopeOwned();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
@@ -169,12 +174,37 @@ internal static class Program
         resources.Dispose();
     }
 
+    private static void AsyncPluginAssemblyLoaderUsesSharedRuntimeController()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-async-loader-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string package = Path.Combine(root, "plugins", "alacrity.async-ui-test");
+            Directory.CreateDirectory(package);
+            const string assemblyName = "UiTestPlugin.dll";
+            File.Copy(typeof(Alacrity.UiTestPlugin.AsyncUiTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.async-ui-test\",\"name\":\"Async UI Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"Alacrity.UiTestPlugin.AsyncUiTestPlugin\"}");
+            var descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
+            object entry = new PluginAssemblyLoader().LoadAny(descriptor);
+            Assert(entry is IAsyncAlacrityPlugin && entry is not IAlacrityPlugin, "The loader must accept exactly the asynchronous lifecycle contract.");
+            var runtime = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), new PluginHostContextFactory(root, new PluginServiceHub(), new PluginExtensionHost(), new PluginCommandHost()));
+            var controller = runtime.LoadTrusted(descriptor, new PluginTrustVerificationResult(PluginTrustLevel.LocallyTrusted, "test"), new TestLogger(), new TestMultiplayerSession());
+            Assert(controller.UsesAsyncLifecycle, "The package runtime must use the shared async-aware lifecycle controller.");
+            controller.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            controller.EnableAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Assert(controller.State == PluginLifecycleState.Enabled, "The runtime must activate manifest-declared asynchronous plugins.");
+            controller.DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     private static void UnifiedContextExposesAllHostServices()
     {
         var resources = new PluginResourceScope();
         var context = new TestContext(CreateManifest(), resources);
         Assert(context.Settings != null && context.Storage != null && context.Events != null && context.Commands != null, "The final plugin context must expose settings, storage, events, and commands.");
         Assert(context.Keybinds != null && context.Ui != null && context.Services != null && context.Multiplayer != null, "The final plugin context must expose keybinds, UI, services, and multiplayer state.");
+        Assert(context.UserInteraction != null, "The final plugin context must expose permission-gated user interaction services.");
         resources.Dispose();
     }
 
@@ -865,6 +895,40 @@ internal static class Program
         Assert(lifecycle.LastOperation.CleanupFailures.Count >= 1, "Later shutdown failures must be retained as cleanup diagnostics.");
     }
 
+    private static void AsyncLifecycleSupportsMixedActivationCancellationAndTimeout()
+    {
+        var order = new List<string>();
+        using var syncScope = new PluginResourceScope();
+        using var asyncScope = new PluginResourceScope();
+        var syncManifest = CreateManifest();
+        var asyncManifest = new PluginManifest(new PluginId("async.plugin"), "Async", new Version(1, 0), "Tests", "Async test", new[] { "1.4.5.6" }, new[] { new PluginDependency(syncManifest.Id) });
+        var sync = new PluginLifecycleController(new OrderedSyncPlugin(order, "sync"), new TestContext(syncManifest, syncScope));
+        var asynchronous = new PluginLifecycleController(new OrderedAsyncPlugin(order, "async"), new TestContext(asyncManifest, asyncScope));
+        sync.Validate();
+        asynchronous.Validate();
+        var plan = new PluginEnablePlanner().Plan(asyncManifest.Id, new[] { syncManifest, asyncManifest }, Array.Empty<PluginId>());
+        var result = new PluginEnableExecutor().ExecuteAsync(plan, new Dictionary<PluginId, PluginLifecycleController> { [syncManifest.Id] = sync, [asyncManifest.Id] = asynchronous }, CancellationToken.None).GetAwaiter().GetResult();
+        Assert(result.Succeeded && order.SequenceEqual(new[] { "sync:init", "sync:enable", "async:init", "async:enable" }), "Async activation must preserve dependency order while synchronous callbacks remain direct.");
+        asynchronous.DisableAsync(CancellationToken.None).GetAwaiter().GetResult();
+        asynchronous.DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        Assert(order.Contains("async:disable") && order.Contains("async:shutdown"), "Async disable and shutdown callbacks must complete through the shared lifecycle state machine.");
+
+        using var timeoutScope = new PluginResourceScope();
+        var timeout = new PluginLifecycleController(new NonCooperativeAsyncPlugin(timeoutScope), new TestContext(asyncManifest, timeoutScope), TimeSpan.FromMilliseconds(20));
+        timeout.Validate();
+        timeout.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        AssertThrows<TimeoutException>(() => timeout.EnableAsync(CancellationToken.None).GetAwaiter().GetResult());
+        Assert(timeout.LastOperation.CallbackFailure?.Exception is TimeoutException && timeout.LastOperation.CleanupFailures.Count == 0, "Async timeout must retain the callback failure and release owned registrations.");
+
+        using var cancelledScope = new PluginResourceScope();
+        var cancelled = new PluginLifecycleController(new CancellableAsyncPlugin(), new TestContext(asyncManifest, cancelledScope));
+        cancelled.Validate();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        AssertThrows<OperationCanceledException>(() => cancelled.InitializeAsync(cancellation.Token).GetAwaiter().GetResult());
+        Assert(cancelled.State == PluginLifecycleState.Faulted, "Cancellation during async initialization must fault only that plugin and preserve host startup isolation.");
+    }
+
     private static void ResourceScopeReleasesChildrenInParentOrder()
     {
         var order = new List<string>();
@@ -1040,6 +1104,21 @@ internal static class Program
         Assert(!host.ShouldDisplay(ChatMessageOrigin.LocalSystem), "Remaining plugin filters must stay registered.");
         firstScope.Dispose();
         secondScope.Dispose();
+    }
+
+    private static void UserInteractionServicesRequirePermissionsAndValidateLinks()
+    {
+        var backend = new RecordingUserInteractionBackend();
+        var host = new PluginUserInteractionHost(backend);
+        var denied = host.CreateService(CreateManifest());
+        Assert(!denied.TryWriteClipboard("blocked") && !denied.TryReadClipboard(out _) && !denied.TryOpenExternalLink(new Uri("https://example.invalid")), "Host interaction services must deny every operation not declared in the verified manifest.");
+        Assert(backend.Calls == 0, "Denied interaction requests must not reach the platform backend.");
+
+        var permitted = host.CreateService(new PluginManifest(new PluginId("interaction.plugin"), "Interaction", new Version(1, 0), "Tests", "Interaction test", new[] { "1.4.5.6" }, permissions: PluginPermission.Clipboard | PluginPermission.OpenExternalLinks));
+        Assert(permitted.TryWriteClipboard("copied") && permitted.TryReadClipboard(out var copied) && copied == "copied", "Declared clipboard permission must enable the host-owned clipboard backend.");
+        Assert(permitted.TryOpenExternalLink(new Uri("https://example.invalid/path")), "Declared external-link permission must allow validated HTTPS links.");
+        Assert(!permitted.TryOpenExternalLink(new Uri("file:///C:/not-allowed")), "The host must reject non-HTTP(S) links before invoking the backend.");
+        Assert(backend.LastOpened == "https://example.invalid/path", "Only the validated URI should reach the platform backend.");
     }
 
     private static void PluginDataAndSettingsStayIsolated()
@@ -1347,6 +1426,7 @@ internal static class Program
             Keybinds = new TestKeybinds();
             Ui = new TestUi();
             Overlays = new TestOverlays();
+            UserInteraction = new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(manifest);
             Terraria = new TestTerrariaServices();
             Multiplayer = new TestMultiplayerSession();
         }
@@ -1362,6 +1442,7 @@ internal static class Program
         public IPluginKeybindService Keybinds { get; }
         public IPluginUiService Ui { get; }
         public IPluginOverlayService Overlays { get; }
+        public IPluginUserInteractionService UserInteraction { get; }
         public ITerrariaServices Terraria { get; }
         public IMultiplayerSession Multiplayer { get; }
     }
@@ -1397,6 +1478,44 @@ internal static class Program
             if (failShutdown)
                 throw new InvalidOperationException("Expected shutdown failure.");
         }
+    }
+
+    private sealed class OrderedSyncPlugin : IAlacrityPlugin
+    {
+        private readonly List<string> order; private readonly string name;
+        public OrderedSyncPlugin(List<string> order, string name) { this.order = order; this.name = name; }
+        public void Initialize(IPluginContext context) { order.Add(name + ":init"); }
+        public void Enable() { order.Add(name + ":enable"); }
+        public void Disable() { order.Add(name + ":disable"); }
+        public void Shutdown() { order.Add(name + ":shutdown"); }
+    }
+
+    private sealed class OrderedAsyncPlugin : IAsyncAlacrityPlugin
+    {
+        private readonly List<string> order; private readonly string name;
+        public OrderedAsyncPlugin(List<string> order, string name) { this.order = order; this.name = name; }
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) { order.Add(name + ":init"); return Task.CompletedTask; }
+        public Task EnableAsync(CancellationToken cancellationToken) { order.Add(name + ":enable"); return Task.CompletedTask; }
+        public Task DisableAsync(CancellationToken cancellationToken) { order.Add(name + ":disable"); return Task.CompletedTask; }
+        public Task ShutdownAsync(CancellationToken cancellationToken) { order.Add(name + ":shutdown"); return Task.CompletedTask; }
+    }
+
+    private sealed class NonCooperativeAsyncPlugin : IAsyncAlacrityPlugin
+    {
+        private readonly IPluginResourceScope scope;
+        public NonCooperativeAsyncPlugin(IPluginResourceScope scope) { this.scope = scope; }
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) { scope.Own("async-timeout", PluginResourceKind.BackgroundTask, new TestRegistration("async-timeout")); return Task.CompletedTask; }
+        public Task EnableAsync(CancellationToken cancellationToken) => new TaskCompletionSource<object?>().Task;
+        public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class CancellableAsyncPlugin : IAsyncAlacrityPlugin
+    {
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) => Task.FromCanceled(cancellationToken);
+        public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class TestSettings : IPluginSettings
@@ -1464,6 +1583,16 @@ internal static class Program
         private readonly ChatMessageOrigin hidden;
         public TestChatFilter(ChatMessageOrigin hidden) { this.hidden = hidden; }
         public bool ShouldDisplay(ChatMessageOrigin origin) => origin != hidden;
+    }
+
+    private sealed class RecordingUserInteractionBackend : IPluginUserInteractionBackend
+    {
+        private string clipboard = string.Empty;
+        public int Calls { get; private set; }
+        public string? LastOpened { get; private set; }
+        public bool TryReadClipboard(out string text) { Calls++; text = clipboard; return true; }
+        public bool TryWriteClipboard(string text) { Calls++; clipboard = text ?? string.Empty; return true; }
+        public bool TryOpenExternalLink(Uri uri) { Calls++; LastOpened = uri.AbsoluteUri; return true; }
     }
 
     private sealed class TestOverlayCanvas : IPluginOverlayCanvas

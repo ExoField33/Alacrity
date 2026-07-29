@@ -1,4 +1,6 @@
 using Alacrity.PluginSdk;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Alacrity.UiTestPlugin;
 
@@ -42,4 +44,13 @@ public sealed class UiTestPlugin : IAlacrityPlugin
     public void Enable() { }
     public void Disable() { }
     public void Shutdown() { }
+}
+
+/// <summary>Minimal asynchronous test entry used by host lifecycle characterization tests.</summary>
+public sealed class AsyncUiTestPlugin : IAsyncAlacrityPlugin
+{
+    public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

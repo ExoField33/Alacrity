@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -33,5 +35,21 @@ public sealed class PluginActivationCoordinator
         if (!gate.CanActivate(requestedManifest, installed, new HashSet<PluginId>(plan.OrderedPlugins.Concat(enabled))))
             return new PluginEnableResult(false, new InvalidOperationException("Plugin activation is blocked by unresolved dependencies."), Array.Empty<PluginEnableNotification>(), Array.Empty<Exception>());
         return executor.Execute(plan, controllers);
+    }
+
+    /// <summary>Asynchronous counterpart for packages using <see cref="IAsyncAlacrityPlugin"/>.</summary>
+    public Task<PluginEnableResult> EnableAsync(PluginId requested, IReadOnlyList<PluginManifest> installed, IReadOnlyDictionary<PluginId, PluginLifecycleController> controllers, CancellationToken cancellationToken)
+    {
+        if (installed == null) throw new ArgumentNullException(nameof(installed));
+        if (controllers == null) throw new ArgumentNullException(nameof(controllers));
+        var recovery = patchHost.RecoverIncompleteTransactions();
+        if (recovery.Any(result => !result.IsResolved))
+            return Task.FromResult(new PluginEnableResult(false, new InvalidOperationException("Plugin activation is blocked by unresolved patch recovery."), Array.Empty<PluginEnableNotification>(), Array.Empty<Exception>()));
+        var enabled = controllers.Where(pair => pair.Value.State == PluginLifecycleState.Enabled).Select(pair => pair.Key).ToArray();
+        var plan = planner.Plan(requested, installed, enabled);
+        var requestedManifest = installed.SingleOrDefault(manifest => manifest.Id == requested) ?? throw new InvalidOperationException("Requested plugin is not installed: " + requested + ".");
+        if (!gate.CanActivate(requestedManifest, installed, new HashSet<PluginId>(plan.OrderedPlugins.Concat(enabled))))
+            return Task.FromResult(new PluginEnableResult(false, new InvalidOperationException("Plugin activation is blocked by unresolved dependencies."), Array.Empty<PluginEnableNotification>(), Array.Empty<Exception>()));
+        return executor.ExecuteAsync(plan, controllers, cancellationToken);
     }
 }
