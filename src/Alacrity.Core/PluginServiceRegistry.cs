@@ -35,6 +35,42 @@ public sealed class PluginServiceHub
         }
     }
 
+    /// <summary>Returns a host service only when it is published by the expected verified package.</summary>
+    public bool TryGetHostService<TService>(PluginId expectedOwner, out TService? service) where TService : class
+    {
+        if (!expectedOwner.IsValid) throw new ArgumentException("A valid expected owner is required.", nameof(expectedOwner));
+        lock (gate)
+        {
+            if (!services.TryGetValue(typeof(TService), out var published) || published.Owner != expectedOwner)
+            {
+                service = null;
+                return false;
+            }
+
+            service = (TService)published.Service;
+            return true;
+        }
+    }
+
+    /// <summary>Returns owner metadata with a host service so integration code can enforce manifest policy.</summary>
+    public bool TryGetHostService<TService>(PluginId expectedOwner, out TService? service, out PluginManifest? publisher) where TService : class
+    {
+        if (!expectedOwner.IsValid) throw new ArgumentException("A valid expected owner is required.", nameof(expectedOwner));
+        lock (gate)
+        {
+            if (!services.TryGetValue(typeof(TService), out var published) || published.Owner != expectedOwner)
+            {
+                service = null;
+                publisher = null;
+                return false;
+            }
+
+            service = (TService)published.Service;
+            publisher = published.Manifest;
+            return true;
+        }
+    }
+
     private IPluginRegistration Publish<TService>(PluginManifest publisher, IPluginResourceScope resources, TService service) where TService : class
     {
         if (service == null) throw new ArgumentNullException(nameof(service));
@@ -44,7 +80,7 @@ public sealed class PluginServiceHub
         {
             if (services.ContainsKey(type))
                 throw new InvalidOperationException("A service is already published for " + type.FullName + ".");
-            published = new PublishedService(type, publisher.Id, service, Remove);
+            published = new PublishedService(type, publisher, service, Remove);
             services.Add(type, published);
         }
 
@@ -118,14 +154,16 @@ public sealed class PluginServiceHub
     {
         private readonly Action<PublishedService> remove;
         private bool released;
-        public PublishedService(Type contractType, PluginId owner, object service, Action<PublishedService> remove)
+        public PublishedService(Type contractType, PluginManifest manifest, object service, Action<PublishedService> remove)
         {
             ContractType = contractType;
-            Owner = owner;
+            Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
+            Owner = manifest.Id;
             Service = service;
             this.remove = remove;
         }
         public Type ContractType { get; }
+        public PluginManifest Manifest { get; }
         public PluginId Owner { get; }
         public object Service { get; }
         public string Name => "service:" + ContractType.FullName;

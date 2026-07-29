@@ -14,6 +14,7 @@ public sealed class PluginExtensionHost
     private IReadOnlyList<PluginKeybindRegistration> keybindSnapshot = Array.Empty<PluginKeybindRegistration>();
     private bool keybindSnapshotDirty = true;
     private long keybindVersion;
+    private long nextKeybindSequence;
     private readonly List<OwnedUiContribution> settingsPages = new List<OwnedUiContribution>();
     private readonly List<OwnedSettingControl> settingsControls = new List<OwnedSettingControl>();
     private readonly List<OwnedUiContribution> overlays = new List<OwnedUiContribution>();
@@ -60,6 +61,12 @@ public sealed class PluginExtensionHost
     /// <summary>Returns active keybind rows in deterministic plugin and registration order for the Terraria controls adapter.</summary>
     public IReadOnlyList<PluginKeybindRegistration> GetKeybinds()
     {
+        return GetKeybindSnapshot().Registrations;
+    }
+
+    /// <summary>Returns registrations and their version from one lock-protected immutable snapshot.</summary>
+    public PluginKeybindRegistrySnapshot GetKeybindSnapshot()
+    {
         lock (gate)
         {
             if (keybindSnapshotDirty)
@@ -67,12 +74,12 @@ public sealed class PluginExtensionHost
                 keybindSnapshot = Array.AsReadOnly(keybinds.Values
                     .OrderBy(keybind => keybind.Owner.Value, StringComparer.Ordinal)
                     .ThenBy(keybind => keybind.Sequence)
-                    .Select(keybind => new PluginKeybindRegistration(keybind.Owner, keybind.Heading, keybind.Descriptor))
+                    .Select(keybind => new PluginKeybindRegistration(keybind.Owner, keybind.Heading, keybind.Descriptor, keybind.Sequence))
                     .ToArray());
                 keybindSnapshotDirty = false;
             }
 
-            return keybindSnapshot;
+            return new PluginKeybindRegistrySnapshot(keybindVersion, keybindSnapshot);
         }
     }
 
@@ -205,7 +212,7 @@ public sealed class PluginExtensionHost
         {
             string hostId = GetHostKeybindId(owner, descriptor);
             if (keybinds.ContainsKey(hostId)) throw new InvalidOperationException("A keybind with this ID is already registered by this plugin: " + descriptor.Id);
-            keybinds.Add(hostId, new OwnedKeybind(owner, heading, descriptor, handler, stateHandler, keybinds.Count));
+            keybinds.Add(hostId, new OwnedKeybind(owner, heading, descriptor, handler, stateHandler, nextKeybindSequence++));
             keybindSnapshotDirty = true;
             keybindVersion++;
         }

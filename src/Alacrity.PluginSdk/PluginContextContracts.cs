@@ -162,12 +162,19 @@ public enum PluginKeybindActivation
 /// <summary>Immutable keybind declaration.</summary>
 public sealed class PluginKeybindDescriptor
 {
-    /// <summary>Creates a keybind declaration.</summary>
-    public PluginKeybindDescriptor(string id, string defaultBinding, string displayName, PluginKeybindActivation activation = PluginKeybindActivation.Press)
+    /// <summary>Creates a press-activated keybind declaration.</summary>
+    public PluginKeybindDescriptor(string id, string defaultBinding, string displayName)
+        : this(id, defaultBinding, displayName, PluginKeybindActivation.Press)
+    {
+    }
+
+    /// <summary>Creates a keybind declaration with an explicit activation mode.</summary>
+    public PluginKeybindDescriptor(string id, string defaultBinding, string displayName, PluginKeybindActivation activation)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A keybind ID is required.", nameof(id)) : id;
         DefaultBinding = string.IsNullOrWhiteSpace(defaultBinding) ? throw new ArgumentException("A default binding is required.", nameof(defaultBinding)) : defaultBinding;
         DisplayName = string.IsNullOrWhiteSpace(displayName) ? throw new ArgumentException("A display name is required.", nameof(displayName)) : displayName;
+        if (!Enum.IsDefined(typeof(PluginKeybindActivation), activation)) throw new ArgumentOutOfRangeException(nameof(activation));
         Activation = activation;
     }
 
@@ -189,11 +196,19 @@ public sealed class PluginKeybindRegistration
 {
     /// <summary>Creates a row owned by a verified plugin package.</summary>
     public PluginKeybindRegistration(PluginId owner, string heading, PluginKeybindDescriptor descriptor)
+        : this(owner, heading, descriptor, 0)
+    {
+    }
+
+    /// <summary>Creates a row with host-owned monotonic registration ordering metadata.</summary>
+    public PluginKeybindRegistration(PluginId owner, string heading, PluginKeybindDescriptor descriptor, long registrationSequence)
     {
         if (!owner.IsValid) throw new ArgumentException("A valid plugin owner is required.", nameof(owner));
+        if (registrationSequence < 0) throw new ArgumentOutOfRangeException(nameof(registrationSequence));
         Owner = owner;
         Heading = string.IsNullOrWhiteSpace(heading) ? throw new ArgumentException("A heading is required.", nameof(heading)) : heading;
         Descriptor = descriptor ?? throw new ArgumentNullException(nameof(descriptor));
+        RegistrationSequence = registrationSequence;
     }
 
     /// <summary>Verified plugin package that owns this binding.</summary>
@@ -203,8 +218,28 @@ public sealed class PluginKeybindRegistration
     /// <summary>Binding declaration and default.</summary>
     public PluginKeybindDescriptor Descriptor { get; }
 
+    /// <summary>Host-owned monotonic ordering number; never reused after a registration is removed.</summary>
+    public long RegistrationSequence { get; }
+
     /// <summary>Stable host key used by Terraria input-profile adapters. It is unique across plugin packages.</summary>
     public string HostId => Owner.Value + "." + Descriptor.Id;
+}
+
+/// <summary>Atomic immutable view of the host-owned keybind registry.</summary>
+public sealed class PluginKeybindRegistrySnapshot
+{
+    /// <summary>Creates one snapshot returned under the host registry lock.</summary>
+    public PluginKeybindRegistrySnapshot(long version, IReadOnlyList<PluginKeybindRegistration> registrations)
+    {
+        Version = version;
+        Registrations = registrations ?? throw new ArgumentNullException(nameof(registrations));
+    }
+
+    /// <summary>Changes whenever any registration is added or removed.</summary>
+    public long Version { get; }
+
+    /// <summary>Registrations in deterministic owner and registration order.</summary>
+    public IReadOnlyList<PluginKeybindRegistration> Registrations { get; }
 }
 
 /// <summary>Registers UI contributions; the host controls actual layout and rendering.</summary>

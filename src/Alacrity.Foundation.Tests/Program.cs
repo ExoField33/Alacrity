@@ -53,6 +53,7 @@ internal static class Program
             LifecyclePreservesCallbackFailureAndRecordsCleanupFailure();
             LifecycleUninstallReachesTerminalStateAfterFailures();
             AsyncLifecycleSupportsMixedActivationCancellationAndTimeout();
+            AsyncLifecycleCancelsAfterCallbackStarts();
             AsyncUninstallPropagatesLifecycleFailures();
             ResourceScopeReleasesChildrenInParentOrder();
             ResourceScopeRecordsIndividualCleanupFailures();
@@ -62,6 +63,8 @@ internal static class Program
             ExtensionRegistrationsAreScopeOwned();
             ExtensionServicesRequireOwnersAndIsolateScopes();
             KeybindsAreOwnedQualifiedAndScopeReleased();
+            KeybindDescriptorsValidateActivationAndSnapshotsRemainOwned();
+            OwnerQualifiedHostServiceLookupRejectsWrongPublisher();
             ChatVisibilityFiltersAreScopeOwned();
             ChatOwnershipCompositionAndPermissionEnforcement();
             UserInteractionServicesRequirePermissionsAndValidateLinks();
@@ -963,6 +966,22 @@ internal static class Program
         Assert(controller.State == PluginLifecycleState.Uninstalled && controller.LastOperation.CallbackFailure?.Exception is InvalidOperationException, "Async uninstall must retain lifecycle callback failures while reaching its terminal state.");
     }
 
+    private static void AsyncLifecycleCancelsAfterCallbackStarts()
+    {
+        using var scope = new PluginResourceScope();
+        var manifest = new PluginManifest(new PluginId("async.external-cancel"), "Async cancellation", new Version(1, 0), "Tests", "Async cancellation", new[] { "1.4.5.6" });
+        var plugin = new StartedNonCooperativeAsyncPlugin();
+        var controller = new PluginLifecycleController(plugin, new TestContext(manifest, scope), TimeSpan.FromSeconds(2));
+        controller.Validate();
+        controller.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        using var cancellation = new CancellationTokenSource();
+        Task operation = controller.EnableAsync(cancellation.Token);
+        Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The non-cooperative callback must start before external cancellation is tested.");
+        cancellation.Cancel();
+        AssertThrows<OperationCanceledException>(() => operation.GetAwaiter().GetResult());
+        plugin.Complete();
+    }
+
     private static void ResourceScopeReleasesChildrenInParentOrder()
     {
         var order = new List<string>();
@@ -1156,6 +1175,35 @@ internal static class Program
         secondScope.Dispose();
     }
 
+    private static void KeybindDescriptorsValidateActivationAndSnapshotsRemainOwned()
+    {
+        var descriptor = new PluginKeybindDescriptor("legacy", "T", "Legacy binding");
+        Assert(descriptor.Activation == PluginKeybindActivation.Press, "The three-argument keybind constructor must preserve press activation compatibility.");
+        AssertThrows<ArgumentOutOfRangeException>(() => new PluginKeybindDescriptor("invalid", "T", "Invalid", (PluginKeybindActivation)99));
+
+        var host = new PluginExtensionHost();
+        var manifest = new PluginManifest(new PluginId("ordered.keybinds"), "Ordered", new Version(1, 0), "Tests", "Ordered bindings", new[] { "1.4.5.6" }, capabilities: PluginCapability.Input);
+        using var firstScope = new PluginResourceScope();
+        host.CreateServices(manifest, firstScope).Keybinds.Register(new PluginKeybindDescriptor("first", "T", "First"), () => { });
+        PluginKeybindRegistrySnapshot first = host.GetKeybindSnapshot();
+        firstScope.ReleaseAll();
+        using var secondScope = new PluginResourceScope();
+        host.CreateServices(manifest, secondScope).Keybinds.Register(new PluginKeybindDescriptor("second", "Y", "Second"), () => { });
+        PluginKeybindRegistrySnapshot second = host.GetKeybindSnapshot();
+        Assert(second.Version > first.Version && second.Registrations.Count == 1 && second.Registrations[0].RegistrationSequence > first.Registrations[0].RegistrationSequence, "Keybind snapshots must remain atomic and registration ordering must never be reused after cleanup.");
+    }
+
+    private static void OwnerQualifiedHostServiceLookupRejectsWrongPublisher()
+    {
+        var hub = new PluginServiceHub();
+        var owner = new PluginManifest(new PluginId("player-list.owner"), "Player List", new Version(1, 0), "Tests", "Owner", new[] { "1.4.5.6" });
+        var other = new PluginManifest(new PluginId("other.owner"), "Other", new Version(1, 0), "Tests", "Other", new[] { "1.4.5.6" });
+        using var scope = new PluginResourceScope();
+        hub.CreateRegistry(owner, scope).Publish<IExampleService>(new ExampleService());
+        Assert(hub.TryGetHostService<IExampleService>(owner.Id, out var owned) && owned != null, "Owner-qualified host lookup must expose the verified publisher's service.");
+        Assert(!hub.TryGetHostService<IExampleService>(other.Id, out _), "Owner-qualified host lookup must reject a service from another plugin.");
+    }
+
     private static void ChatVisibilityFiltersAreScopeOwned()
     {
         var host = new PluginChatHost();
@@ -1275,7 +1323,7 @@ internal static class Program
         Assert(plugin.PlayersPerColumn == 14 && plugin.RowWidth == 260 && Math.Abs(plugin.TextScale - 1.2f) < 0.001f && plugin.ShowPlayerHeads && plugin.ShowPing, "Player List must retain its documented default presentation settings.");
         Assert(context.Services.TryGet<IPlayerListService>(out var service) && ReferenceEquals(plugin, service), "Player List must publish its stable provider contract for dependent plugins.");
         plugin.ToggleVisibility();
-        Assert(plugin.IsVisible, "The Display Play List binding must toggle local presentation visibility.");
+        Assert(plugin.IsVisible, "The Display Player List binding must toggle local presentation visibility.");
         plugin.CycleSortMode();
         Assert(plugin.SortMode == PlayerListSortMode.Team, "The sort cycle must advance deterministically from alphabetical to team order.");
         plugin.ToggleBotFiltering();
@@ -1686,6 +1734,24 @@ internal static class Program
         public Task EnableAsync(CancellationToken cancellationToken) => new TaskCompletionSource<object?>().Task;
         public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class StartedNonCooperativeAsyncPlugin : IAsyncAlacrityPlugin
+    {
+        private readonly TaskCompletionSource<object?> completion = new TaskCompletionSource<object?>();
+        public ManualResetEventSlim Started { get; } = new ManualResetEventSlim(false);
+
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task EnableAsync(CancellationToken cancellationToken)
+        {
+            Started.Set();
+            return completion.Task;
+        }
+
+        public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public void Complete() => completion.TrySetResult(null);
     }
 
     private sealed class CancellableAsyncPlugin : IAsyncAlacrityPlugin

@@ -409,16 +409,21 @@ public sealed class PluginLifecycleController : IDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         using var timerCancellation = new CancellationTokenSource();
         Task task = callback(linked.Token) ?? throw new InvalidOperationException(operation + " returned a null task.");
-        Task completed = await Task.WhenAny(task, Task.Delay(asyncCallbackTimeout, timerCancellation.Token)).ConfigureAwait(false);
-        if (!ReferenceEquals(completed, task))
+        Task timeoutTask = Task.Delay(asyncCallbackTimeout, timerCancellation.Token);
+        Task externalCancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        Task completed = await Task.WhenAny(task, timeoutTask, externalCancellationTask).ConfigureAwait(false);
+        if (ReferenceEquals(completed, task))
         {
-            timeout.Cancel();
-            ObserveFault(task);
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new TimeoutException(operation + " exceeded the host callback timeout of " + asyncCallbackTimeout + ".");
+            timerCancellation.Cancel();
+            await task.ConfigureAwait(false);
+            return;
         }
-        timerCancellation.Cancel();
-        await task.ConfigureAwait(false);
+
+        timeout.Cancel();
+        ObserveFault(task);
+        if (ReferenceEquals(completed, externalCancellationTask))
+            throw new OperationCanceledException(cancellationToken);
+        throw new TimeoutException(operation + " exceeded the host callback timeout of " + asyncCallbackTimeout + ".");
     }
 
     private static void ObserveFault(Task task)

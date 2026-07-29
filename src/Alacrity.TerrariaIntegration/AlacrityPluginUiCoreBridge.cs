@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.App;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
@@ -51,6 +52,8 @@ namespace AlacrityTerraria
         private static FieldInfo _mainAssetsField;
         private static bool _pingLookupAttempted;
         private static PropertyInfo _currentPingProperty;
+        private static DateTime _nextPingSampleUtc;
+        private static int? _cachedPing;
         private static readonly HashSet<string> ReportedOptionalUiFailures = new HashSet<string>(StringComparer.Ordinal);
         private static Texture2D _ingameBlankTexture;
         private static bool _pluginMenuOpen;
@@ -64,9 +67,11 @@ namespace AlacrityTerraria
         private static bool _enabledStateRestored;
         private static readonly object RuntimeGate = new object();
         private static readonly PluginId BetterChatPluginId = new PluginId("alacrity.better-chat");
+        private static readonly PluginId PlayerListPluginId = new PluginId("alacrity.player-list");
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
         private static readonly Dictionary<string, bool> KeybindDownState = new Dictionary<string, bool>(StringComparer.Ordinal);
+        private static readonly Dictionary<PluginId, PendingPluginOperation> PendingPluginOperations = new Dictionary<PluginId, PendingPluginOperation>();
         private static long _keybindRegistryVersion = -1;
         private static readonly ConditionalWeakTable<UIManageControls, KeybindControlsState> KeybindControlsStates = new ConditionalWeakTable<UIManageControls, KeybindControlsState>();
         private static FieldInfo _controlsListField;
@@ -75,6 +80,8 @@ namespace AlacrityTerraria
         private static readonly object KeybindPersistenceGate = new object();
         private static readonly Dictionary<string, List<string>> PersistedPluginKeybinds = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         private static bool _pluginKeybindsLoaded;
+        private static int _pluginKeybindSaveQueued;
+        private static bool _pluginKeybindsDirty;
 
         /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
         public static void BootstrapPluginRuntime()
@@ -313,7 +320,8 @@ namespace AlacrityTerraria
         public static void DrawPlayerList(SpriteBatch spriteBatch)
         {
             if (spriteBatch == null || _serviceHub == null ||
-                !_serviceHub.TryGetHostService<IPlayerListService>(out var playerList))
+                !_serviceHub.TryGetHostService<IPlayerListService>(PlayerListPluginId, out var playerList, out var publisher) ||
+                !CanRenderPlayerList(publisher) || !TryCreatePlayerListSnapshot(playerList, out var snapshot))
             {
                 PlayerListRuntime.Reset();
                 return;
@@ -321,11 +329,40 @@ namespace AlacrityTerraria
 
             try
             {
-                PlayerListRuntime.Draw(spriteBatch, playerList);
+                PlayerListRuntime.Draw(spriteBatch, snapshot);
             }
             catch (Exception exception)
             {
                 ReportOptionalUiFailure("Player List draw", exception);
+            }
+        }
+
+        private static bool CanRenderPlayerList(PluginManifest publisher)
+        {
+            const PluginCapability capabilities = PluginCapability.UserInterface | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation;
+            const PluginPermission permissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer;
+            return publisher != null && (publisher.Capabilities & capabilities) == capabilities && (publisher.Permissions & permissions) == permissions;
+        }
+
+        private static bool TryCreatePlayerListSnapshot(IPlayerListService service, out PlayerListRuntime.PlayerListRenderSnapshot snapshot)
+        {
+            snapshot = null;
+            try
+            {
+                int playersPerColumn = Math.Max(8, Math.Min(20, service.PlayersPerColumn));
+                int rowWidth = Math.Max(180, Math.Min(420, service.RowWidth));
+                float textScale = service.TextScale;
+                if (float.IsNaN(textScale) || float.IsInfinity(textScale))
+                    return false;
+                textScale = Math.Max(0.8f, Math.Min(1.6f, textScale));
+                PlayerListSortMode sortMode = Enum.IsDefined(typeof(PlayerListSortMode), service.SortMode) ? service.SortMode : PlayerListSortMode.Alphabetical;
+                snapshot = new PlayerListRuntime.PlayerListRenderSnapshot(service.IsVisible, playersPerColumn, rowWidth, textScale, service.ShowPlayerHeads, service.ShowPing, service.HideBots, sortMode, service.CycleSortMode, service.ToggleBotFiltering);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Player List service snapshot", exception);
+                return false;
             }
         }
 
@@ -340,23 +377,28 @@ namespace AlacrityTerraria
 
             try
             {
-                var keybinds = _extensions.GetKeybinds();
-                if (keybinds.Count == 0 || !TryGetControlsList(controls, out var list))
+                if (!TryGetControlsList(controls, out var list))
                     return;
-
-                long version = _extensions.KeybindVersion;
+                PluginKeybindRegistrySnapshot snapshot = _extensions.GetKeybindSnapshot();
                 var state = KeybindControlsStates.GetOrCreateValue(controls);
-                if (state.Version == version && list.Any(element => element is PluginKeybindControlGroup))
+                if (state.Version == snapshot.Version)
                     return;
 
-                foreach (var existing in list.Where(element => element is PluginKeybindControlGroup).ToArray())
-                    list.Remove(existing);
+                RemovePluginKeybindGroups(list);
+                state.Version = snapshot.Version;
+                if (snapshot.Registrations.Count == 0)
+                    return;
 
                 var mode = GetControlsInputMode(controls);
-                int index = 10000;
-                foreach (var group in keybinds.GroupBy(keybind => keybind.Heading, StringComparer.Ordinal))
-                    list.Add(CreatePluginKeybindGroup(index++, group.Key, group.ToArray(), mode));
-                state.Version = version;
+                // Runtime dispatch currently uses Terraria's gameplay keyboard profile only.
+                // Do not show rows in UI modes that cannot activate them.
+                if (mode != InputMode.Keyboard)
+                    return;
+
+                int groupOrder = 10000;
+                int rowOrder = 20000;
+                foreach (var group in snapshot.Registrations.GroupBy(keybind => keybind.Owner.Value + "\u001f" + keybind.Heading, StringComparer.Ordinal))
+                    list.Add(CreatePluginKeybindGroup(groupOrder++, ref rowOrder, group.First().Heading, group.ToArray(), mode));
             }
             catch (Exception exception)
             {
@@ -388,9 +430,15 @@ namespace AlacrityTerraria
             return gameplay ? InputMode.XBoxGamepad : InputMode.XBoxGamepadUI;
         }
 
-        private static UIElement CreatePluginKeybindGroup(int index, string heading, IReadOnlyList<PluginKeybindRegistration> keybinds, InputMode mode)
+        private static void RemovePluginKeybindGroups(UIList list)
         {
-            var group = new PluginKeybindControlGroup(index) { HAlign = 0.5f, Width = StyleDimension.Fill, Height = new StyleDimension(2000f, 0f) };
+            foreach (var existing in list.Where(element => element is PluginKeybindControlGroup).ToArray())
+                list.Remove(existing);
+        }
+
+        private static UIElement CreatePluginKeybindGroup(int groupOrder, ref int rowOrder, string heading, IReadOnlyList<PluginKeybindRegistration> keybinds, InputMode mode)
+        {
+            var group = new PluginKeybindControlGroup(groupOrder) { HAlign = 0.5f, Width = StyleDimension.Fill, Height = new StyleDimension(2000f, 0f) };
             var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-16f, 1f), VAlign = 1f, BackgroundColor = Color.Lerp(new Color(33, 43, 79) * 0.8f, Color.MediumPurple, 0.18f) };
             group.Append(panel);
             var rows = new UIList { OverflowHidden = false, Width = StyleDimension.Fill, Height = new StyleDimension(-8f, 1f), VAlign = 1f, ListPadding = 5f };
@@ -398,9 +446,10 @@ namespace AlacrityTerraria
             foreach (var keybind in keybinds)
             {
                 EnsureInputBinding(keybind, mode);
-                var row = new UISortableElement(index) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f), HAlign = 0.5f };
+                int currentRowOrder = rowOrder++;
+                var row = new UISortableElement(currentRowOrder) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f), HAlign = 0.5f };
                 var item = new PluginKeybindingListItem(keybind, mode, panel.BackgroundColor) { Width = StyleDimension.Fill, Height = StyleDimension.Fill };
-                item.SetSnapPoint("Wide", index);
+                item.SetSnapPoint("Wide", currentRowOrder);
                 row.Append(item);
                 rows.Add(row);
             }
@@ -420,7 +469,15 @@ namespace AlacrityTerraria
                 EnsurePluginKeybindsLoaded();
                 List<string> bindings;
                 lock (KeybindPersistenceGate)
-                    bindings = PersistedPluginKeybinds.TryGetValue(GetPersistedKeybindKey(keybind, mode), out var saved) ? new List<string>(saved) : mode == InputMode.Keyboard ? new List<string> { keybind.Descriptor.DefaultBinding } : new List<string>();
+                {
+                    if (!PersistedPluginKeybinds.TryGetValue(GetPersistedKeybindKey(keybind, mode), out var saved))
+                    {
+                        // Import the pre-profile persistence format once, then write it back with the
+                        // selected Terraria profile encoded into the key on the next real change.
+                        PersistedPluginKeybinds.TryGetValue(GetLegacyPersistedKeybindKey(keybind, mode), out saved);
+                    }
+                    bindings = saved == null ? (mode == InputMode.Keyboard ? new List<string> { keybind.Descriptor.DefaultBinding } : new List<string>()) : new List<string>(saved);
+                }
                 configuration.KeyStatus.Add(keybind.HostId, bindings);
             }
         }
@@ -434,11 +491,21 @@ namespace AlacrityTerraria
                 if (PersistedPluginKeybinds.TryGetValue(key, out var current) && current.SequenceEqual(bindings, StringComparer.Ordinal))
                     return;
                 PersistedPluginKeybinds[key] = bindings.ToList();
-                SavePluginKeybinds();
+                _pluginKeybindsDirty = true;
             }
+
+            QueuePluginKeybindPersistence();
         }
 
-        private static string GetPersistedKeybindKey(PluginKeybindRegistration keybind, InputMode mode) => ((int)mode).ToString() + ":" + keybind.HostId;
+        private static string GetPersistedKeybindKey(PluginKeybindRegistration keybind, InputMode mode)
+        {
+            string profile = PlayerInput.CurrentProfile == null || string.IsNullOrWhiteSpace(PlayerInput.CurrentProfile.Name)
+                ? "default"
+                : PlayerInput.CurrentProfile.Name;
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(profile)) + ":" + ((int)mode).ToString() + ":" + keybind.HostId;
+        }
+
+        private static string GetLegacyPersistedKeybindKey(PluginKeybindRegistration keybind, InputMode mode) => ((int)mode).ToString() + ":" + keybind.HostId;
 
         private static string PluginKeybindsPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-keybinds.dat");
 
@@ -474,17 +541,52 @@ namespace AlacrityTerraria
             }
         }
 
+        private static void QueuePluginKeybindPersistence()
+        {
+            if (Interlocked.Exchange(ref _pluginKeybindSaveQueued, 1) != 0)
+                return;
+            ThreadPool.QueueUserWorkItem(_ => SavePluginKeybinds());
+        }
+
         private static void SavePluginKeybinds()
         {
+            Dictionary<string, List<string>> snapshot;
+            lock (KeybindPersistenceGate)
+            {
+                if (!_pluginKeybindsDirty)
+                {
+                    Interlocked.Exchange(ref _pluginKeybindSaveQueued, 0);
+                    return;
+                }
+                snapshot = new Dictionary<string, List<string>>(PersistedPluginKeybinds.Count, StringComparer.Ordinal);
+                foreach (var pair in PersistedPluginKeybinds)
+                    snapshot.Add(pair.Key, new List<string>(pair.Value));
+                _pluginKeybindsDirty = false;
+            }
+
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(PluginKeybindsPath));
-                var lines = PersistedPluginKeybinds.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => Convert.ToBase64String(Encoding.UTF8.GetBytes(pair.Key)) + "|" + string.Join(",", pair.Value.Select(binding => Convert.ToBase64String(Encoding.UTF8.GetBytes(binding))))).ToArray();
-                File.WriteAllLines(PluginKeybindsPath, lines);
+                var lines = snapshot.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => Convert.ToBase64String(Encoding.UTF8.GetBytes(pair.Key)) + "|" + string.Join(",", pair.Value.Select(binding => Convert.ToBase64String(Encoding.UTF8.GetBytes(binding))))).ToArray();
+                string temporaryPath = PluginKeybindsPath + ".tmp";
+                File.WriteAllLines(temporaryPath, lines);
+                if (File.Exists(PluginKeybindsPath))
+                    File.Replace(temporaryPath, PluginKeybindsPath, null);
+                else
+                    File.Move(temporaryPath, PluginKeybindsPath);
             }
             catch (Exception exception)
             {
                 ReportOptionalUiFailure("Plugin keybind persistence save", exception);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pluginKeybindSaveQueued, 0);
+                lock (KeybindPersistenceGate)
+                {
+                    if (_pluginKeybindsDirty)
+                        QueuePluginKeybindPersistence();
+                }
             }
         }
 
@@ -501,15 +603,16 @@ namespace AlacrityTerraria
 
             try
             {
-                var keybinds = _extensions.GetKeybinds();
+                PluginKeybindRegistrySnapshot snapshot = _extensions.GetKeybindSnapshot();
+                var keybinds = snapshot.Registrations;
                 if (keybinds.Count == 0)
                 {
                     KeybindDownState.Clear();
                     return;
                 }
 
-                if (_keybindRegistryVersion != _extensions.KeybindVersion)
-                    RemoveStaleKeybindState(keybinds, _extensions.KeybindVersion);
+                if (_keybindRegistryVersion != snapshot.Version)
+                    RemoveStaleKeybindState(keybinds, snapshot.Version);
 
                 var keyboardState = Keyboard.GetState();
                 foreach (var keybind in keybinds)
@@ -552,7 +655,25 @@ namespace AlacrityTerraria
             var active = new HashSet<string>(keybinds.Select(keybind => keybind.HostId), StringComparer.Ordinal);
             foreach (var stale in KeybindDownState.Keys.Where(key => !active.Contains(key)).ToArray())
                 KeybindDownState.Remove(stale);
+            PrunePersistedKeybinds(active);
             _keybindRegistryVersion = version;
+        }
+
+        private static void PrunePersistedKeybinds(HashSet<string> active)
+        {
+            EnsurePluginKeybindsLoaded();
+            bool changed = false;
+            lock (KeybindPersistenceGate)
+            {
+                foreach (string key in PersistedPluginKeybinds.Keys.Where(key => !active.Any(hostId => key.EndsWith(":" + hostId, StringComparison.Ordinal))).ToArray())
+                {
+                    PersistedPluginKeybinds.Remove(key);
+                    changed = true;
+                }
+                _pluginKeybindsDirty |= changed;
+            }
+            if (changed)
+                QueuePluginKeybindPersistence();
         }
 
         private static bool IsKeybindDown(PluginKeybindRegistration keybind, KeyboardState keyboardState)
@@ -963,8 +1084,12 @@ namespace AlacrityTerraria
 
         internal static Texture2D RequestApprovedTexture(string path) => RequestTextureValue(path);
 
-        internal static int GetCurrentPing()
+        internal static int? GetCurrentPing()
         {
+            DateTime now = DateTime.UtcNow;
+            if (now < _nextPingSampleUtc)
+                return _cachedPing;
+            _nextPingSampleUtc = now.AddMilliseconds(250);
             try
             {
                 if (!_pingLookupAttempted)
@@ -975,11 +1100,13 @@ namespace AlacrityTerraria
                 }
 
                 object value = _currentPingProperty?.GetValue(null, null);
-                return value is int ping ? ping : 0;
+                _cachedPing = value is int ping ? ping : (int?)null;
+                return _cachedPing;
             }
             catch
             {
-                return 0;
+                _cachedPing = null;
+                return null;
             }
         }
 
@@ -1200,6 +1327,55 @@ namespace AlacrityTerraria
                 _runtime.Disable(id);
         }
 
+        private static bool BeginPluginOperation(PluginId id, bool enable, out string error)
+        {
+            error = string.Empty;
+            if (PendingPluginOperations.ContainsKey(id))
+            {
+                error = "Plugin operation is already in progress.";
+                return false;
+            }
+
+            var record = _runtime.Registry.Records.Single(record => record.Manifest.Id == id);
+            if (record.Controller == null || !record.Controller.UsesAsyncLifecycle)
+            {
+                if (enable)
+                    EnablePlugin(id);
+                else
+                    DisablePlugin(id);
+                PersistEnabledPlugins();
+                return true;
+            }
+
+            var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            Task task = enable ? _runtime.EnableAsync(id, cancellation.Token) : _runtime.DisableAsync(id, cancellation.Token);
+            PendingPluginOperations.Add(id, new PendingPluginOperation(enable, task, cancellation));
+            return true;
+        }
+
+        private static bool CompletePluginOperations()
+        {
+            bool changed = false;
+            foreach (PluginId id in PendingPluginOperations.Where(pair => pair.Value.Task.IsCompleted).Select(pair => pair.Key).ToArray())
+            {
+                PendingPluginOperation operation = PendingPluginOperations[id];
+                PendingPluginOperations.Remove(id);
+                operation.Cancellation.Dispose();
+                try
+                {
+                    operation.Task.GetAwaiter().GetResult();
+                    PersistEnabledPlugins();
+                    _notifications?.Publish((operation.Enable ? "Enabled " : "Disabled ") + id.Value + ".", TimeSpan.FromSeconds(4));
+                }
+                catch (Exception exception)
+                {
+                    _notifications?.Publish("Unable to " + (operation.Enable ? "enable " : "disable ") + id.Value + ": " + exception.Message, TimeSpan.FromSeconds(4));
+                }
+                changed = true;
+            }
+            return changed;
+        }
+
         private static IEnumerable<PluginPackageRuntimeRecord> GetShutdownOrder()
         {
             if (_runtime == null) return Array.Empty<PluginPackageRuntimeRecord>();
@@ -1251,6 +1427,20 @@ namespace AlacrityTerraria
         private sealed class KeybindControlsState
         {
             public long Version = -1;
+        }
+
+        private sealed class PendingPluginOperation
+        {
+            internal PendingPluginOperation(bool enable, Task task, CancellationTokenSource cancellation)
+            {
+                Enable = enable;
+                Task = task;
+                Cancellation = cancellation;
+            }
+
+            internal bool Enable { get; }
+            internal Task Task { get; }
+            internal CancellationTokenSource Cancellation { get; }
         }
 
         private sealed class PluginKeybindControlGroup : UISortableElement
@@ -1782,16 +1972,21 @@ namespace AlacrityTerraria
                 toggle.Height = StyleDimension.Fill;
                 toggle.VAlign = 0f;
                 toggle.SetSnapPoint(plugin.IsEnabled ? "ToggleToOff" : "ToggleToOn", order, null, null);
-                if (plugin.CanToggle)
+                if (PendingPluginOperations.ContainsKey(plugin.Id))
+                {
+                    toggle.IgnoresMouseInteraction = true;
+                    toggle.SetColorsBasedOnSelectionState(Color.Gray, Color.Gray, 0.55f, 0.55f);
+                }
+                else if (plugin.CanToggle)
                 {
                     toggle.OnLeftClick += (evt, element) => {
                         try
                         {
-                            if (plugin.IsEnabled)
-                                DisablePlugin(plugin.Id);
-                            else
-                                EnablePlugin(plugin.Id);
-                            PersistEnabledPlugins();
+                            if (!BeginPluginOperation(plugin.Id, !plugin.IsEnabled, out string error))
+                            {
+                                ShowStatus(error);
+                                return;
+                            }
                             RefreshRuntimeStatusHint(true);
                         }
                         catch (Exception exception)
@@ -1873,6 +2068,8 @@ namespace AlacrityTerraria
 
             private void RefreshRuntimeStatusHint(bool force)
             {
+                if (CompletePluginOperations())
+                    RefreshLists();
                 var now = DateTime.UtcNow;
                 if (now < _manualHintExpiresUtc)
                     return;

@@ -22,7 +22,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", () => clickableLinks, SetClickableLinks));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("visibility", "Chat Visibility", new[] { "Enabled", "Disabled" }, () => visibility, SetVisibility));
 
-        context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), new Editor(this));
+        context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), new Editor());
         context.Terraria.Chat.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("better-chat-links"), new LinkDecorator(this));
         context.Terraria.Chat.RegisterMessageFilter(new ChatMessageFilterDescriptor("better-chat-visibility"), new VisibilityFilter(this));
         context.Terraria.Chat.RegisterLinkHandler(new ChatLinkHandlerDescriptor(Uri.UriSchemeHttp), new LinkHandler(this));
@@ -63,8 +63,6 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
 
     private sealed class Editor : IChatInputEditor
     {
-        private readonly BetterChatPlugin plugin;
-        public Editor(BetterChatPlugin plugin) { this.plugin = plugin; }
         public ChatInputEditResult Edit(ChatInputSnapshot snapshot, ChatInputAction action)
         {
             int caret = snapshot.Caret;

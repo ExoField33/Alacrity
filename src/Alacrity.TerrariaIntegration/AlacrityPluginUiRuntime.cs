@@ -190,7 +190,6 @@ namespace AlacrityTerraria
                 {
                     if (!Main.gameMenu)
                     {
-                        _updatePluginKeybinds?.Invoke();
                         _drawNotifications?.Invoke(spriteBatch);
                         _drawPlayerList?.Invoke(spriteBatch);
                     }
@@ -199,6 +198,21 @@ namespace AlacrityTerraria
             catch (Exception exception)
             {
                 RecordFailure("Draw plugin notifications", exception);
+            }
+        }
+
+        /// <summary>Version-locked input/update entry point. It is intentionally separate from drawing.</summary>
+        public static void UpdatePluginKeybinds()
+        {
+            try
+            {
+                BootstrapPluginRuntime();
+                if (EnsureBridge())
+                    _updatePluginKeybinds?.Invoke();
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Update plugin keybinds", exception);
             }
         }
 

@@ -57,10 +57,11 @@ public sealed class PluginManagerRuntime
         foreach (var controller in controllers) registry.Synchronize(controller.Key);
         return result;
     }
-    /// <summary>Disables a loaded enabled package without affecting other packages.</summary>
+    /// <summary>Disables a package only when no enabled dependent still relies on its public services.</summary>
     public void Disable(PluginId id)
     {
         var record = registry.Records.Single(record => record.Manifest.Id == id);
+        EnsureNoEnabledDependents(id);
         if (record.Controller?.State == PluginLifecycleState.Enabled) record.Controller.Disable();
         registry.Synchronize(id);
     }
@@ -69,9 +70,19 @@ public sealed class PluginManagerRuntime
     public async Task DisableAsync(PluginId id, CancellationToken cancellationToken)
     {
         var record = registry.Records.Single(record => record.Manifest.Id == id);
+        EnsureNoEnabledDependents(id);
         if (record.Controller?.State == PluginLifecycleState.Enabled)
             await record.Controller.DisableAsync(cancellationToken).ConfigureAwait(false);
         registry.Synchronize(id);
+    }
+
+    private void EnsureNoEnabledDependents(PluginId id)
+    {
+        var dependent = registry.Records.FirstOrDefault(candidate =>
+            candidate.State == PluginPackageLifecycleState.Enabled &&
+            candidate.Manifest.Dependencies.Any(dependency => dependency.Id == id));
+        if (dependent != null)
+            throw new InvalidOperationException("Cannot disable " + id + " while enabled plugin " + dependent.Manifest.Id + " depends on it.");
     }
 
     /// <summary>

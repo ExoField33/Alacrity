@@ -7,6 +7,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria;
 using Terraria.GameContent;
+using Terraria.Graphics.Renderers;
 
 namespace AlacrityTerraria
 {
@@ -22,11 +23,18 @@ namespace AlacrityTerraria
         private static readonly List<Row> rowsBuffer = new List<Row>(256);
         private static readonly List<int> columnStartsBuffer = new List<int>(32);
         private static readonly List<int> columnCountsBuffer = new List<int>(32);
+        private static PlayerCacheEntry[] playerCache = Array.Empty<PlayerCacheEntry>();
+        private static int cachedColumns;
+        private static int cachedRowsPerColumn;
+        private static bool rosterDirty = true;
+        private static bool lastHideBots;
+        private static PlayerListSortMode lastSortMode;
+        private static int lastPlayersPerColumn;
+        private static int nextRosterRefreshTick;
+        private static int nextBotRefreshTick;
 
         private static bool rendererLookupAttempted;
-        private static FieldInfo playerRendererField;
-        private static FieldInfo cameraField;
-        private static MethodInfo drawPlayerHeadMethod;
+        private static IPlayerRenderer playerRenderer;
         private static MethodInfo cyborgHeadIndexMethod;
         private static FieldInfo npcHeadAssetsField;
         private static FieldInfo ghostTextureAssetsField;
@@ -36,15 +44,26 @@ namespace AlacrityTerraria
         private static Texture2D cyborgHeadTexture;
         private static Texture2D ghostTexture;
         private static Texture2D tombstoneTexture;
+        private static bool sortTextureLookupAttempted;
+        private static bool ghostTextureLookupAttempted;
+        private static bool tombstoneTextureLookupAttempted;
+        private static bool cyborgHeadIndexLookupAttempted;
+        private static int cyborgHeadIndex = -1;
 
         internal static void Reset()
         {
             rowsBuffer.Clear();
             columnStartsBuffer.Clear();
             columnCountsBuffer.Clear();
+            playerCache = Array.Empty<PlayerCacheEntry>();
+            cachedColumns = 0;
+            cachedRowsPerColumn = 0;
+            rosterDirty = true;
+            nextRosterRefreshTick = 0;
+            nextBotRefreshTick = 0;
         }
 
-        internal static void Draw(SpriteBatch spriteBatch, IPlayerListService service)
+        internal static void Draw(SpriteBatch spriteBatch, PlayerListRenderSnapshot service)
         {
             if (spriteBatch == null || service == null)
                 return;
@@ -54,19 +73,19 @@ namespace AlacrityTerraria
                 return;
             }
 
-            List<Row> rows = BuildRows(service.HideBots);
+            RefreshRoster(service);
+            List<Row> rows = rowsBuffer;
             if (rows.Count == 0)
                 return;
 
-            Sort(rows, service.SortMode);
-            int columns = BuildColumns(rows, service.PlayersPerColumn, service.SortMode, columnStartsBuffer, columnCountsBuffer);
-            int rowsPerColumn = 0;
-            for (int index = 0; index < columnCountsBuffer.Count; index++)
-                rowsPerColumn = Math.Max(rowsPerColumn, columnCountsBuffer[index]);
+            int columns = cachedColumns;
+            int rowsPerColumn = cachedRowsPerColumn;
             float uiScale = service.TextScale / PlayerListLayout.DefaultUiScale;
             PlayerListLayout layout = PlayerListLayout.Create(Main.screenWidth, Main.screenHeight, columns, rowsPerColumn, service.RowWidth, uiScale);
 
             Utils.DrawInvBG(spriteBatch, layout.PanelBounds, new Color(33, 15, 91, 230));
+            if (layout.PanelBounds.Contains(Main.mouseX, Main.mouseY) && Main.LocalPlayer != null)
+                Main.LocalPlayer.mouseInterface = true;
             string serverName = string.IsNullOrWhiteSpace(Main.worldName) ? "Server" : Main.worldName;
             DrawCentered(spriteBatch, serverName + " - " + rows.Count + "/" + Main.maxPlayers, layout.HeaderCenter, Color.White, 0.82f * service.TextScale * 0.8f);
 
@@ -94,7 +113,7 @@ namespace AlacrityTerraria
         }
 
         // A bad optional icon or renderer binding must not prevent the roster or ping from rendering.
-        private static void DrawRowText(SpriteBatch spriteBatch, IPlayerListService service, Row row, Rectangle rowBounds)
+        private static void DrawRowText(SpriteBatch spriteBatch, PlayerListRenderSnapshot service, Row row, Rectangle rowBounds)
         {
             try
             {
@@ -129,27 +148,113 @@ namespace AlacrityTerraria
             }
         }
 
-        private static List<Row> BuildRows(bool hideBots)
+        private static void RefreshRoster(PlayerListRenderSnapshot service)
         {
-            rowsBuffer.Clear();
+            int now = Environment.TickCount;
+            bool healthSort = service.SortMode == PlayerListSortMode.Health;
+            int refreshInterval = healthSort ? 200 : 500;
+            if (!rosterDirty && !TickReached(now, nextRosterRefreshTick))
+                return;
+
             Player[] players = Main.player;
             if (players == null)
-                return rowsBuffer;
+            {
+                rowsBuffer.Clear();
+                columnStartsBuffer.Clear();
+                columnCountsBuffer.Clear();
+                cachedColumns = 0;
+                cachedRowsPerColumn = 0;
+                rosterDirty = false;
+                return;
+            }
 
-            for (int slot = 0; slot < players.Length; slot++)
+            int playerCount = Math.Min(Math.Max(0, Main.maxPlayers), players.Length);
+            EnsurePlayerCacheCapacity(playerCount);
+            bool refreshBots = TickReached(now, nextBotRefreshTick);
+            bool changed = rosterDirty || service.HideBots != lastHideBots || service.SortMode != lastSortMode || service.PlayersPerColumn != lastPlayersPerColumn;
+            for (int slot = 0; slot < playerCount; slot++)
             {
                 Player player = players[slot];
-                if (player == null || (!player.active && !player.ghost))
+                ref PlayerCacheEntry cache = ref playerCache[slot];
+                bool present = player != null && (player.active || player.ghost);
+                string rawName = present ? player.name ?? string.Empty : string.Empty;
+                if (!ReferenceEquals(cache.Player, player) || cache.Present != present || !string.Equals(cache.RawName, rawName, StringComparison.Ordinal))
+                {
+                    cache.Player = player;
+                    cache.Present = present;
+                    cache.RawName = rawName;
+                    cache.NormalizedName = NormalizeName(rawName);
+                    cache.Bot = present && IsLikelyBot(player, cache.NormalizedName);
+                    changed = true;
+                }
+                else if (present && refreshBots)
+                {
+                    bool bot = IsLikelyBot(player, cache.NormalizedName);
+                    if (bot != cache.Bot)
+                    {
+                        cache.Bot = bot;
+                        changed = true;
+                    }
+                }
+
+                if (!present)
                     continue;
-                string normalizedName = NormalizeName(player.name);
-                if (player.ghost && string.IsNullOrWhiteSpace(normalizedName))
-                    continue;
-                bool bot = IsLikelyBot(player, normalizedName);
-                if (hideBots && bot)
-                    continue;
-                rowsBuffer.Add(new Row(player, normalizedName, player.team, player.statLife, player.dead, player.ghost, player.ghostFrame, player.respawnTimer));
+                if (cache.Team != player.team || cache.Dead != player.dead || cache.Ghost != player.ghost || (healthSort && cache.Life != player.statLife) || cache.RespawnTimer != player.respawnTimer || cache.GhostFrame != player.ghostFrame)
+                    changed = true;
+                cache.Team = player.team;
+                cache.Life = player.statLife;
+                cache.Dead = player.dead;
+                cache.Ghost = player.ghost;
+                cache.RespawnTimer = player.respawnTimer;
+                cache.GhostFrame = player.ghostFrame;
             }
-            return rowsBuffer;
+
+            for (int slot = playerCount; slot < playerCache.Length; slot++)
+            {
+                if (playerCache[slot].Player != null || playerCache[slot].Present)
+                {
+                    playerCache[slot] = default(PlayerCacheEntry);
+                    changed = true;
+                }
+            }
+
+            nextRosterRefreshTick = unchecked(now + refreshInterval);
+            if (refreshBots)
+                nextBotRefreshTick = unchecked(now + 1000);
+            if (!changed)
+                return;
+
+            rowsBuffer.Clear();
+            for (int slot = 0; slot < playerCount; slot++)
+            {
+                ref PlayerCacheEntry cache = ref playerCache[slot];
+                if (!cache.Present)
+                    continue;
+                if (cache.Ghost && string.IsNullOrWhiteSpace(cache.NormalizedName))
+                    continue;
+                if (service.HideBots && cache.Bot)
+                    continue;
+                rowsBuffer.Add(new Row(cache.Player, cache.NormalizedName, cache.Team, cache.Life, cache.Dead, cache.Ghost, cache.GhostFrame, cache.RespawnTimer));
+            }
+            Sort(rowsBuffer, service.SortMode);
+            cachedColumns = BuildColumns(rowsBuffer, service.PlayersPerColumn, service.SortMode, columnStartsBuffer, columnCountsBuffer);
+            cachedRowsPerColumn = 0;
+            for (int index = 0; index < columnCountsBuffer.Count; index++)
+                cachedRowsPerColumn = Math.Max(cachedRowsPerColumn, columnCountsBuffer[index]);
+            lastHideBots = service.HideBots;
+            lastSortMode = service.SortMode;
+            lastPlayersPerColumn = service.PlayersPerColumn;
+            rosterDirty = false;
+        }
+
+        private static bool TickReached(int now, int target) => unchecked(now - target) >= 0;
+
+        private static void EnsurePlayerCacheCapacity(int count)
+        {
+            if (playerCache.Length >= count)
+                return;
+            Array.Resize(ref playerCache, count);
+            rosterDirty = true;
         }
 
         private static bool IsLikelyBot(Player player, string normalizedName)
@@ -222,11 +327,12 @@ namespace AlacrityTerraria
             return starts.Count;
         }
 
-        private static void DrawSortButton(SpriteBatch spriteBatch, IPlayerListService service, Rectangle bounds)
+        private static void DrawSortButton(SpriteBatch spriteBatch, PlayerListRenderSnapshot service, Rectangle bounds)
         {
             bool hover = bounds.Contains(Main.mouseX, Main.mouseY);
-            if (sortTexture == null)
+            if (!sortTextureLookupAttempted)
             {
+                sortTextureLookupAttempted = true;
                 try { sortTexture = PluginUiRuntime.RequestApprovedTexture("Images/UI/CharCreation/HairStyle_Arrow"); }
                 catch { }
             }
@@ -239,10 +345,13 @@ namespace AlacrityTerraria
             Main.LocalPlayer.mouseInterface = true;
             Main.instance.MouseText("Sorted: " + service.SortMode);
             if (Main.mouseLeft && Main.mouseLeftRelease)
+            {
                 service.CycleSortMode();
+                Main.mouseLeftRelease = false;
+            }
         }
 
-        private static void DrawBotToggleButton(SpriteBatch spriteBatch, IPlayerListService service, Rectangle bounds)
+        private static void DrawBotToggleButton(SpriteBatch spriteBatch, PlayerListRenderSnapshot service, Rectangle bounds)
         {
             bool hover = bounds.Contains(Main.mouseX, Main.mouseY);
             Color iconColor = hover ? Color.White : new Color(190, 190, 190);
@@ -253,16 +362,19 @@ namespace AlacrityTerraria
             Main.LocalPlayer.mouseInterface = true;
             Main.instance.MouseText(service.HideBots ? "Bots hidden" : "Bots listed");
             if (Main.mouseLeft && Main.mouseLeftRelease)
+            {
                 service.ToggleBotFiltering();
+                Main.mouseLeftRelease = false;
+            }
         }
 
         private static void DrawPing(SpriteBatch spriteBatch, Vector2 center, float textScale)
         {
-            int ping = PluginUiRuntime.GetCurrentPing();
-            string value = ping + " ms";
+            int? ping = PluginUiRuntime.GetCurrentPing();
+            string value = ping.HasValue ? ping.Value + " ms" : "N/A";
             float scale = 0.68f * textScale;
             float x = center.X - GetTextWidth(value, scale) / 2f;
-            DrawLeft(spriteBatch, value, new Vector2(x, center.Y - 8f), PingColor(ping), scale);
+            DrawLeft(spriteBatch, value, new Vector2(x, center.Y - 8f), ping.HasValue ? PingColor(ping.Value) : Color.Silver, scale);
         }
 
         private static bool TryDrawIcon(SpriteBatch spriteBatch, Row row, Vector2 position, float uiScale)
@@ -292,10 +404,17 @@ namespace AlacrityTerraria
             try
             {
                 EnsureRendererLookup();
-                if (cyborgHeadIndexMethod == null || npcHeadAssetsField == null)
+                if (npcHeadAssetsField == null)
                     return false;
-                int index = (int)cyborgHeadIndexMethod.Invoke(null, new object[] { CyborgNpcId });
-                Texture2D texture = cyborgHeadTexture ?? GetTextureFromAsset(npcHeadAssetsField.GetValue(null) as Array, index);
+                if (!cyborgHeadIndexLookupAttempted)
+                {
+                    cyborgHeadIndexLookupAttempted = true;
+                    if (cyborgHeadIndexMethod != null)
+                        cyborgHeadIndex = (int)cyborgHeadIndexMethod.Invoke(null, new object[] { CyborgNpcId });
+                }
+                if (cyborgHeadIndex < 0)
+                    return false;
+                Texture2D texture = cyborgHeadTexture ?? GetTextureFromAsset(npcHeadAssetsField.GetValue(null) as Array, cyborgHeadIndex);
                 if (texture == null)
                     return false;
                 cyborgHeadTexture = texture;
@@ -311,18 +430,14 @@ namespace AlacrityTerraria
         private static bool TryDrawPlayerHead(Player player, Vector2 position, float uiScale)
         {
             EnsureRendererLookup();
-            if (playerRendererField == null || cameraField == null || drawPlayerHeadMethod == null)
+            if (playerRenderer == null)
                 return false;
 
             try
             {
-                object renderer = playerRendererField.GetValue(null);
-                object camera = cameraField.GetValue(null);
-                if (renderer == null || camera == null)
-                    return false;
                 // PlayerRenderer always creates a black outer pass when a border is supplied.
                 // The Player List intentionally uses an unoutlined head instead of approximating it.
-                drawPlayerHeadMethod.Invoke(renderer, new object[] { camera, player, position, 1f, 0.55f * 1.15f * 0.95f * 1.05f * uiScale, Color.Transparent });
+                playerRenderer.DrawPlayerHead(Main.Camera, player, position, 1f, 0.55f * 1.15f * 0.95f * 1.05f * uiScale, Color.Transparent);
                 return true;
             }
             catch
@@ -338,22 +453,7 @@ namespace AlacrityTerraria
             rendererLookupAttempted = true;
             try
             {
-                Type mainType = typeof(Main);
-                playerRendererField = mainType.GetField("PlayerRenderer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                cameraField = mainType.GetField("Camera", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                object renderer = playerRendererField == null ? null : playerRendererField.GetValue(null);
-                if (renderer != null)
-                {
-                    MethodInfo[] methods = renderer.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    for (int index = 0; index < methods.Length; index++)
-                    {
-                        if (methods[index].Name == "DrawPlayerHead" && methods[index].GetParameters().Length == 6)
-                        {
-                            drawPlayerHeadMethod = methods[index];
-                            break;
-                        }
-                    }
-                }
+                playerRenderer = Main.PlayerRenderer;
                 cyborgHeadIndexMethod = typeof(NPC).GetMethod("TypeToDefaultHeadIndex", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] { typeof(int) }, null);
                 npcHeadAssetsField = typeof(TextureAssets).GetField("NpcHead", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
                 ghostTextureAssetsField = typeof(TextureAssets).GetField("Ghost", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
@@ -361,9 +461,7 @@ namespace AlacrityTerraria
             }
             catch
             {
-                playerRendererField = null;
-                cameraField = null;
-                drawPlayerHeadMethod = null;
+                playerRenderer = null;
                 cyborgHeadIndexMethod = null;
                 npcHeadAssetsField = null;
                 ghostTextureAssetsField = null;
@@ -373,8 +471,9 @@ namespace AlacrityTerraria
 
         private static Texture2D GetGhostTexture()
         {
-            if (ghostTexture != null)
+            if (ghostTexture != null || ghostTextureLookupAttempted)
                 return ghostTexture;
+            ghostTextureLookupAttempted = true;
             try
             {
                 EnsureRendererLookup();
@@ -386,8 +485,9 @@ namespace AlacrityTerraria
 
         private static Texture2D GetTombstoneTexture()
         {
-            if (tombstoneTexture != null)
+            if (tombstoneTexture != null || tombstoneTextureLookupAttempted)
                 return tombstoneTexture;
+            tombstoneTextureLookupAttempted = true;
             try
             {
                 EnsureRendererLookup();
@@ -503,6 +603,51 @@ namespace AlacrityTerraria
                 int y = PanelBounds.Y + padding + headerHeight + row * rowHeight;
                 return new Rectangle(x, y, rowWidth, rowHeight - Math.Max(3, rowHeight / 8));
             }
+        }
+
+        internal sealed class PlayerListRenderSnapshot
+        {
+            internal PlayerListRenderSnapshot(bool isVisible, int playersPerColumn, int rowWidth, float textScale, bool showPlayerHeads, bool showPing, bool hideBots, PlayerListSortMode sortMode, Action cycleSort, Action toggleBots)
+            {
+                IsVisible = isVisible;
+                PlayersPerColumn = playersPerColumn;
+                RowWidth = rowWidth;
+                TextScale = textScale;
+                ShowPlayerHeads = showPlayerHeads;
+                ShowPing = showPing;
+                HideBots = hideBots;
+                SortMode = sortMode;
+                this.cycleSort = cycleSort;
+                this.toggleBots = toggleBots;
+            }
+
+            private readonly Action cycleSort;
+            private readonly Action toggleBots;
+            internal bool IsVisible { get; }
+            internal int PlayersPerColumn { get; }
+            internal int RowWidth { get; }
+            internal float TextScale { get; }
+            internal bool ShowPlayerHeads { get; }
+            internal bool ShowPing { get; }
+            internal bool HideBots { get; }
+            internal PlayerListSortMode SortMode { get; }
+            internal void CycleSortMode() => cycleSort();
+            internal void ToggleBotFiltering() => toggleBots();
+        }
+
+        private struct PlayerCacheEntry
+        {
+            internal Player Player;
+            internal string RawName;
+            internal string NormalizedName;
+            internal bool Present;
+            internal bool Bot;
+            internal int Team;
+            internal int Life;
+            internal bool Dead;
+            internal bool Ghost;
+            internal int GhostFrame;
+            internal int RespawnTimer;
         }
 
         private readonly struct Row

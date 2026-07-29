@@ -13,7 +13,7 @@ public enum PlayerListSortMode
     Health
 }
 
-/// <summary>Read-only presentation state exposed by the Player List provider to dependent plugins.</summary>
+/// <summary>Presentation state and local controls exposed by the Player List provider to dependent plugins.</summary>
 public interface IPlayerListService
 {
     /// <summary>Whether the locally requested player list is currently visible.</summary>

@@ -42,12 +42,12 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
         context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("players-per-column", "Players Per Column", 8f, 20f, 1f, () => playersPerColumn, value => SetPlayersPerColumn((int)Math.Round(value)), value => ((int)Math.Round(value)).ToString()));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("row-width", "Row Width", 180f, 420f, 5f, () => rowWidth, value => SetRowWidth((int)Math.Round(value / 5f) * 5), value => ((int)Math.Round(value)).ToString()));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("ui-size", "UI Size", 80f, 160f, 5f, () => textScalePercent, value => SetTextScale((int)Math.Round(value / 5f) * 5), value => ((int)Math.Round(value)).ToString() + "%"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-heads", "Player Head Render", () => showPlayerHeads, SetShowPlayerHeads));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-heads", "Show Player Icons", () => showPlayerHeads, SetShowPlayerHeads));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("ping", "Show Ping", () => showPing, SetShowPing));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("hide-bots", "Hide Bot Accounts", () => hideBots, SetHideBots));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("hide-bots", "Hide Suspected Bots", () => hideBots, SetHideBots));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("sort", "Sort", new[] { "Alphabetical", "Team", "Health" }, () => sortMode.ToString(), SetSortMode));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("display-mode", "Display Mode", new[] { "Hold", "Toggle" }, () => displayMode.ToString(), SetDisplayMode));
-        context.Keybinds.Register(new PluginKeybindDescriptor("display-player-list", "T", "Display Play List", PluginKeybindActivation.Hold), HandleDisplayKeybind);
+        context.Keybinds.Register(new PluginKeybindDescriptor("display-player-list", "T", "Display Player List", PluginKeybindActivation.Hold), HandleDisplayKeybind);
         context.Services.Publish<IPlayerListService>(this);
     }
 
