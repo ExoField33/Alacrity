@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -13,15 +15,28 @@ public sealed class PluginChatHost
     private readonly List<DecoratorEntry> decorators = new List<DecoratorEntry>();
     private readonly List<FilterEntry> filters = new List<FilterEntry>();
     private readonly Dictionary<string, LinkEntry> links = new Dictionary<string, LinkEntry>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> lastFailures = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+    private EditorEntry[] editorSnapshot = Array.Empty<EditorEntry>();
+    private DecoratorEntry[] decoratorSnapshot = Array.Empty<DecoratorEntry>();
+    private FilterEntry[] filterSnapshot = Array.Empty<FilterEntry>();
 
     /// <summary>Fast-path state used by Terraria integration before entering a chat hook.</summary>
-    public bool HasInputEditors { get { lock (gate) return editors.Count != 0; } }
+    public bool HasInputEditors => Volatile.Read(ref editorSnapshot).Length != 0;
+
+    /// <summary>Returns whether a particular plugin owns an active chat editor.</summary>
+    public bool HasInputEditor(PluginId owner)
+    {
+        if (!owner.IsValid) return false;
+        foreach (EditorEntry entry in Volatile.Read(ref editorSnapshot))
+            if (entry.Owner == owner) return true;
+        return false;
+    }
 
     /// <summary>Fast-path state used by Terraria integration before parsing presentation spans.</summary>
-    public bool HasMessageDecorators { get { lock (gate) return decorators.Count != 0; } }
+    public bool HasMessageDecorators => Volatile.Read(ref decoratorSnapshot).Length != 0;
 
     /// <summary>Fast-path state used before the host displays a classified chat message.</summary>
-    public bool HasMessageFilters { get { lock (gate) return filters.Count != 0; } }
+    public bool HasMessageFilters => Volatile.Read(ref filterSnapshot).Length != 0;
 
     /// <summary>Fast-path state used by Terraria integration before attempting external link activation.</summary>
     public bool HasLinkHandlers { get { lock (gate) return links.Count != 0; } }
@@ -32,13 +47,12 @@ public sealed class PluginChatHost
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
         if (!manifest.Id.IsValid) throw new ArgumentException("Chat services require a valid plugin owner.", nameof(manifest));
-        return new ScopedService(this, manifest.Id, resources);
+        return new ScopedService(this, manifest, resources);
     }
 
     public ChatInputEditResult Edit(ChatInputSnapshot snapshot, ChatInputAction action)
     {
-        EditorEntry[] current;
-        lock (gate) current = editors.OrderBy(entry => entry.Descriptor.Priority).ToArray();
+        EditorEntry[] current = Volatile.Read(ref editorSnapshot);
         foreach (var entry in current)
         {
             try
@@ -46,35 +60,37 @@ public sealed class PluginChatHost
                 var result = entry.Editor.Edit(snapshot, action) ?? ChatInputEditResult.Unhandled(snapshot);
                 if (result.Handled) return result;
             }
-            catch { entry.Dispose(); }
+            catch (Exception exception) { ReportFailure(entry, "input editor", exception); entry.Dispose(); }
         }
         return ChatInputEditResult.Unhandled(snapshot);
     }
 
     public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message)
     {
-        DecoratorEntry[] current;
-        lock (gate) current = decorators.OrderBy(entry => entry.Descriptor.Priority).ToArray();
-        IReadOnlyList<ChatTextSpan> result = new[] { new ChatTextSpan(message.Text) };
+        DecoratorEntry[] current = Volatile.Read(ref decoratorSnapshot);
         foreach (var entry in current)
         {
-            try { result = entry.Decorator.Decorate(message) ?? result; }
-            catch { entry.Dispose(); }
+            try
+            {
+                IReadOnlyList<ChatTextSpan>? result = entry.Decorator.Decorate(message);
+                if (result != null && !IsIdentityDecoration(result, message.Text))
+                    return result;
+            }
+            catch (Exception exception) { ReportFailure(entry, "message decorator", exception); entry.Dispose(); }
         }
-        return result;
+        return new[] { new ChatTextSpan(message.Text) };
     }
 
     public bool ShouldDisplay(ChatMessageOrigin origin)
     {
-        FilterEntry[] current;
-        lock (gate) current = filters.OrderBy(entry => entry.Descriptor.Priority).ToArray();
+        FilterEntry[] current = Volatile.Read(ref filterSnapshot);
         foreach (var entry in current)
         {
             try
             {
                 if (!entry.Filter.ShouldDisplay(origin)) return false;
             }
-            catch { entry.Dispose(); }
+            catch (Exception exception) { ReportFailure(entry, "message filter", exception); entry.Dispose(); }
         }
         return true;
     }
@@ -85,38 +101,43 @@ public sealed class PluginChatHost
         LinkEntry entry;
         lock (gate) { if (!links.TryGetValue(uri.Scheme, out entry)) return false; }
         try { return entry.Handler.TryActivate(uri); }
-        catch { entry.Dispose(); return false; }
+        catch (Exception exception) { ReportFailure(entry, "link handler", exception); entry.Dispose(); return false; }
     }
 
-    private IPluginRegistration RegisterEditor(PluginId owner, IPluginResourceScope resources, ChatInputEditorDescriptor descriptor, IChatInputEditor editor)
+    private IPluginRegistration RegisterEditor(PluginManifest manifest, IPluginResourceScope resources, ChatInputEditorDescriptor descriptor, IChatInputEditor editor)
     {
+        EnsureCapability(manifest, PluginCapability.Input, "chat input editor");
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (editor == null) throw new ArgumentNullException(nameof(editor));
-        var entry = new EditorEntry(owner, descriptor, editor, RemoveEditor);
-        lock (gate) editors.Add(entry);
+        var entry = new EditorEntry(manifest.Id, descriptor, editor, RemoveEditor);
+        lock (gate) { editors.Add(entry); RebuildEditorSnapshot(); }
         return Own(resources, entry, "chat-editor:" + descriptor.Id);
     }
-    private IPluginRegistration RegisterDecorator(PluginId owner, IPluginResourceScope resources, ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator)
+    private IPluginRegistration RegisterDecorator(PluginManifest manifest, IPluginResourceScope resources, ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator)
     {
+        EnsureUserInterfaceAccess(manifest, "chat message decorator");
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (decorator == null) throw new ArgumentNullException(nameof(decorator));
-        var entry = new DecoratorEntry(owner, descriptor, decorator, RemoveDecorator);
-        lock (gate) decorators.Add(entry);
+        var entry = new DecoratorEntry(manifest.Id, descriptor, decorator, RemoveDecorator);
+        lock (gate) { decorators.Add(entry); RebuildDecoratorSnapshot(); }
         return Own(resources, entry, "chat-decorator:" + descriptor.Id);
     }
-    private IPluginRegistration RegisterFilter(PluginId owner, IPluginResourceScope resources, ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter)
+    private IPluginRegistration RegisterFilter(PluginManifest manifest, IPluginResourceScope resources, ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter)
     {
+        EnsureUserInterfaceAccess(manifest, "chat message filter");
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (filter == null) throw new ArgumentNullException(nameof(filter));
-        var entry = new FilterEntry(owner, descriptor, filter, RemoveFilter);
-        lock (gate) filters.Add(entry);
+        var entry = new FilterEntry(manifest.Id, descriptor, filter, RemoveFilter);
+        lock (gate) { filters.Add(entry); RebuildFilterSnapshot(); }
         return Own(resources, entry, "chat-filter:" + descriptor.Id);
     }
-    private IPluginRegistration RegisterLink(PluginId owner, IPluginResourceScope resources, ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler)
+    private IPluginRegistration RegisterLink(PluginManifest manifest, IPluginResourceScope resources, ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler)
     {
+        EnsureUserInterfaceAccess(manifest, "chat link handler");
+        EnsurePermission(manifest, PluginPermission.OpenExternalLinks, "chat link handler");
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (handler == null) throw new ArgumentNullException(nameof(handler));
-        var entry = new LinkEntry(owner, descriptor.Scheme, handler, RemoveLink);
+        var entry = new LinkEntry(manifest.Id, descriptor.Scheme, handler, RemoveLink);
         lock (gate)
         {
             if (links.ContainsKey(descriptor.Scheme)) throw new InvalidOperationException("A chat link handler is already registered for " + descriptor.Scheme + ".");
@@ -125,19 +146,56 @@ public sealed class PluginChatHost
         return Own(resources, entry, "chat-link:" + descriptor.Scheme);
     }
     private static IPluginRegistration Own(IPluginResourceScope scope, IPluginRegistration registration, string name) { scope.Own(name, PluginResourceKind.UserInterface, registration); return registration; }
-    private void RemoveEditor(EditorEntry entry) { lock (gate) editors.Remove(entry); }
-    private void RemoveDecorator(DecoratorEntry entry) { lock (gate) decorators.Remove(entry); }
-    private void RemoveFilter(FilterEntry entry) { lock (gate) filters.Remove(entry); }
+    private void RemoveEditor(EditorEntry entry) { lock (gate) { editors.Remove(entry); RebuildEditorSnapshot(); } }
+    private void RemoveDecorator(DecoratorEntry entry) { lock (gate) { decorators.Remove(entry); RebuildDecoratorSnapshot(); } }
+    private void RemoveFilter(FilterEntry entry) { lock (gate) { filters.Remove(entry); RebuildFilterSnapshot(); } }
     private void RemoveLink(LinkEntry entry) { lock (gate) if (links.TryGetValue(entry.Scheme, out var current) && ReferenceEquals(current, entry)) links.Remove(entry.Scheme); }
+
+    // Failures are isolated at the host boundary; diagnostics are throttled so malformed chat cannot flood logs.
+    private void ReportFailure(Entry entry, string callbackType, Exception exception)
+    {
+        string key = entry.Owner.Value + ":" + entry.Name;
+        lock (gate)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (lastFailures.TryGetValue(key, out DateTime previous) && now - previous < TimeSpan.FromSeconds(10)) return;
+            lastFailures[key] = now;
+        }
+        Trace.TraceError("Alacrity chat " + callbackType + " failed for plugin '" + entry.Owner + "', registration '" + entry.Name + "': " + exception);
+    }
+
+    private static bool IsIdentityDecoration(IReadOnlyList<ChatTextSpan> spans, string text)
+    {
+        return spans.Count == 1 && spans[0].LinkTarget == null && string.Equals(spans[0].Text, text, StringComparison.Ordinal);
+    }
+
+    private void RebuildEditorSnapshot() => Volatile.Write(ref editorSnapshot, editors.OrderBy(entry => entry.Descriptor.Priority).ToArray());
+    private void RebuildDecoratorSnapshot() => Volatile.Write(ref decoratorSnapshot, decorators.OrderBy(entry => entry.Descriptor.Priority).ToArray());
+    private void RebuildFilterSnapshot() => Volatile.Write(ref filterSnapshot, filters.OrderBy(entry => entry.Descriptor.Priority).ToArray());
+    private static void EnsureCapability(PluginManifest manifest, PluginCapability capability, string service)
+    {
+        if ((manifest.Capabilities & capability) != capability)
+            throw new UnauthorizedAccessException("Plugin '" + manifest.Id + "' must declare " + capability + " to register a " + service + ".");
+    }
+    private static void EnsurePermission(PluginManifest manifest, PluginPermission permission, string service)
+    {
+        if ((manifest.Permissions & permission) != permission)
+            throw new UnauthorizedAccessException("Plugin '" + manifest.Id + "' must declare " + permission + " to register a " + service + ".");
+    }
+    private static void EnsureUserInterfaceAccess(PluginManifest manifest, string service)
+    {
+        EnsureCapability(manifest, PluginCapability.UserInterface, service);
+        EnsurePermission(manifest, PluginPermission.DrawUserInterface, service);
+    }
 
     private sealed class ScopedService : IPluginChatService
     {
-        private readonly PluginChatHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
-        public ScopedService(PluginChatHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
-        public IPluginRegistration RegisterInputEditor(ChatInputEditorDescriptor descriptor, IChatInputEditor editor) => host.RegisterEditor(owner, resources, descriptor, editor);
-        public IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator) => host.RegisterDecorator(owner, resources, descriptor, decorator);
-        public IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter) => host.RegisterFilter(owner, resources, descriptor, filter);
-        public IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler) => host.RegisterLink(owner, resources, descriptor, handler);
+        private readonly PluginChatHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources;
+        public ScopedService(PluginChatHost host, PluginManifest manifest, IPluginResourceScope resources) { this.host = host; this.manifest = manifest; this.resources = resources; }
+        public IPluginRegistration RegisterInputEditor(ChatInputEditorDescriptor descriptor, IChatInputEditor editor) => host.RegisterEditor(manifest, resources, descriptor, editor);
+        public IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator) => host.RegisterDecorator(manifest, resources, descriptor, decorator);
+        public IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter) => host.RegisterFilter(manifest, resources, descriptor, filter);
+        public IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler) => host.RegisterLink(manifest, resources, descriptor, handler);
     }
     private abstract class Entry : IPluginRegistration { private readonly Action<Entry> remove; private bool released; protected Entry(PluginId owner, string name, Action<Entry> remove) { Owner = owner; Name = name; this.remove = remove; } public PluginId Owner { get; } public string Name { get; } public bool IsReleased => released; public void Dispose() { if (released) return; released = true; remove(this); } }
     private sealed class EditorEntry : Entry { public EditorEntry(PluginId owner, ChatInputEditorDescriptor descriptor, IChatInputEditor editor, Action<EditorEntry> remove) : base(owner, "chat-editor:" + descriptor.Id, entry => remove((EditorEntry)entry)) { Descriptor = descriptor; Editor = editor; } public ChatInputEditorDescriptor Descriptor { get; } public IChatInputEditor Editor { get; } }

@@ -21,9 +21,7 @@ namespace AlacrityTerraria
         private static string _lastText = string.Empty;
         private static string _hoveredMessage = string.Empty;
         private static int _hoveredTick;
-        private static Keys _repeatKey = Keys.None;
-        private static int _repeatStartTick;
-        private static int _repeatLastTick;
+        private static readonly Dictionary<Keys, RepeatState> RepeatStates = new Dictionary<Keys, RepeatState>();
         private static readonly ConditionalWeakTable<TextSnippet, ChatLineContext> ChatLines = new ConditionalWeakTable<TextSnippet, ChatLineContext>();
         private const int RepeatDelayMilliseconds = 320;
         private const int RepeatIntervalMilliseconds = 38;
@@ -265,24 +263,28 @@ namespace AlacrityTerraria
         private static bool Pressed(KeyboardState current, KeyboardState old, Keys key) => current.IsKeyDown(key) && !old.IsKeyDown(key);
         private static bool Repeated(KeyboardState current, KeyboardState old, Keys key)
         {
+            RepeatStates.TryGetValue(key, out RepeatState state);
             if (!current.IsKeyDown(key))
             {
-                if (_repeatKey == key) _repeatKey = Keys.None;
+                state.Held = false;
+                RepeatStates[key] = state;
                 return false;
             }
 
             int now = Environment.TickCount;
-            if (!old.IsKeyDown(key) || _repeatKey != key)
+            if (!old.IsKeyDown(key) || !state.Held)
             {
-                _repeatKey = key;
-                _repeatStartTick = now;
-                _repeatLastTick = now;
+                state.Held = true;
+                state.StartTick = now;
+                state.LastTick = now;
+                RepeatStates[key] = state;
                 return true;
             }
 
-            if (Elapsed(now, _repeatStartTick) < RepeatDelayMilliseconds || Elapsed(now, _repeatLastTick) < RepeatIntervalMilliseconds)
+            if (Elapsed(now, state.StartTick) < RepeatDelayMilliseconds || Elapsed(now, state.LastTick) < RepeatIntervalMilliseconds)
                 return false;
-            _repeatLastTick = now;
+            state.LastTick = now;
+            RepeatStates[key] = state;
             return true;
         }
         private static bool HasSelection => _selectionAnchor >= 0 && _selectionAnchor != _caret;
@@ -297,6 +299,12 @@ namespace AlacrityTerraria
         {
             internal ChatLineContext(string text) { Text = text ?? string.Empty; }
             internal string Text { get; }
+        }
+        private struct RepeatState
+        {
+            internal bool Held;
+            internal int StartTick;
+            internal int LastTick;
         }
     }
 

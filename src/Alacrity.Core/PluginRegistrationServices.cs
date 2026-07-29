@@ -20,7 +20,9 @@ public sealed class PluginExtensionHost
     {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         manifest.Validate();
-        return CreateServices(manifest.Id, resources);
+        EnsureOwner(manifest.Id);
+        if (resources == null) throw new ArgumentNullException(nameof(resources));
+        return new PluginExtensionServices(new EventService(this, manifest.Id, resources), new UiService(this, manifest, manifest.Id, resources), new KeybindService(this, manifest, manifest.Id, resources));
     }
 
     /// <summary>Creates scope-owned extension services for a validated plugin identity.</summary>
@@ -28,7 +30,7 @@ public sealed class PluginExtensionHost
     {
         EnsureOwner(owner);
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new PluginExtensionServices(new EventService(this, owner, resources), new UiService(this, owner, resources), new KeybindService(this, owner, resources));
+        return new PluginExtensionServices(new EventService(this, owner, resources), new UiService(this, null, owner, resources), new KeybindService(this, null, owner, resources));
     }
 
     /// <summary>Returns settings-page contributions still owned by the specified active plugin.</summary>
@@ -151,23 +153,34 @@ public sealed class PluginExtensionHost
     }
     private sealed class UiService : IPluginUiService
     {
-        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
-        public UiService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
-        public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) => host.RegisterUi(owner, resources, contribution, false);
+        private readonly PluginExtensionHost host; private readonly PluginManifest? manifest; private readonly PluginId owner; private readonly IPluginResourceScope resources;
+        public UiService(PluginExtensionHost host, PluginManifest? manifest, PluginId owner, IPluginResourceScope resources) { this.host = host; this.manifest = manifest; this.owner = owner; this.resources = resources; }
+        public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) { EnsureUiAccess(); return host.RegisterUi(owner, resources, contribution, false); }
         public IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution)
         {
             if (contribution == null) throw new ArgumentNullException(nameof(contribution));
             if (!contribution.IsInteractive) throw new ArgumentException("A settings control must provide a value reader and activation action.", nameof(contribution));
+            EnsureUiAccess();
             return host.RegisterUi(owner, resources, contribution, false);
         }
-        public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) => host.RegisterSettingControl(owner, resources, control);
-        public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) => host.RegisterUi(owner, resources, contribution, true);
+        public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) { EnsureUiAccess(); return host.RegisterSettingControl(owner, resources, control); }
+        public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) { EnsureUiAccess(); return host.RegisterUi(owner, resources, contribution, true); }
+        private void EnsureUiAccess()
+        {
+            if (manifest == null || (manifest.Capabilities & PluginCapability.UserInterface) == 0 || (manifest.Permissions & PluginPermission.DrawUserInterface) == 0)
+                throw new UnauthorizedAccessException("UI registrations require declared UserInterface capability and DrawUserInterface permission.");
+        }
     }
     private sealed class KeybindService : IPluginKeybindService
     {
-        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
-        public KeybindService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
-        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler) => host.RegisterKeybind(owner, resources, descriptor, handler);
+        private readonly PluginExtensionHost host; private readonly PluginManifest? manifest; private readonly PluginId owner; private readonly IPluginResourceScope resources;
+        public KeybindService(PluginExtensionHost host, PluginManifest? manifest, PluginId owner, IPluginResourceScope resources) { this.host = host; this.manifest = manifest; this.owner = owner; this.resources = resources; }
+        public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler)
+        {
+            if (manifest == null || (manifest.Capabilities & PluginCapability.Input) == 0)
+                throw new UnauthorizedAccessException("Keybind registrations require the Input capability.");
+            return host.RegisterKeybind(owner, resources, descriptor, handler);
+        }
     }
     private sealed class EventHandlerRegistration : CallbackRegistration
     {

@@ -54,30 +54,35 @@ namespace AlacrityTerraria
         private static string _ingameHoveredSettingId;
         private static bool _enabledStateRestored;
         private static readonly object RuntimeGate = new object();
+        private static readonly PluginId BetterChatPluginId = new PluginId("alacrity.better-chat");
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
 
         /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
         public static void BootstrapPluginRuntime()
         {
+            if (Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown))
+                return;
             lock (RuntimeGate)
             {
-                if (_runtimeBootstrapped || _runtimeShuttingDown)
+                if (Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown))
                     return;
                 EnsurePluginManager();
                 RefreshPluginCatalog();
-                _runtimeBootstrapped = true;
+                Volatile.Write(ref _runtimeBootstrapped, true);
             }
         }
 
         /// <summary>Best-effort process-exit cleanup. Individual plugin failures never block Terraria shutdown.</summary>
         public static void ShutdownPluginRuntime()
         {
+            if (Volatile.Read(ref _runtimeShuttingDown))
+                return;
             lock (RuntimeGate)
             {
-                if (_runtimeShuttingDown)
+                if (Volatile.Read(ref _runtimeShuttingDown))
                     return;
-                _runtimeShuttingDown = true;
+                Volatile.Write(ref _runtimeShuttingDown, true);
                 if (_runtime == null)
                     return;
                 using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
@@ -101,7 +106,7 @@ namespace AlacrityTerraria
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditors;
+                return _chat != null && _chat.HasInputEditor(BetterChatPluginId);
             }
             catch (Exception exception)
             {
@@ -116,7 +121,7 @@ namespace AlacrityTerraria
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditors ? BetterChatRuntime.Process(_chat, GetBetterChatUserInteraction(), text, allowMultiLine) : text;
+                return _chat != null && _chat.HasInputEditor(BetterChatPluginId) ? BetterChatRuntime.Process(_chat, GetBetterChatUserInteraction(), text, allowMultiLine) : text;
             }
             catch (Exception exception)
             {
@@ -203,7 +208,7 @@ namespace AlacrityTerraria
         /// <summary>Applies the current hover highlight without mutating the original snippet color.</summary>
         public static Color GetChatSnippetVisibleColor(object snippet, Color color)
         {
-            try { return IsBetterChatActive() ? BetterChatRuntime.VisibleColor(snippet, color) : color; }
+            try { return BetterChatRuntime.VisibleColor(snippet, color); }
             catch (Exception exception) { ReportOptionalUiFailure("BetterChat hover color", exception); return color; }
         }
 
@@ -807,7 +812,7 @@ namespace AlacrityTerraria
             if (_betterChatUserInteraction != null)
                 return _betterChatUserInteraction;
 
-            var record = _runtime == null ? null : _runtime.Registry.Records.FirstOrDefault(candidate => candidate.Manifest.Id.Value == "alacrity.better-chat");
+            var record = _runtime == null ? null : _runtime.Registry.Records.FirstOrDefault(candidate => candidate.Manifest.Id == BetterChatPluginId);
             return record == null || _userInteraction == null
                 ? new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(new PluginManifest(new PluginId("alacrity.unavailable"), "Unavailable", new Version(1, 0), "Alacrity", "Unavailable", new[] { "1.4.5.6" }))
                 : (_betterChatUserInteraction = _userInteraction.CreateService(record.Manifest));
@@ -1656,6 +1661,7 @@ namespace AlacrityTerraria
             private readonly IReadOnlyList<PluginSettingControl> controls;
             private readonly IReadOnlyList<PluginUiContribution> legacyPages;
             private UIGamepadHelper gamepadHelper;
+            private UIList settingsList;
 
             public PluginSettingsMenu(PluginManagerRow plugin, IReadOnlyList<PluginSettingControl> controls, IReadOnlyList<PluginUiContribution> legacyPages)
             {
@@ -1671,7 +1677,9 @@ namespace AlacrityTerraria
                 Append(outer);
                 var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-110f, 1f), BackgroundColor = new Color(33, 43, 79) * 0.8f };
                 outer.Append(panel);
-                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-50f, 1f), VAlign = 1f, PaddingBottom = 5f, ListPadding = 20f };
+                // Plugin controls are registered in their intended display order; default UIList sorting is not stable for equal UI elements.
+                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-50f, 1f), VAlign = 1f, PaddingBottom = 5f, ListPadding = 20f, ManualSortMethod = items => { } };
+                settingsList = list;
                 panel.Append(list);
 
                 int snapIndex = 0;
@@ -1795,15 +1803,22 @@ namespace AlacrityTerraria
             {
                 base.Draw(spriteBatch);
                 UILinkPointNavigator.Shortcuts.BackButtonCommand = 1;
-                SetupGamepadPoints();
+                SetupGamepadPoints(spriteBatch);
             }
 
-            private void SetupGamepadPoints()
+            private void SetupGamepadPoints(SpriteBatch spriteBatch)
             {
                 int firstId = 3600;
                 int nextId = firstId;
-                foreach (var point in GetSnapPoints().Where(point => point.Name == "PluginSetting" || point.Name == "GoBack"))
-                    gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                List<SnapPoint> allPoints = GetSnapPoints();
+                List<SnapPoint> visibleSettings = settingsList.GetSnapPoints();
+                gamepadHelper.CullPointsOutOfElementArea(spriteBatch, visibleSettings, settingsList);
+                UILinkPoint[] settings = gamepadHelper.CreateUILinkStripVertical(ref nextId, gamepadHelper.GetOrderedPointsByCategoryName(visibleSettings, "PluginSetting"));
+                UILinkPoint back = null;
+                foreach (SnapPoint point in allPoints)
+                    if (point.Name == "GoBack")
+                        back = gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
+                gamepadHelper.LinkVerticalStripBottomSideToSingle(settings, back);
                 gamepadHelper.MoveToVisuallyClosestPoint(firstId, nextId);
             }
 

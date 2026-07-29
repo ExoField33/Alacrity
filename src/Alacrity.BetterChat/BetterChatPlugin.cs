@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text.RegularExpressions;
 using Alacrity.PluginSdk;
 
@@ -10,16 +9,18 @@ namespace Alacrity.BetterChat;
 public sealed class BetterChatPlugin : IAlacrityPlugin
 {
     private IPluginContext? context;
+    private bool clickableLinks = true;
+    private string visibility = "Enabled";
 
     public void Initialize(IPluginContext context)
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
-        InitializeSetting("clickableLinks", true);
-        Set("visibility", GetVisibility());
+        clickableLinks = context.Settings.Get("clickableLinks", true);
+        visibility = NormalizeVisibility(context.Settings.Get("visibility", "Enabled"));
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("better-chat", "Better Chat"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", () => Get("clickableLinks", true), value => Set("clickableLinks", value)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("visibility", "Chat Visibility", new[] { "Enabled", "Disabled" }, GetVisibility, value => Set("visibility", value)));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", () => clickableLinks, SetClickableLinks));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("visibility", "Chat Visibility", new[] { "Enabled", "Disabled" }, () => visibility, SetVisibility));
 
         context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), new Editor(this));
         context.Terraria.Chat.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("better-chat-links"), new LinkDecorator(this));
@@ -32,12 +33,22 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
     public void Disable() { }
     public void Shutdown() { context = null; }
 
-    private bool Get(string key, bool defaultValue) => context != null && context.Settings.Get(key, defaultValue);
-    private string Get(string key, string defaultValue) => context != null ? context.Settings.Get(key, defaultValue) : defaultValue;
-    private void Set(string key, bool value) { if (context != null) context.Settings.Set(key, value); }
-    private void Set(string key, string value) { if (context != null) context.Settings.Set(key, value); }
-    private void InitializeSetting(string key, bool defaultValue) { if (context != null) context.Settings.Set(key, context.Settings.Get(key, defaultValue)); }
-    private string GetVisibility() => string.Equals(Get("visibility", "Enabled"), "Disabled", StringComparison.Ordinal) ? "Disabled" : "Enabled";
+    private void SetClickableLinks(bool value)
+    {
+        if (clickableLinks == value) return;
+        clickableLinks = value;
+        context?.Settings.Set("clickableLinks", value);
+    }
+
+    private void SetVisibility(string value)
+    {
+        value = NormalizeVisibility(value);
+        if (string.Equals(visibility, value, StringComparison.Ordinal)) return;
+        visibility = value;
+        context?.Settings.Set("visibility", value);
+    }
+
+    private static string NormalizeVisibility(string? value) => string.Equals(value, "Disabled", StringComparison.Ordinal) ? "Disabled" : "Enabled";
     private bool TryOpenExternalLink(Uri uri) => context != null && context.UserInteraction.TryOpenExternalLink(uri);
 
     private sealed class VisibilityFilter : IChatMessageFilter
@@ -46,8 +57,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         public VisibilityFilter(BetterChatPlugin plugin) { this.plugin = plugin; }
         public bool ShouldDisplay(ChatMessageOrigin origin)
         {
-            string visibility = plugin.GetVisibility();
-            return !string.Equals(visibility, "Disabled", StringComparison.Ordinal);
+            return !string.Equals(plugin.visibility, "Disabled", StringComparison.Ordinal);
         }
     }
 
@@ -105,42 +115,11 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
 
     private sealed class LinkDecorator : IChatMessageDecorator
     {
-        private static readonly Regex Url = new Regex(@"https?://[^\s\]\)\""']+|www\.[^\s\]\)\""']+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private readonly BetterChatPlugin plugin;
         public LinkDecorator(BetterChatPlugin plugin) { this.plugin = plugin; }
         public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message)
         {
-            if (!plugin.Get("clickableLinks", true)) return new[] { new ChatTextSpan(message.Text) };
-            var spans = new List<ChatTextSpan>();
-            int index = 0;
-            foreach (Match match in Url.Matches(message.Text))
-            {
-                if (match.Index > index) spans.Add(new ChatTextSpan(message.Text.Substring(index, match.Index - index)));
-                string value = TrimTrailingPunctuation(match.Value);
-                if (!TryHttpUri(value, out string target))
-                    spans.Add(new ChatTextSpan(match.Value));
-                else
-                    spans.Add(new ChatTextSpan(value, target));
-                int consumed = match.Index + value.Length;
-                if (consumed < match.Index + match.Length) spans.Add(new ChatTextSpan(message.Text.Substring(consumed, match.Index + match.Length - consumed)));
-                index = match.Index + match.Length;
-            }
-            if (index < message.Text.Length || spans.Count == 0) spans.Add(new ChatTextSpan(message.Text.Substring(index)));
-            return spans;
-        }
-
-        private static string TrimTrailingPunctuation(string value)
-        {
-            while (!string.IsNullOrEmpty(value) && ".,;!?:".IndexOf(value[value.Length - 1]) >= 0)
-                value = value.Substring(0, value.Length - 1);
-            if (value.EndsWith(")", StringComparison.Ordinal) && value.Count(character => character == '(') < value.Count(character => character == ')'))
-                value = value.Substring(0, value.Length - 1);
-            return value;
-        }
-        private static bool TryHttpUri(string value, out string target)
-        {
-            target = value.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? "https://" + value : value;
-            return Uri.TryCreate(target, UriKind.Absolute, out Uri? uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+            return plugin.clickableLinks ? BetterChatUrlParser.Decorate(message.Text) : new[] { new ChatTextSpan(message.Text) };
         }
     }
 
@@ -154,5 +133,51 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
                 return false;
             return plugin.TryOpenExternalLink(uri);
         }
+    }
+}
+
+internal static class BetterChatUrlParser
+{
+    private static readonly Regex Url = new Regex(@"https?://[^\s\]\""']+|www\.[^\s\]\""']+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    internal static IReadOnlyList<ChatTextSpan> Decorate(string? message)
+    {
+        string text = message ?? string.Empty;
+        var spans = new List<ChatTextSpan>();
+        int index = 0;
+        foreach (Match match in Url.Matches(text))
+        {
+            if (match.Index > index) spans.Add(new ChatTextSpan(text.Substring(index, match.Index - index)));
+            string value = TrimTrailingPunctuation(match.Value);
+            if (TryHttpUri(value, out string target)) spans.Add(new ChatTextSpan(value, target));
+            else spans.Add(new ChatTextSpan(value));
+            int consumed = match.Index + value.Length;
+            if (consumed < match.Index + match.Length) spans.Add(new ChatTextSpan(text.Substring(consumed, match.Index + match.Length - consumed)));
+            index = match.Index + match.Length;
+        }
+        if (index < text.Length || spans.Count == 0) spans.Add(new ChatTextSpan(text.Substring(index)));
+        return spans;
+    }
+
+    private static string TrimTrailingPunctuation(string value)
+    {
+        while (!string.IsNullOrEmpty(value) && ".,;!?:".IndexOf(value[value.Length - 1]) >= 0)
+            value = value.Substring(0, value.Length - 1);
+        while (value.EndsWith(")", StringComparison.Ordinal) && Count(value, '(') < Count(value, ')'))
+            value = value.Substring(0, value.Length - 1);
+        return value;
+    }
+
+    private static int Count(string value, char character)
+    {
+        int count = 0;
+        for (int index = 0; index < value.Length; index++) if (value[index] == character) count++;
+        return count;
+    }
+
+    private static bool TryHttpUri(string value, out string target)
+    {
+        target = value.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? "https://" + value : value;
+        return Uri.TryCreate(target, UriKind.Absolute, out Uri? uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
     }
 }

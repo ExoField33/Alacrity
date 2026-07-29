@@ -370,7 +370,36 @@ public sealed class PluginLifecycleController : IDisposable
         if (!UsesAsyncLifecycle) { Uninstall(); return; }
         EnsureNotShutdown();
         State = PluginLifecycleState.Uninstalling;
-        await DisposeAsync(cancellationToken).ConfigureAwait(false);
+        var cleanupFailures = new List<PluginCleanupFailure>();
+        Exception? callbackFailure = null;
+        try
+        {
+            if (initialized && hasInitialized)
+            {
+                try { await InvokeAsync("Disable", token => asyncPlugin!.DisableAsync(token), cancellationToken).ConfigureAwait(false); }
+                catch (Exception exception) { callbackFailure = exception; }
+            }
+            cleanupFailures.AddRange(ForceReleaseResources());
+            if (hasInitialized && !shutdownCalled)
+            {
+                try { await InvokeAsync("Shutdown", token => asyncPlugin!.ShutdownAsync(token), cancellationToken).ConfigureAwait(false); }
+                catch (Exception exception)
+                {
+                    if (callbackFailure == null) callbackFailure = exception;
+                    else cleanupFailures.Add(new PluginCleanupFailure("Shutdown", exception));
+                }
+                finally { shutdownCalled = true; }
+            }
+            cleanupFailures.AddRange(ForceDisposeResources());
+        }
+        finally
+        {
+            initialized = false;
+            shutdown = true;
+            State = PluginLifecycleState.Uninstalled;
+            Record("Uninstall", callbackFailure, cleanupFailures);
+        }
+        Rethrow(callbackFailure, cleanupFailures);
     }
 
     private async Task InvokeAsync(string operation, Func<CancellationToken, Task> callback, CancellationToken cancellationToken)
@@ -378,8 +407,9 @@ public sealed class PluginLifecycleController : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         using var timeout = new CancellationTokenSource();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        using var timerCancellation = new CancellationTokenSource();
         Task task = callback(linked.Token) ?? throw new InvalidOperationException(operation + " returned a null task.");
-        Task completed = await Task.WhenAny(task, Task.Delay(asyncCallbackTimeout, cancellationToken)).ConfigureAwait(false);
+        Task completed = await Task.WhenAny(task, Task.Delay(asyncCallbackTimeout, timerCancellation.Token)).ConfigureAwait(false);
         if (!ReferenceEquals(completed, task))
         {
             timeout.Cancel();
@@ -387,6 +417,7 @@ public sealed class PluginLifecycleController : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             throw new TimeoutException(operation + " exceeded the host callback timeout of " + asyncCallbackTimeout + ".");
         }
+        timerCancellation.Cancel();
         await task.ConfigureAwait(false);
     }
 

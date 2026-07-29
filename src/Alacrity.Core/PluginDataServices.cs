@@ -135,11 +135,18 @@ public sealed class PluginSettingsStore : IPluginSettings
     {
         ValidateKey(key);
         if (validators.TryGetValue(key, out var validator) && !validator(value)) throw new ArgumentException("The setting value failed registered validation.", nameof(value));
-        object? oldValue;
+        string serialized = Serialize(value);
+        object? oldValue = null;
         lock (gate)
         {
-            oldValue = values.TryGetValue(key, out var old) ? old : null;
-            values[key] = Serialize(value);
+            if (values.TryGetValue(key, out var old))
+            {
+                if (string.Equals(old, serialized, StringComparison.Ordinal))
+                    return;
+                try { oldValue = Deserialize<T>(old); }
+                catch { oldValue = null; }
+            }
+            values[key] = serialized;
             Persist();
         }
         Changed?.Invoke(this, new PluginSettingChangedEventArgs(key, oldValue, value));

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Alacrity.App;
+using Alacrity.BetterChat;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using AlacrityTerraria;
@@ -50,6 +51,7 @@ internal static class Program
             LifecyclePreservesCallbackFailureAndRecordsCleanupFailure();
             LifecycleUninstallReachesTerminalStateAfterFailures();
             AsyncLifecycleSupportsMixedActivationCancellationAndTimeout();
+            AsyncUninstallPropagatesLifecycleFailures();
             ResourceScopeReleasesChildrenInParentOrder();
             ResourceScopeRecordsIndividualCleanupFailures();
             ActivationTransactionRollsBackInReverseOrder();
@@ -58,7 +60,11 @@ internal static class Program
             ExtensionRegistrationsAreScopeOwned();
             ExtensionServicesRequireOwnersAndIsolateScopes();
             ChatVisibilityFiltersAreScopeOwned();
+            ChatOwnershipCompositionAndPermissionEnforcement();
             UserInteractionServicesRequirePermissionsAndValidateLinks();
+            PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue();
+            BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
+            BetterChatCachesDefaultsWithoutRewritingSettings();
             OverlayDispatchIsOrderedIsolatedAndScopeOwned();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
@@ -929,6 +935,18 @@ internal static class Program
         Assert(cancelled.State == PluginLifecycleState.Faulted, "Cancellation during async initialization must fault only that plugin and preserve host startup isolation.");
     }
 
+    private static void AsyncUninstallPropagatesLifecycleFailures()
+    {
+        using var scope = new PluginResourceScope();
+        var manifest = new PluginManifest(new PluginId("async.uninstall"), "Async uninstall", new Version(1, 0), "Tests", "Async uninstall", new[] { "1.4.5.6" });
+        var controller = new PluginLifecycleController(new FailingAsyncUninstallPlugin(), new TestContext(manifest, scope));
+        controller.Validate();
+        controller.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        controller.EnableAsync(CancellationToken.None).GetAwaiter().GetResult();
+        AssertThrows<InvalidOperationException>(() => controller.UninstallAsync(CancellationToken.None).GetAwaiter().GetResult());
+        Assert(controller.State == PluginLifecycleState.Uninstalled && controller.LastOperation.CallbackFailure?.Exception is InvalidOperationException, "Async uninstall must retain lifecycle callback failures while reaching its terminal state.");
+    }
+
     private static void ResourceScopeReleasesChildrenInParentOrder()
     {
         var order = new List<string>();
@@ -1007,7 +1025,9 @@ internal static class Program
         var host = new PluginExtensionHost();
         var scope = new PluginResourceScope();
         var manifest = new PluginManifest(
-            new PluginId("extensions.plugin"), "Extensions", new Version(1, 0), "Tests", "Extension registration test", new[] { "1.4.5.6" });
+            new PluginId("extensions.plugin"), "Extensions", new Version(1, 0), "Tests", "Extension registration test", new[] { "1.4.5.6" },
+            capabilities: PluginCapability.UserInterface | PluginCapability.Input,
+            permissions: PluginPermission.DrawUserInterface);
         var services = host.CreateServices(manifest, scope);
         var received = 0;
         services.Events.Subscribe<string>(_ => received++);
@@ -1047,8 +1067,8 @@ internal static class Program
         AssertThrows<ArgumentException>(() => host.CreateServices(invalidManifest, invalidScope));
         invalidScope.Dispose();
 
-        var firstManifest = new PluginManifest(new PluginId("first.extensions"), "First", new Version(1, 0), "Tests", "First extension owner", new[] { "1.4.5.6" });
-        var secondManifest = new PluginManifest(new PluginId("second.extensions"), "Second", new Version(1, 0), "Tests", "Second extension owner", new[] { "1.4.5.6" });
+        var firstManifest = new PluginManifest(new PluginId("first.extensions"), "First", new Version(1, 0), "Tests", "First extension owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface);
+        var secondManifest = new PluginManifest(new PluginId("second.extensions"), "Second", new Version(1, 0), "Tests", "Second extension owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface);
         var firstScope = new PluginResourceScope();
         var secondScope = new PluginResourceScope();
         var first = host.CreateServices(firstManifest, firstScope);
@@ -1081,7 +1101,7 @@ internal static class Program
         Assert(firstEvents == 1 && secondEvents == 2, "Releasing one plugin scope must remove only its event registrations.");
 
         var replacementScope = new PluginResourceScope();
-        host.CreateServices(firstManifest.Id, replacementScope).Keybinds.Register(new PluginKeybindDescriptor("first-keybind", "P", "First"), () => { });
+        host.CreateServices(firstManifest, replacementScope).Keybinds.Register(new PluginKeybindDescriptor("first-keybind", "P", "First"), () => { });
         replacementScope.Dispose();
         firstScope.Dispose();
         secondScope.Dispose();
@@ -1090,8 +1110,8 @@ internal static class Program
     private static void ChatVisibilityFiltersAreScopeOwned()
     {
         var host = new PluginChatHost();
-        var firstManifest = new PluginManifest(new PluginId("first.chat"), "First", new Version(1, 0), "Tests", "Chat filter", new[] { "1.4.5.6" });
-        var secondManifest = new PluginManifest(new PluginId("second.chat"), "Second", new Version(1, 0), "Tests", "Chat filter", new[] { "1.4.5.6" });
+        var firstManifest = new PluginManifest(new PluginId("first.chat"), "First", new Version(1, 0), "Tests", "Chat filter", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        var secondManifest = new PluginManifest(new PluginId("second.chat"), "Second", new Version(1, 0), "Tests", "Chat filter", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
         var firstScope = new PluginResourceScope();
         var secondScope = new PluginResourceScope();
         host.CreateService(firstManifest, firstScope).RegisterMessageFilter(new ChatMessageFilterDescriptor("hide-players"), new TestChatFilter(ChatMessageOrigin.Player));
@@ -1104,6 +1124,96 @@ internal static class Program
         Assert(!host.ShouldDisplay(ChatMessageOrigin.LocalSystem), "Remaining plugin filters must stay registered.");
         firstScope.Dispose();
         secondScope.Dispose();
+    }
+
+    private static void ChatOwnershipCompositionAndPermissionEnforcement()
+    {
+        var host = new PluginChatHost();
+        var firstManifest = new PluginManifest(new PluginId("first.chat-owner"), "First", new Version(1, 0), "Tests", "First chat owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface | PluginPermission.OpenExternalLinks);
+        var secondManifest = new PluginManifest(new PluginId("second.chat-owner"), "Second", new Version(1, 0), "Tests", "Second chat owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface | PluginPermission.OpenExternalLinks);
+        using var firstScope = new PluginResourceScope();
+        using var secondScope = new PluginResourceScope();
+        var first = host.CreateService(firstManifest, firstScope);
+        var second = host.CreateService(secondManifest, secondScope);
+        first.RegisterInputEditor(new ChatInputEditorDescriptor("first-editor"), new TestInputEditor());
+        second.RegisterInputEditor(new ChatInputEditorDescriptor("second-editor"), new TestInputEditor());
+        Assert(host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Chat editor ownership must remain attributable to the registered plugin.");
+        first.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("first-decoration", priority: 1), new TestDecorator("first"));
+        second.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("second-decoration", priority: 2), new TestDecorator("second"));
+        Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "first", "Chat decorators must use deterministic first-handler-wins behavior instead of discarding earlier output.");
+        firstScope.ReleaseAll();
+        Assert(!host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Disabling one scope must remove only its chat editor.");
+        Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "second", "The next deterministic decorator must remain active after the first owner is removed.");
+
+        var isolatedHost = new PluginChatHost();
+        using var isolatedScope = new PluginResourceScope();
+        var isolated = isolatedHost.CreateService(secondManifest, isolatedScope);
+        isolated.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("throwing-decoration", priority: 1), new ThrowingDecorator());
+        isolated.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("fallback-decoration", priority: 2), new TestDecorator("fallback"));
+        Assert(isolatedHost.Decorate(new ChatMessageSnapshot("original")).Single().Text == "fallback", "A failed decorator must be removed and must not prevent later chat decorators from preserving vanilla chat output.");
+
+        var denied = host.CreateService(new PluginManifest(new PluginId("denied.chat"), "Denied", new Version(1, 0), "Tests", "Denied chat", new[] { "1.4.5.6" }), new PluginResourceScope());
+        AssertThrows<UnauthorizedAccessException>(() => denied.RegisterInputEditor(new ChatInputEditorDescriptor("denied-editor"), new TestInputEditor()));
+        AssertThrows<UnauthorizedAccessException>(() => denied.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("denied-decoration"), new TestDecorator("denied")));
+
+        using var extensionScope = new PluginResourceScope();
+        var extension = new PluginExtensionHost().CreateServices(new PluginManifest(new PluginId("denied.extension"), "Denied extension", new Version(1, 0), "Tests", "Denied extension", new[] { "1.4.5.6" }), extensionScope);
+        AssertThrows<UnauthorizedAccessException>(() => extension.Ui.RegisterSettingsPage(new PluginUiContribution("denied-page", "Denied")));
+        AssertThrows<UnauthorizedAccessException>(() => extension.Keybinds.Register(new PluginKeybindDescriptor("denied-key", "P", "Denied"), () => { }));
+        using var overlayScope = new PluginResourceScope();
+        var overlay = new PluginOverlayHost().CreateService(new PluginManifest(new PluginId("denied.overlay"), "Denied overlay", new Version(1, 0), "Tests", "Denied overlay", new[] { "1.4.5.6" }), overlayScope);
+        AssertThrows<UnauthorizedAccessException>(() => overlay.Register(new PluginOverlayDescriptor("denied-overlay"), (_, _) => { }));
+    }
+
+    private static void PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-settings-events-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = new PluginSettingsStore(root, new PluginId("settings.events"));
+            int changed = 0;
+            PluginSettingChangedEventArgs? last = null;
+            settings.Changed += (_, value) => { changed++; last = value; };
+            settings.Set("enabled", true);
+            settings.Set("enabled", true);
+            settings.Set("enabled", false);
+            Assert(changed == 2, "Writing a serialized setting value that has not changed must not persist or raise a duplicate change event.");
+            Assert(last != null && last.OldValue is bool oldValue && oldValue, "Settings change events must expose the previous deserialized typed value.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation()
+    {
+        IReadOnlyList<ChatTextSpan> balanced = BetterChatUrlParser.Decorate("Read https://example.invalid/wiki_(test). now");
+        Assert(balanced.Any(span => span.LinkTarget == "https://example.invalid/wiki_(test)"), "Balanced closing parentheses must remain part of a URL.");
+        IReadOnlyList<ChatTextSpan> trailing = BetterChatUrlParser.Decorate("https://example.invalid/path))).");
+        Assert(trailing[0].LinkTarget == "https://example.invalid/path" && trailing.Skip(1).Any(span => span.Text == ")))."), "All unmatched trailing closing parentheses and punctuation must be separate ordinary text.");
+        IReadOnlyList<ChatTextSpan> multiple = BetterChatUrlParser.Decorate("www.example.invalid/a, and https://second.invalid/b!");
+        Assert(multiple.Count(span => span.LinkTarget != null) == 2, "Multiple URLs in one message must decorate independently.");
+        IReadOnlyList<ChatTextSpan> invalid = BetterChatUrlParser.Decorate("https:// not-a-link");
+        Assert(invalid.All(span => span.LinkTarget == null), "Malformed URLs must remain ordinary text.");
+    }
+
+    private static void BetterChatCachesDefaultsWithoutRewritingSettings()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-better-chat-settings-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var manifest = new PluginManifest(new PluginId("alacrity.better-chat"), "Better Chat", new Version(1, 0), "Tests", "Better chat test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface | PluginPermission.Clipboard | PluginPermission.OpenExternalLinks);
+            var factory = new PluginHostContextFactory(root, new PluginServiceHub(), new PluginExtensionHost(), new PluginCommandHost(), chat: new PluginChatHost());
+            PluginHostContext context = factory.Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            new BetterChatPlugin().Initialize(context);
+            Assert(!File.Exists(Path.Combine(root, "data", "plugins", manifest.Id.Value, "settings.json")), "BetterChat initialization must cache missing defaults without rewriting settings.json.");
+            context.Resources.Dispose();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     private static void UserInteractionServicesRequirePermissionsAndValidateLinks()
@@ -1220,8 +1330,8 @@ internal static class Program
     private static void OverlayDispatchIsOrderedIsolatedAndScopeOwned()
     {
         var host = new PluginOverlayHost(TimeSpan.Zero);
-        var firstManifest = CreateManifest();
-        var secondManifest = new PluginManifest(new PluginId("second.plugin"), "Second", new Version(1, 0), "Tests", "Second test", new[] { "1.4.5.6" });
+        var firstManifest = new PluginManifest(new PluginId("first.overlay"), "First", new Version(1, 0), "Tests", "First overlay", new[] { "1.4.5.6" }, capabilities: PluginCapability.Rendering, permissions: PluginPermission.DrawUserInterface);
+        var secondManifest = new PluginManifest(new PluginId("second.plugin"), "Second", new Version(1, 0), "Tests", "Second test", new[] { "1.4.5.6" }, capabilities: PluginCapability.Rendering, permissions: PluginPermission.DrawUserInterface);
         using var firstScope = new PluginResourceScope();
         using var secondScope = new PluginResourceScope();
         var order = new List<string>();
@@ -1518,6 +1628,14 @@ internal static class Program
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
+    private sealed class FailingAsyncUninstallPlugin : IAsyncAlacrityPlugin
+    {
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task DisableAsync(CancellationToken cancellationToken) => Task.FromException(new InvalidOperationException("Expected async uninstall failure."));
+        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
     private sealed class TestSettings : IPluginSettings
     {
         private readonly Dictionary<string, object?> values = new Dictionary<string, object?>();
@@ -1583,6 +1701,23 @@ internal static class Program
         private readonly ChatMessageOrigin hidden;
         public TestChatFilter(ChatMessageOrigin hidden) { this.hidden = hidden; }
         public bool ShouldDisplay(ChatMessageOrigin origin) => origin != hidden;
+    }
+
+    private sealed class TestInputEditor : IChatInputEditor
+    {
+        public ChatInputEditResult Edit(ChatInputSnapshot snapshot, ChatInputAction action) => ChatInputEditResult.Unhandled(snapshot);
+    }
+
+    private sealed class TestDecorator : IChatMessageDecorator
+    {
+        private readonly string text;
+        public TestDecorator(string text) { this.text = text; }
+        public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message) => new[] { new ChatTextSpan(text) };
+    }
+
+    private sealed class ThrowingDecorator : IChatMessageDecorator
+    {
+        public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message) => throw new InvalidOperationException("Expected decorator failure.");
     }
 
     private sealed class RecordingUserInteractionBackend : IPluginUserInteractionBackend
