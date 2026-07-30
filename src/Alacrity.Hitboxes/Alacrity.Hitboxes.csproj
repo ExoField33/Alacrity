@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PluginPackageDirectory>$(MSBuildProjectDirectory)\..\..\Plugins\alacrity.hitboxes</PluginPackageDirectory>
+  </PropertyGroup>
+  <Target Name="BuildPluginPackage" AfterTargets="Build">
+    <MakeDir Directories="$(PluginPackageDirectory)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginPackageDirectory)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\plugin.json" DestinationFolder="$(PluginPackageDirectory)" />
+  </Target>
+  <ItemGroup>
+    <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
+  </ItemGroup>
+</Project>

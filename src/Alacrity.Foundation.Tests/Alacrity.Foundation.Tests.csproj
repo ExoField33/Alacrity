@@ -10,9 +10,10 @@
     <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
     <ProjectReference Include="..\Alacrity.Core\Alacrity.Core.csproj" />
     <ProjectReference Include="..\Alacrity.App\Alacrity.App.csproj" />
-    <ProjectReference Include="..\Alacrity.UiTestPlugin\Alacrity.UiTestPlugin.csproj" />
     <ProjectReference Include="..\Alacrity.BetterChat\Alacrity.BetterChat.csproj" />
     <ProjectReference Include="..\Alacrity.PlayerList\Alacrity.PlayerList.csproj" />
+    <ProjectReference Include="..\Alacrity.DustGoreToggle\Alacrity.DustGoreToggle.csproj" />
+    <ProjectReference Include="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Alacrity.TerrariaIntegration\BridgeReflectionContracts.cs" Link="BridgeReflectionContracts.cs" />

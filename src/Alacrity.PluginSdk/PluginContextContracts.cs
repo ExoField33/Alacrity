@@ -134,10 +134,23 @@ public sealed class PluginCommandDescriptor
 public sealed class PluginCommandInvocation
 {
     /// <summary>Creates an invocation snapshot.</summary>
-    public PluginCommandInvocation(IReadOnlyList<string> arguments) => Arguments = arguments ?? throw new ArgumentNullException(nameof(arguments));
+    public PluginCommandInvocation(IReadOnlyList<string> arguments, Action<string>? reply = null)
+    {
+        Arguments = arguments ?? throw new ArgumentNullException(nameof(arguments));
+        this.reply = reply;
+    }
+
+    private readonly Action<string>? reply;
 
     /// <summary>Immutable argument list.</summary>
     public IReadOnlyList<string> Arguments { get; }
+
+    /// <summary>Shows host-owned local feedback for this user-issued command when that UI is available.</summary>
+    public void Reply(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("A reply message is required.", nameof(message));
+        reply?.Invoke(message);
+    }
 }
 
 /// <summary>Registers user-rebindable plugin keybinds.</summary>

@@ -38,6 +38,7 @@ namespace AlacrityTerraria
         private static PluginDependencyDiagnostics _diagnostics;
         private static PluginExtensionHost _extensions;
         private static PluginServiceHub _serviceHub;
+        private static PluginCommandHost _commands;
         private static PluginChatHost _chat;
         private static PluginUserInteractionHost _userInteraction;
         private static IPluginUserInteractionService _betterChatUserInteraction;
@@ -68,11 +69,24 @@ namespace AlacrityTerraria
         private static readonly object RuntimeGate = new object();
         private static readonly PluginId BetterChatPluginId = new PluginId("alacrity.better-chat");
         private static readonly PluginId PlayerListPluginId = new PluginId("alacrity.player-list");
+        private static readonly PluginId DustGoreTogglePluginId = new PluginId("alacrity.dust-gore-toggle");
+        private static readonly PluginId HitboxesPluginId = new PluginId("alacrity.hitboxes");
+        private static VisualEffectsRuntimePolicy _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
+        private static VisualEffectsPolicySnapshot _lastVisualEffectsSnapshot;
+        private static HitboxOverlaySettingsSnapshot _hitboxSettings = DisabledHitboxSettings;
+        private static HitboxOverlaySettingsSnapshot _lastHitboxSettings;
+        private static uint _hitboxSettingsRefreshTick = uint.MaxValue;
+        private static bool _hitboxDiagnosticPublished;
+        private static bool _hitboxServiceChatDiagnosticPublished;
+        private static bool _hitboxDrawChatDiagnosticPublished;
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
         private static readonly Dictionary<string, bool> KeybindDownState = new Dictionary<string, bool>(StringComparer.Ordinal);
         private static readonly Dictionary<PluginId, PendingPluginOperation> PendingPluginOperations = new Dictionary<PluginId, PendingPluginOperation>();
         private static long _keybindRegistryVersion = -1;
+        private static PlayerInputProfile _nativeKeybindProfile;
+        private static long _nativeKeybindRegistryVersion = -1;
+        private static readonly HashSet<string> NativePluginKeybindIds = new HashSet<string>(StringComparer.Ordinal);
         private static readonly ConditionalWeakTable<UIManageControls, KeybindControlsState> KeybindControlsStates = new ConditionalWeakTable<UIManageControls, KeybindControlsState>();
         private static FieldInfo _controlsListField;
         private static FieldInfo _controlsKeyboardField;
@@ -153,6 +167,37 @@ namespace AlacrityTerraria
                 ReportOptionalUiFailure("BetterChat input", exception);
                 return text;
             }
+        }
+
+        /// <summary>Consumes only registered local plugin commands before Terraria creates an outgoing chat packet.</summary>
+        public static bool TryHandlePluginChatCommand(string text)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(text) || text[0] != '/')
+                    return false;
+                BootstrapPluginRuntime();
+                if (_commands == null)
+                    return false;
+                string[] parts = text.Substring(1).Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0)
+                    return false;
+                var arguments = new string[Math.Max(0, parts.Length - 1)];
+                if (arguments.Length > 0)
+                    Array.Copy(parts, 1, arguments, 0, arguments.Length);
+                return _commands.TryInvoke(parts[0], arguments, ShowPluginCommandReply);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin chat command", exception);
+                return false;
+            }
+        }
+
+        private static void ShowPluginCommandReply(string message)
+        {
+            if (!string.IsNullOrWhiteSpace(message))
+                Main.NewText(message, 190, 220, 255);
         }
 
         /// <summary>Creates draw-only chat markup. It never modifies Main.chatText or outgoing packet text.</summary>
@@ -314,6 +359,39 @@ namespace AlacrityTerraria
                 Utils.DrawBorderString(spriteBatch, notification.Message, new Vector2(Main.screenWidth - 18, y), Color.LightGoldenrodYellow, 0.72f, 1f, 0f, -1);
                 y += 24;
             }
+        }
+
+        /// <summary>Draws host-validated diagnostics overlays without exposing mutable Terraria state to plugins.</summary>
+        public static void DrawHitboxes(SpriteBatch spriteBatch)
+        {
+            // The draw boundary is guaranteed to exist whenever gameplay UI is visible. Refresh at most once
+            // per simulation tick so diagnostics do not depend on the optional plugin-keybind update hook.
+            if (_hitboxSettingsRefreshTick != Main.GameUpdateCount)
+                RefreshHitboxSettings();
+            HitboxOverlaySettingsSnapshot settings = _hitboxSettings;
+            if (spriteBatch == null || !settings.HasVisibleOverlays)
+            {
+                HitboxRuntime.Reset();
+                return;
+            }
+
+            try
+            {
+                HitboxRuntime.Draw(spriteBatch, settings);
+                PublishHitboxDiagnostic(HitboxRuntime.LastDrawDiagnostic);
+                PublishHitboxChatDiagnostic("[Hitboxes] Draw candidates=" + HitboxRuntime.LastDrawDiagnostic.Candidates + ", submitted=" + HitboxRuntime.LastDrawDiagnostic.Submitted + ".", true);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Hitboxes draw", exception);
+            }
+        }
+
+        /// <summary>Captures Terraria's already-computed melee collision rectangle for presentation on the next draw.</summary>
+        public static void CaptureSwingHitbox(Player player, bool dontAttack, Rectangle hitbox)
+        {
+            if (_hitboxSettings.ShowSwingHitboxes)
+                HitboxRuntime.CaptureSwingHitbox(player, dontAttack, hitbox);
         }
 
         /// <summary>Draws the Player List only while its owning plugin has published an active presentation service.</summary>
@@ -598,11 +676,12 @@ namespace AlacrityTerraria
         {
             if (!Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown) || _extensions == null)
                 return;
-            if (Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
-                return;
-
             try
             {
+                RefreshVisualEffectsPolicy();
+                RefreshHitboxSettings();
+                if (Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
+                    return;
                 PluginKeybindRegistrySnapshot snapshot = _extensions.GetKeybindSnapshot();
                 var keybinds = snapshot.Registrations;
                 if (keybinds.Count == 0)
@@ -649,6 +728,195 @@ namespace AlacrityTerraria
                 ReportOptionalUiFailure("Plugin keybind dispatch", exception);
             }
         }
+
+        /// <summary>
+        /// Synchronizes plugin IDs into Terraria's native trigger dictionaries before KeyboardInput
+        /// calls KeyConfiguration.CopyKeyState. Terraria indexes those dictionaries directly.
+        /// </summary>
+        public static void EnsurePluginKeybindStateShape()
+        {
+            if (!Volatile.Read(ref _runtimeBootstrapped) || _extensions == null || PlayerInput.CurrentProfile == null)
+                return;
+
+            try
+            {
+                PluginKeybindRegistrySnapshot snapshot = _extensions.GetKeybindSnapshot();
+                PlayerInputProfile profile = PlayerInput.CurrentProfile;
+                if (ReferenceEquals(profile, _nativeKeybindProfile) && snapshot.Version == _nativeKeybindRegistryVersion)
+                    return;
+
+                var activeIds = new HashSet<string>(snapshot.Registrations.Select(keybind => keybind.HostId), StringComparer.Ordinal);
+                foreach (var configuration in profile.InputModes.Values)
+                    foreach (string staleId in NativePluginKeybindIds.Where(id => !activeIds.Contains(id)).ToArray())
+                        configuration.KeyStatus.Remove(staleId);
+
+                RemoveStaleTriggerKeys(NativePluginKeybindIds, activeIds);
+                foreach (PluginKeybindRegistration keybind in snapshot.Registrations)
+                {
+                    EnsureInputBinding(keybind, InputMode.Keyboard);
+                    EnsureTriggerKey(PlayerInput.Triggers.Current, keybind.HostId);
+                    EnsureTriggerKey(PlayerInput.Triggers.Old, keybind.HostId);
+                    EnsureTriggerKey(PlayerInput.Triggers.JustPressed, keybind.HostId);
+                    EnsureTriggerKey(PlayerInput.Triggers.JustReleased, keybind.HostId);
+                }
+
+                NativePluginKeybindIds.Clear();
+                NativePluginKeybindIds.UnionWith(activeIds);
+                _nativeKeybindProfile = profile;
+                _nativeKeybindRegistryVersion = snapshot.Version;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin keybind state synchronization", exception);
+            }
+        }
+
+        private static void EnsureTriggerKey(TriggersSet triggers, string key)
+        {
+            if (!triggers.KeyStatus.ContainsKey(key))
+                triggers.KeyStatus.Add(key, false);
+        }
+
+        private static void RemoveStaleTriggerKeys(IEnumerable<string> knownIds, ISet<string> activeIds)
+        {
+            foreach (string id in knownIds.Where(id => !activeIds.Contains(id)).ToArray())
+            {
+                PlayerInput.Triggers.Current.KeyStatus.Remove(id);
+                PlayerInput.Triggers.Old.KeyStatus.Remove(id);
+                PlayerInput.Triggers.JustPressed.KeyStatus.Remove(id);
+                PlayerInput.Triggers.JustReleased.KeyStatus.Remove(id);
+            }
+        }
+
+        /// <summary>Whole-system Dust fast path used before Terraria enters the DrawDust or UpdateDust loops.</summary>
+        public static bool ShouldRunDustSystem() => _visualEffectsPolicy.DustEffectsEnabled || _visualEffectsPolicy.HasExceptions;
+
+        /// <summary>Creation gate for Dust.NewDust. Exceptions remain live when ordinary Dust is disabled.</summary>
+        public static bool ShouldCreateDust(int dustType) => _visualEffectsPolicy.DustEffectsEnabled || _visualEffectsPolicy.ContainsDustException(dustType);
+
+        /// <summary>Per-instance Dust update gate used only when exceptions require the Dust loop to run.</summary>
+        public static bool ShouldUpdateDustInstance(Dust dust) => dust != null && ShouldCreateDust(dust.type);
+
+        /// <summary>Per-instance Dust draw gate used only when exceptions require DrawDust to run.</summary>
+        public static bool ShouldDrawDustInstance(Dust dust) => dust != null && ShouldCreateDust(dust.type);
+
+        /// <summary>Whole-system Gore gate. Gore has no exception path.</summary>
+        public static bool ShouldRunGoreSystem() => _visualEffectsPolicy.GoreEffectsEnabled;
+
+        private static void RefreshVisualEffectsPolicy()
+        {
+            if (_serviceHub == null || !_serviceHub.TryGetHostService<IVisualEffectsPolicyService>(DustGoreTogglePluginId, out var service, out var publisher) || !CanUseVisualEffectsPolicy(publisher))
+            {
+                _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
+                _lastVisualEffectsSnapshot = null;
+                return;
+            }
+
+            try
+            {
+                VisualEffectsPolicySnapshot snapshot = service.GetVisualEffectsPolicy();
+                if (ReferenceEquals(snapshot, _lastVisualEffectsSnapshot))
+                    return;
+                _visualEffectsPolicy = VisualEffectsRuntimePolicy.Create(snapshot);
+                _lastVisualEffectsSnapshot = snapshot;
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Dust & Gore Toggle policy", exception);
+                _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
+                _lastVisualEffectsSnapshot = null;
+            }
+        }
+
+        private static bool CanUseVisualEffectsPolicy(PluginManifest publisher)
+        {
+            if (publisher == null)
+                return false;
+            const PluginCapability requiredCapabilities = PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead;
+            const PluginPermission requiredPermissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState;
+            return (publisher.Capabilities & requiredCapabilities) == requiredCapabilities && (publisher.Permissions & requiredPermissions) == requiredPermissions;
+        }
+
+        private static void RefreshHitboxSettings()
+        {
+            _hitboxSettingsRefreshTick = Main.GameUpdateCount;
+            if (_serviceHub == null || !_serviceHub.TryGetHostService<IHitboxOverlaySettings>(HitboxesPluginId, out var service, out var publisher) || !CanUseHitboxSettings(publisher))
+            {
+                _hitboxSettings = DisabledHitboxSettings;
+                _lastHitboxSettings = null;
+                HitboxRuntime.Reset();
+                if (!_hitboxDiagnosticPublished)
+                {
+                    _hitboxDiagnosticPublished = true;
+                    _notifications?.Publish("Hitboxes diagnostics: no active presentation policy.", TimeSpan.FromSeconds(8));
+                }
+                PublishHitboxChatDiagnostic("[Hitboxes] No active presentation policy.", false);
+                return;
+            }
+
+            try
+            {
+                HitboxOverlaySettingsSnapshot supplied = service.GetSnapshot();
+                if (supplied == null)
+                    throw new InvalidOperationException("Hitboxes returned no settings snapshot.");
+                if (ReferenceEquals(supplied, _lastHitboxSettings))
+                    return;
+
+                // Copy the public value object at the host boundary. A plugin cannot mutate the active draw policy later.
+                _hitboxSettings = new HitboxOverlaySettingsSnapshot(
+                    supplied.ShowPlayerHitboxes,
+                    supplied.ShowNpcHitboxes,
+                    supplied.ShowProjectileHitboxes,
+                    supplied.ShowFriendlyProjectiles,
+                    supplied.ShowHostileProjectiles,
+                    supplied.ShowSwingHitboxes,
+                    supplied.PlayerColor,
+                    supplied.NpcColor,
+                    supplied.FriendlyProjectileColor,
+                    supplied.HostileProjectileColor,
+                    supplied.SwingColor);
+                _lastHitboxSettings = supplied;
+                _hitboxDiagnosticPublished = false;
+                PublishHitboxChatDiagnostic("[Hitboxes] Service active: player=" + supplied.ShowPlayerHitboxes + ", npc=" + supplied.ShowNpcHitboxes + ", projectile=" + supplied.ShowProjectileHitboxes + ", swing=" + supplied.ShowSwingHitboxes + ".", false);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Hitboxes settings", exception);
+                _hitboxSettings = DisabledHitboxSettings;
+                _lastHitboxSettings = null;
+                HitboxRuntime.Reset();
+            }
+        }
+
+        private static bool CanUseHitboxSettings(PluginManifest publisher)
+        {
+            if (publisher == null)
+                return false;
+            const PluginCapability requiredCapabilities = PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation;
+            const PluginPermission requiredPermissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer;
+            return (publisher.Capabilities & requiredCapabilities) == requiredCapabilities && (publisher.Permissions & requiredPermissions) == requiredPermissions;
+        }
+
+        private static void PublishHitboxDiagnostic(HitboxRuntime.HitboxDrawDiagnostic diagnostic)
+        {
+            if (_hitboxDiagnosticPublished)
+                return;
+            _hitboxDiagnosticPublished = true;
+            _notifications?.Publish("Hitboxes diagnostics: " + diagnostic.Candidates + " candidate(s), " + diagnostic.Submitted + " submitted.", TimeSpan.FromSeconds(8));
+        }
+
+        private static void PublishHitboxChatDiagnostic(string message, bool drawDiagnostic)
+        {
+            if (drawDiagnostic ? _hitboxDrawChatDiagnosticPublished : _hitboxServiceChatDiagnosticPublished)
+                return;
+            if (drawDiagnostic)
+                _hitboxDrawChatDiagnosticPublished = true;
+            else
+                _hitboxServiceChatDiagnosticPublished = true;
+            Main.NewText(message, 190, 220, 255);
+        }
+
+        private static HitboxOverlaySettingsSnapshot DisabledHitboxSettings => new HitboxOverlaySettingsSnapshot(false, false, false, false, false, false, new PluginColor(90, 170, 255), new PluginColor(255, 90, 90), new PluginColor(90, 255, 110), new PluginColor(255, 230, 90), new PluginColor(255, 150, 60));
 
         private static void RemoveStaleKeybindState(IReadOnlyList<PluginKeybindRegistration> keybinds, long version)
         {
@@ -1231,9 +1499,10 @@ namespace AlacrityTerraria
             _extensions = new PluginExtensionHost();
             _serviceHub = new PluginServiceHub();
             _chat = new PluginChatHost();
+            _commands = new PluginCommandHost();
             var overlays = new PluginOverlayHost();
             _userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
-            var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, new PluginCommandHost(), overlays, _chat, _userInteraction);
+            var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, _commands, overlays, _chat, _userInteraction);
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
@@ -1422,6 +1691,45 @@ namespace AlacrityTerraria
                 return new HashSet<string>(Regex.Matches(json, "\\\"id\\\"\\s*:\\s*\\\"([a-z0-9.-]+)\\\"\\s*,\\s*\\\"enabled\\\"\\s*:\\s*true", RegexOptions.CultureInvariant).Cast<Match>().Select(match => match.Groups[1].Value), StringComparer.Ordinal);
             }
             return File.Exists(LegacyEnabledPluginsPath) ? new HashSet<string>(File.ReadAllLines(LegacyEnabledPluginsPath), StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        private readonly struct VisualEffectsRuntimePolicy
+        {
+            internal static readonly VisualEffectsRuntimePolicy Vanilla = new VisualEffectsRuntimePolicy(true, true, Array.Empty<bool>());
+
+            private VisualEffectsRuntimePolicy(bool dustEffectsEnabled, bool goreEffectsEnabled, bool[] dustExceptions)
+            {
+                DustEffectsEnabled = dustEffectsEnabled;
+                GoreEffectsEnabled = goreEffectsEnabled;
+                this.dustExceptions = dustExceptions;
+            }
+
+            private readonly bool[] dustExceptions;
+            internal bool DustEffectsEnabled { get; }
+            internal bool GoreEffectsEnabled { get; }
+            internal bool HasExceptions => dustExceptions != null && dustExceptions.Length > 0;
+
+            internal static VisualEffectsRuntimePolicy Create(VisualEffectsPolicySnapshot snapshot)
+            {
+                if (snapshot == null)
+                    return Vanilla;
+                int maximum = -1;
+                for (int index = 0; index < snapshot.DustExceptionIds.Count; index++)
+                    if (snapshot.DustExceptionIds[index] >= 0 && snapshot.DustExceptionIds[index] <= 999)
+                        maximum = Math.Max(maximum, snapshot.DustExceptionIds[index]);
+                if (maximum < 0)
+                    return new VisualEffectsRuntimePolicy(snapshot.DustEffectsEnabled, snapshot.GoreEffectsEnabled, Array.Empty<bool>());
+                var exceptions = new bool[maximum + 1];
+                for (int index = 0; index < snapshot.DustExceptionIds.Count; index++)
+                {
+                    int dustType = snapshot.DustExceptionIds[index];
+                    if (dustType >= 0 && dustType < exceptions.Length)
+                        exceptions[dustType] = true;
+                }
+                return new VisualEffectsRuntimePolicy(snapshot.DustEffectsEnabled, snapshot.GoreEffectsEnabled, exceptions);
+            }
+
+            internal bool ContainsDustException(int dustType) => dustType >= 0 && dustExceptions != null && dustType < dustExceptions.Length && dustExceptions[dustType];
         }
 
         private sealed class KeybindControlsState
@@ -1773,11 +2081,11 @@ namespace AlacrityTerraria
                 var enabledPoints = _enabledList.GetSnapPoints();
                 _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, enabledPoints, _enabledList);
 
-                var availableDescription = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, availablePoints, "DescriptionOff");
-                var availableToggle = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, availablePoints, "ToggleToOn");
-                var enabledDescription = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, enabledPoints, "DescriptionOn");
-                var enabledSettings = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, enabledPoints, "SettingsOn");
-                var enabledToggle = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, enabledPoints, "ToggleToOff");
+                var availableDescription = GetVisualVerticalStrip(ref nextId, availablePoints, "DescriptionOff");
+                var availableToggle = GetVisualVerticalStrip(ref nextId, availablePoints, "ToggleToOn");
+                var enabledDescription = GetVisualVerticalStrip(ref nextId, enabledPoints, "DescriptionOn");
+                var enabledSettings = GetVisualVerticalStrip(ref nextId, enabledPoints, "SettingsOn");
+                var enabledToggle = GetVisualVerticalStrip(ref nextId, enabledPoints, "ToggleToOff");
                 GetFooterLinkPoints(allPoints, ref nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder);
 
                 // Disabled plugins intentionally have no settings action. Link their two actual actions directly.
@@ -1793,12 +2101,25 @@ namespace AlacrityTerraria
                 _gamepadHelper.MoveToVisuallyClosestPoint(startId, nextId);
             }
 
+            // UIList children are independently populated; their snap IDs are not a reliable visual
+            // order across the enabled and available columns. Navigator up/down must follow screen Y.
+            private UILinkPoint[] GetVisualVerticalStrip(ref int nextId, List<SnapPoint> points, string category)
+            {
+                var ordered = points
+                    .Where(point => point.Name == category)
+                    .OrderBy(point => point.Position.Y)
+                    .ThenBy(point => point.Position.X)
+                    .ThenBy(point => point.Id)
+                    .ToList();
+                return ordered.Count == 0 ? null : _gamepadHelper.CreateUILinkStripVertical(ref nextId, ordered);
+            }
+
             private void SetupPackageGamepadPoints(SpriteBatch spriteBatch, List<SnapPoint> allPoints, int startId, ref int nextId)
             {
                 var packagePoints = _packageList.GetSnapPoints();
                 _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, packagePoints, _packageList);
-                var description = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, packagePoints, "PackageDescription");
-                var uninstall = _gamepadHelper.GetVerticalStripFromCategoryName(ref nextId, packagePoints, "PackageUninstall");
+                var description = GetVisualVerticalStrip(ref nextId, packagePoints, "PackageDescription");
+                var uninstall = GetVisualVerticalStrip(ref nextId, packagePoints, "PackageUninstall");
                 GetFooterLinkPoints(allPoints, ref nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder);
 
                 _gamepadHelper.LinkVerticalStrips(description, uninstall, 0);

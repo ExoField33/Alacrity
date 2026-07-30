@@ -6,10 +6,28 @@ using System.Threading;
 using System.Threading.Tasks;
 using Alacrity.App;
 using Alacrity.BetterChat;
+using Alacrity.DustGoreToggle;
+using Alacrity.Hitboxes;
 using Alacrity.PlayerList;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using AlacrityTerraria;
+
+public sealed class LoaderSyncTestPlugin : IAlacrityPlugin
+{
+    public void Initialize(IPluginContext context) { }
+    public void Enable() { }
+    public void Disable() { }
+    public void Shutdown() { }
+}
+
+public sealed class LoaderAsyncTestPlugin : IAsyncAlacrityPlugin
+{
+    public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
 
 internal static class Program
 {
@@ -71,6 +89,8 @@ internal static class Program
             PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue();
             BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
             BetterChatCachesDefaultsWithoutRewritingSettings();
+            DustGoreTogglePublishesScopedPolicyAndManagesExceptions();
+            HitboxesPublishesScopedPresentationPolicy();
             PlayerListPublishesPresentationSettingsAndDefaults();
             OverlayDispatchIsOrderedIsolatedAndScopeOwned();
             PluginDataAndSettingsStayIsolated();
@@ -154,11 +174,11 @@ internal static class Program
         string root = Path.Combine(Path.GetTempPath(), "alacrity-loader-test-" + Guid.NewGuid().ToString("N"));
         try
         {
-            string package = Path.Combine(root, "plugins", "alacrity.ui-test");
+            string package = Path.Combine(root, "plugins", "alacrity.loader-sync-test");
             Directory.CreateDirectory(package);
-            string assemblyName = "UiTestPlugin.dll";
-            File.Copy(typeof(Alacrity.UiTestPlugin.UiTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
-            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.ui-test\",\"name\":\"UI Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"Alacrity.UiTestPlugin.UiTestPlugin\"}");
+            string assemblyName = typeof(LoaderSyncTestPlugin).Assembly.GetName().Name + ".dll";
+            File.Copy(typeof(LoaderSyncTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.loader-sync-test\",\"name\":\"Loader Sync Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"" + typeof(LoaderSyncTestPlugin).FullName + "\"}");
             var packageDescriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root)[0];
             var plugin = new PluginAssemblyLoader().Load(packageDescriptor);
             Assert(plugin.GetType().GetProperty("Manifest") == null, "Loaded plugins must not supply authoritative manifest metadata from their DLL.");
@@ -204,11 +224,11 @@ internal static class Program
         string root = Path.Combine(Path.GetTempPath(), "alacrity-async-loader-test-" + Guid.NewGuid().ToString("N"));
         try
         {
-            string package = Path.Combine(root, "plugins", "alacrity.async-ui-test");
+            string package = Path.Combine(root, "plugins", "alacrity.loader-async-test");
             Directory.CreateDirectory(package);
-            const string assemblyName = "UiTestPlugin.dll";
-            File.Copy(typeof(Alacrity.UiTestPlugin.AsyncUiTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
-            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.async-ui-test\",\"name\":\"Async UI Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"Alacrity.UiTestPlugin.AsyncUiTestPlugin\"}");
+            string assemblyName = typeof(LoaderAsyncTestPlugin).Assembly.GetName().Name + ".dll";
+            File.Copy(typeof(LoaderAsyncTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.loader-async-test\",\"name\":\"Loader Async Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"" + typeof(LoaderAsyncTestPlugin).FullName + "\"}");
             var descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
             object entry = new PluginAssemblyLoader().LoadAny(descriptor);
             Assert(entry is IAsyncAlacrityPlugin && entry is not IAlacrityPlugin, "The loader must accept exactly the asynchronous lifecycle contract.");
@@ -1330,6 +1350,54 @@ internal static class Program
         Assert(plugin.HideBots, "The player-list bot control must update the provider state used by the renderer.");
         plugin.Disable();
         Assert(!plugin.IsVisible, "Disabling Player List must immediately remove its visible presentation state.");
+    }
+
+    private static void DustGoreTogglePublishesScopedPolicyAndManagesExceptions()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-dust-gore-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var manifest = new PluginManifest(new PluginId("alacrity.dust-gore-toggle"), "Dust & Gore Toggle", new Version(1, 0), "Tests", "Visual effects test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead, permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState);
+            var services = new PluginServiceHub();
+            var commands = new PluginCommandHost();
+            var context = new PluginHostContextFactory(root, services, new PluginExtensionHost(), commands).Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            var plugin = new DustGoreTogglePlugin();
+            plugin.Initialize(context);
+
+            Assert(services.TryGetHostService<IVisualEffectsPolicyService>(manifest.Id, out var policyService, out _), "Dust & Gore Toggle must publish a host-owned visual-effects policy.");
+            if (policyService == null) throw new InvalidOperationException("Dust & Gore Toggle policy service was not available after registration.");
+            Assert(policyService.GetVisualEffectsPolicy().DustEffectsEnabled && policyService.GetVisualEffectsPolicy().GoreEffectsEnabled, "Dust & Gore Toggle must default to enabled visual effects.");
+
+            var replies = new List<string>();
+            Assert(commands.TryInvoke("de", new[] { "42" }, replies.Add), "The /de command must be registered while the plugin is active.");
+            VisualEffectsPolicySnapshot policy = policyService.GetVisualEffectsPolicy();
+            Assert(policy.DustExceptionIds.Count == 1 && policy.DustExceptionIds[0] == 42 && replies.Single().Contains("added", StringComparison.Ordinal), "The /de command must add a bounded Dust ID exception.");
+
+            context.Resources.Dispose();
+            Assert(!services.TryGetHostService<IVisualEffectsPolicyService>(manifest.Id, out _, out _), "Disposing Dust & Gore Toggle's scope must remove only its policy service.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void HitboxesPublishesScopedPresentationPolicy()
+    {
+        var manifest = new PluginManifest(new PluginId("alacrity.hitboxes"), "Hitboxes", new Version(1, 0), "Tests", "Hitbox diagnostics test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation, permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer);
+        using var scope = new PluginResourceScope();
+        var context = new TestContext(manifest, scope);
+        var plugin = new HitboxesPlugin();
+        plugin.Initialize(context);
+
+        Assert(context.Services.TryGet<IHitboxOverlaySettings>(out var service) && service != null, "Hitboxes must publish its presentation-only settings service.");
+        if (service == null) throw new InvalidOperationException("Hitboxes service was not available after registration.");
+        HitboxOverlaySettingsSnapshot snapshot = service.GetSnapshot();
+        Assert(!snapshot.HasVisibleOverlays && snapshot.ShowFriendlyProjectiles && snapshot.ShowHostileProjectiles, "Hitboxes must default to disabled overlays while retaining both projectile categories for later activation.");
+        Assert(snapshot.PlayerColor.Equals(new PluginColor(90, 170, 255)) && snapshot.NpcColor.Equals(new PluginColor(255, 90, 90)) && snapshot.FriendlyProjectileColor.Equals(new PluginColor(90, 255, 110)) && snapshot.HostileProjectileColor.Equals(new PluginColor(255, 230, 90)) && snapshot.SwingColor.Equals(new PluginColor(255, 150, 60)), "Hitboxes must retain the legacy diagnostic default colors.");
+
+        scope.Dispose();
+        Assert(!context.Services.TryGet<IHitboxOverlaySettings>(out _), "Disposing Hitboxes' scope must remove its presentation service.");
     }
 
     private static void UserInteractionServicesRequirePermissionsAndValidateLinks()

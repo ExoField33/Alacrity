@@ -24,8 +24,17 @@ namespace AlacrityTerraria
         private static Action<SpriteBatch> _drawIngamePluginSettings;
         private static Action<SpriteBatch> _drawNotifications;
         private static Action<SpriteBatch> _drawPlayerList;
+        private static Action<SpriteBatch> _drawHitboxes;
+        private static Action<Player, bool, Rectangle> _captureSwingHitbox;
         private static Action _updatePluginKeybinds;
+        private static Action _ensurePluginKeybindStateShape;
         private static Action<UIManageControls> _appendPluginKeybindControls;
+        private static Func<bool> _shouldRunDustSystem;
+        private static Func<int, bool> _shouldCreateDust;
+        private static Func<Dust, bool> _shouldUpdateDustInstance;
+        private static Func<Dust, bool> _shouldDrawDustInstance;
+        private static Func<bool> _shouldRunGoreSystem;
+        private static Func<string, bool> _tryHandlePluginChatCommand;
         private static Func<bool> _handlePluginMenuInput;
         private static Func<bool> _isBetterChatActive;
         private static Func<string, bool, string> _processPlayerChatInput;
@@ -43,6 +52,8 @@ namespace AlacrityTerraria
         private static bool _bridgeLoadAttempted;
         private static string _lastDiagnostic;
         private static bool _shutdownHooked;
+        private static bool _hitboxHookDiagnosticSent;
+        private static bool _hitboxBridgeDiagnosticSent;
 
         /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
         public static string LastBridgeDiagnostic { get { return _lastDiagnostic ?? string.Empty; } }
@@ -216,6 +227,95 @@ namespace AlacrityTerraria
             }
         }
 
+        /// <summary>Draws world-space diagnostic overlays at Terraria's verified emote-bubble layer.</summary>
+        public static void DrawHitboxes(SpriteBatch spriteBatch)
+        {
+            if (spriteBatch == null || Main.gameMenu)
+                return;
+            try
+            {
+                if (!_hitboxHookDiagnosticSent)
+                {
+                    _hitboxHookDiagnosticSent = true;
+                    Main.NewText("[Hitboxes] World draw hook reached.", 190, 220, 255);
+                }
+                if (!EnsureBridge())
+                {
+                    if (!_hitboxBridgeDiagnosticSent)
+                    {
+                        _hitboxBridgeDiagnosticSent = true;
+                        Main.NewText("[Hitboxes] Bridge unavailable: " + LastBridgeDiagnostic, 255, 110, 110);
+                    }
+                    return;
+                }
+                if (_drawHitboxes == null)
+                {
+                    if (!_hitboxBridgeDiagnosticSent)
+                    {
+                        _hitboxBridgeDiagnosticSent = true;
+                        Main.NewText("[Hitboxes] Bridge loaded, but DrawHitboxes was not resolved.", 255, 110, 110);
+                    }
+                    return;
+                }
+                _drawHitboxes(spriteBatch);
+            }
+            catch (Exception exception)
+            {
+                if (!_hitboxBridgeDiagnosticSent)
+                {
+                    _hitboxBridgeDiagnosticSent = true;
+                    Exception root = exception.GetBaseException();
+                    Main.NewText("[Hitboxes] Core draw failed: " + root.GetType().Name + ": " + root.Message, 255, 110, 110);
+                }
+                RecordFailure("Draw hitboxes", exception);
+            }
+        }
+
+        /// <summary>Receives a vanilla-computed melee hitbox only when the optional diagnostics bridge is available.</summary>
+        public static void CaptureSwingHitbox(Player player, bool dontAttack, Rectangle hitbox)
+        {
+            try
+            {
+                // This is called from a combat-hot path. Once resolved, avoid even the bridge readiness check.
+                Action<Player, bool, Rectangle> capture = _captureSwingHitbox;
+                if (capture != null)
+                    capture(player, dontAttack, hitbox);
+                else if (EnsureBridge())
+                    _captureSwingHitbox?.Invoke(player, dontAttack, hitbox);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Capture swing hitbox", exception);
+            }
+        }
+
+        /// <summary>Runs before Terraria copies native key states so plugin trigger IDs exist in both old and current sets.</summary>
+        public static void EnsurePluginKeybindStateShape()
+        {
+            try
+            {
+                BootstrapPluginRuntime();
+                if (EnsureBridge())
+                    _ensurePluginKeybindStateShape?.Invoke();
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Synchronize plugin keybind state", exception);
+            }
+        }
+
+        // These version-locked calls fail open: an unavailable plugin bridge must never suppress vanilla effects.
+        public static bool ShouldRunDustSystem() => EnsureBridge() && _shouldRunDustSystem != null ? _shouldRunDustSystem() : true;
+        public static bool ShouldCreateDust(int dustType) => EnsureBridge() && _shouldCreateDust != null ? _shouldCreateDust(dustType) : true;
+        public static bool ShouldUpdateDustInstance(Dust dust) => EnsureBridge() && _shouldUpdateDustInstance != null ? _shouldUpdateDustInstance(dust) : true;
+        public static bool ShouldDrawDustInstance(Dust dust) => EnsureBridge() && _shouldDrawDustInstance != null ? _shouldDrawDustInstance(dust) : true;
+        public static bool ShouldRunGoreSystem() => EnsureBridge() && _shouldRunGoreSystem != null ? _shouldRunGoreSystem() : true;
+
+        public static bool TryHandlePluginChatCommand(string text)
+        {
+            return EnsureBridge() && _tryHandlePluginChatCommand != null && _tryHandlePluginChatCommand(text);
+        }
+
         /// <summary>Version-locked controls-menu entry point. It remains a no-op when the optional bridge is unavailable.</summary>
         public static void AppendPluginKeybindControls(UIManageControls controls)
         {
@@ -370,14 +470,41 @@ namespace AlacrityTerraria
                 if (Reflection.TryResolveStaticMethod(bridgeType, "DrawPlayerList", typeof(void), new[] { typeof(SpriteBatch) }, out var drawPlayerList, out _) &&
                     Reflection.TryCreateDelegate(drawPlayerList, typeof(Action<SpriteBatch>), out callback, out _))
                     _drawPlayerList = (Action<SpriteBatch>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "DrawHitboxes", typeof(void), new[] { typeof(SpriteBatch) }, out var drawHitboxes, out _) &&
+                    Reflection.TryCreateDelegate(drawHitboxes, typeof(Action<SpriteBatch>), out callback, out _))
+                    _drawHitboxes = (Action<SpriteBatch>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "CaptureSwingHitbox", typeof(void), new[] { typeof(Player), typeof(bool), typeof(Rectangle) }, out var captureSwingHitbox, out _) &&
+                    Reflection.TryCreateDelegate(captureSwingHitbox, typeof(Action<Player, bool, Rectangle>), out callback, out _))
+                    _captureSwingHitbox = (Action<Player, bool, Rectangle>)callback;
                 if (!Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
                 _handlePluginMenuInput = (Func<bool>)callback;
                 if (Reflection.TryResolveStaticMethod(bridgeType, "UpdatePluginKeybinds", typeof(void), Type.EmptyTypes, out var updatePluginKeybinds, out _) &&
                     Reflection.TryCreateDelegate(updatePluginKeybinds, typeof(Action), out callback, out _))
                     _updatePluginKeybinds = (Action)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "EnsurePluginKeybindStateShape", typeof(void), Type.EmptyTypes, out var ensurePluginKeybindStateShape, out _) &&
+                    Reflection.TryCreateDelegate(ensurePluginKeybindStateShape, typeof(Action), out callback, out _))
+                    _ensurePluginKeybindStateShape = (Action)callback;
                 if (Reflection.TryResolveStaticMethod(bridgeType, "AppendPluginKeybindControls", typeof(void), new[] { typeof(UIManageControls) }, out var appendPluginKeybindControls, out _) &&
                     Reflection.TryCreateDelegate(appendPluginKeybindControls, typeof(Action<UIManageControls>), out callback, out _))
                     _appendPluginKeybindControls = (Action<UIManageControls>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldRunDustSystem", typeof(bool), Type.EmptyTypes, out var shouldRunDustSystem, out _) &&
+                    Reflection.TryCreateDelegate(shouldRunDustSystem, typeof(Func<bool>), out callback, out _))
+                    _shouldRunDustSystem = (Func<bool>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldCreateDust", typeof(bool), new[] { typeof(int) }, out var shouldCreateDust, out _) &&
+                    Reflection.TryCreateDelegate(shouldCreateDust, typeof(Func<int, bool>), out callback, out _))
+                    _shouldCreateDust = (Func<int, bool>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldUpdateDustInstance", typeof(bool), new[] { typeof(Dust) }, out var shouldUpdateDustInstance, out _) &&
+                    Reflection.TryCreateDelegate(shouldUpdateDustInstance, typeof(Func<Dust, bool>), out callback, out _))
+                    _shouldUpdateDustInstance = (Func<Dust, bool>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldDrawDustInstance", typeof(bool), new[] { typeof(Dust) }, out var shouldDrawDustInstance, out _) &&
+                    Reflection.TryCreateDelegate(shouldDrawDustInstance, typeof(Func<Dust, bool>), out callback, out _))
+                    _shouldDrawDustInstance = (Func<Dust, bool>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldRunGoreSystem", typeof(bool), Type.EmptyTypes, out var shouldRunGoreSystem, out _) &&
+                    Reflection.TryCreateDelegate(shouldRunGoreSystem, typeof(Func<bool>), out callback, out _))
+                    _shouldRunGoreSystem = (Func<bool>)callback;
+                if (Reflection.TryResolveStaticMethod(bridgeType, "TryHandlePluginChatCommand", typeof(bool), new[] { typeof(string) }, out var tryHandlePluginChatCommand, out _) &&
+                    Reflection.TryCreateDelegate(tryHandlePluginChatCommand, typeof(Func<string, bool>), out callback, out _))
+                    _tryHandlePluginChatCommand = (Func<string, bool>)callback;
                 return true;
             }
             catch (Exception exception)
@@ -440,8 +567,17 @@ namespace AlacrityTerraria
             _drawIngamePluginSettings = null;
             _drawNotifications = null;
             _drawPlayerList = null;
+            _drawHitboxes = null;
+            _captureSwingHitbox = null;
             _updatePluginKeybinds = null;
+            _ensurePluginKeybindStateShape = null;
             _appendPluginKeybindControls = null;
+            _shouldRunDustSystem = null;
+            _shouldCreateDust = null;
+            _shouldUpdateDustInstance = null;
+            _shouldDrawDustInstance = null;
+            _shouldRunGoreSystem = null;
+            _tryHandlePluginChatCommand = null;
             _handlePluginMenuInput = null;
             ClearChatDelegates();
         }

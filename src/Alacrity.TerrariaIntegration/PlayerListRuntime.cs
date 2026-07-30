@@ -396,7 +396,7 @@ namespace AlacrityTerraria
                 spriteBatch.Draw(tombstone, position, null, Color.White, 0f, new Vector2(tombstone.Width / 2f, tombstone.Height / 2f), 0.42f * uiScale, SpriteEffects.None, 0f);
                 return true;
             }
-            return TryDrawPlayerHead(row.Player, position + new Vector2(0f, -1f * uiScale), uiScale);
+            return TryDrawPlayerHead(row.Player, position + new Vector2(0f, -2f * uiScale), uiScale);
         }
 
         private static bool TryDrawCyborgHead(SpriteBatch spriteBatch, Vector2 position, float scale, Color color)
@@ -437,7 +437,7 @@ namespace AlacrityTerraria
             {
                 // PlayerRenderer always creates a black outer pass when a border is supplied.
                 // The Player List intentionally uses an unoutlined head instead of approximating it.
-                playerRenderer.DrawPlayerHead(Main.Camera, player, position, 1f, 0.55f * 1.15f * 0.95f * 1.05f * uiScale, Color.Transparent);
+                playerRenderer.DrawPlayerHead(Main.Camera, player, position, 1f, 0.55f * 1.15f * 0.95f * 1.05f * 1.05f * uiScale, Color.Transparent);
                 return true;
             }
             catch

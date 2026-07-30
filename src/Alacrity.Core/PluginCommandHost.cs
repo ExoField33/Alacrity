@@ -18,13 +18,13 @@ public sealed class PluginCommandHost
     }
 
     /// <summary>Dispatches a parsed command invocation; returns false when no command is registered.</summary>
-    public bool TryInvoke(string id, IReadOnlyList<string> arguments)
+    public bool TryInvoke(string id, IReadOnlyList<string> arguments, Action<string>? reply = null)
     {
         if (string.IsNullOrWhiteSpace(id)) return false;
         CommandRegistration? registration;
         lock (gate) commands.TryGetValue(id, out registration);
         if (registration == null) return false;
-        registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>()));
+        registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>(), reply));
         return true;
     }
 
