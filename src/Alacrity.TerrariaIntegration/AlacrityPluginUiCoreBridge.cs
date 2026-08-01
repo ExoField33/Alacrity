@@ -39,6 +39,7 @@ namespace AlacrityTerraria
         private static PluginExtensionHost _extensions;
         private static PluginServiceHub _serviceHub;
         private static PluginCommandHost _commands;
+        private static PluginOverlayHost _overlays;
         private static PluginChatHost _chat;
         private static PluginUserInteractionHost _userInteraction;
         private static IPluginUserInteractionService _betterChatUserInteraction;
@@ -70,15 +71,8 @@ namespace AlacrityTerraria
         private static readonly PluginId BetterChatPluginId = new PluginId("alacrity.better-chat");
         private static readonly PluginId PlayerListPluginId = new PluginId("alacrity.player-list");
         private static readonly PluginId DustGoreTogglePluginId = new PluginId("alacrity.dust-gore-toggle");
-        private static readonly PluginId HitboxesPluginId = new PluginId("alacrity.hitboxes");
         private static VisualEffectsRuntimePolicy _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
         private static VisualEffectsPolicySnapshot _lastVisualEffectsSnapshot;
-        private static HitboxOverlaySettingsSnapshot _hitboxSettings = DisabledHitboxSettings;
-        private static HitboxOverlaySettingsSnapshot _lastHitboxSettings;
-        private static uint _hitboxSettingsRefreshTick = uint.MaxValue;
-        private static bool _hitboxDiagnosticPublished;
-        private static bool _hitboxServiceChatDiagnosticPublished;
-        private static bool _hitboxDrawChatDiagnosticPublished;
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
         private static readonly Dictionary<string, bool> KeybindDownState = new Dictionary<string, bool>(StringComparer.Ordinal);
@@ -356,7 +350,10 @@ namespace AlacrityTerraria
             int y = 96;
             foreach (var notification in _notifications.GetActive(DateTimeOffset.UtcNow))
             {
-                Utils.DrawBorderString(spriteBatch, notification.Message, new Vector2(Main.screenWidth - 18, y), Color.LightGoldenrodYellow, 0.72f, 1f, 0f, -1);
+                if ((notification.Options.Target & PluginNotificationTarget.InGame) == 0)
+                    continue;
+                PluginColor color = notification.Options.Color ?? new PluginColor(Color.LightGoldenrodYellow.R, Color.LightGoldenrodYellow.G, Color.LightGoldenrodYellow.B);
+                Utils.DrawBorderString(spriteBatch, notification.Message, new Vector2(Main.screenWidth - 18, y), new Color(color.Red, color.Green, color.Blue), 0.72f, 1f, 0f, -1);
                 y += 24;
             }
         }
@@ -364,34 +361,28 @@ namespace AlacrityTerraria
         /// <summary>Draws host-validated diagnostics overlays without exposing mutable Terraria state to plugins.</summary>
         public static void DrawHitboxes(SpriteBatch spriteBatch)
         {
-            // The draw boundary is guaranteed to exist whenever gameplay UI is visible. Refresh at most once
-            // per simulation tick so diagnostics do not depend on the optional plugin-keybind update hook.
-            if (_hitboxSettingsRefreshTick != Main.GameUpdateCount)
-                RefreshHitboxSettings();
-            HitboxOverlaySettingsSnapshot settings = _hitboxSettings;
-            if (spriteBatch == null || !settings.HasVisibleOverlays)
-            {
-                HitboxRuntime.Reset();
-                return;
-            }
+            DrawWorldOverlays(spriteBatch);
+        }
 
+        /// <summary>Dispatches framework-neutral plugin world overlays at Terraria's verified world UI phase.</summary>
+        public static void DrawWorldOverlays(SpriteBatch spriteBatch)
+        {
+            if (spriteBatch == null || _overlays == null || Main.gameMenu)
+                return;
             try
             {
-                HitboxRuntime.Draw(spriteBatch, settings);
-                PublishHitboxDiagnostic(HitboxRuntime.LastDrawDiagnostic);
-                PublishHitboxChatDiagnostic("[Hitboxes] Draw candidates=" + HitboxRuntime.LastDrawDiagnostic.Candidates + ", submitted=" + HitboxRuntime.LastDrawDiagnostic.Submitted + ".", true);
+                _overlays.Dispatch(new TerrariaOverlayCanvas(spriteBatch), new PluginOverlayFrame(Main.screenWidth, Main.screenHeight, 1f, Main.gameMenu, TimeSpan.FromTicks(Main.GameUpdateCount)));
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("Hitboxes draw", exception);
+                ReportOptionalUiFailure("Plugin world overlays", exception);
             }
         }
 
         /// <summary>Captures Terraria's already-computed melee collision rectangle for presentation on the next draw.</summary>
         public static void CaptureSwingHitbox(Player player, bool dontAttack, Rectangle hitbox)
         {
-            if (_hitboxSettings.ShowSwingHitboxes)
-                HitboxRuntime.CaptureSwingHitbox(player, dontAttack, hitbox);
+            CombatPresentationRuntime.CaptureSwingHitbox(player, dontAttack, hitbox);
         }
 
         /// <summary>Draws the Player List only while its owning plugin has published an active presentation service.</summary>
@@ -679,7 +670,6 @@ namespace AlacrityTerraria
             try
             {
                 RefreshVisualEffectsPolicy();
-                RefreshHitboxSettings();
                 if (Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
                     return;
                 PluginKeybindRegistrySnapshot snapshot = _extensions.GetKeybindSnapshot();
@@ -836,87 +826,6 @@ namespace AlacrityTerraria
             const PluginPermission requiredPermissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState;
             return (publisher.Capabilities & requiredCapabilities) == requiredCapabilities && (publisher.Permissions & requiredPermissions) == requiredPermissions;
         }
-
-        private static void RefreshHitboxSettings()
-        {
-            _hitboxSettingsRefreshTick = Main.GameUpdateCount;
-            if (_serviceHub == null || !_serviceHub.TryGetHostService<IHitboxOverlaySettings>(HitboxesPluginId, out var service, out var publisher) || !CanUseHitboxSettings(publisher))
-            {
-                _hitboxSettings = DisabledHitboxSettings;
-                _lastHitboxSettings = null;
-                HitboxRuntime.Reset();
-                if (!_hitboxDiagnosticPublished)
-                {
-                    _hitboxDiagnosticPublished = true;
-                    _notifications?.Publish("Hitboxes diagnostics: no active presentation policy.", TimeSpan.FromSeconds(8));
-                }
-                PublishHitboxChatDiagnostic("[Hitboxes] No active presentation policy.", false);
-                return;
-            }
-
-            try
-            {
-                HitboxOverlaySettingsSnapshot supplied = service.GetSnapshot();
-                if (supplied == null)
-                    throw new InvalidOperationException("Hitboxes returned no settings snapshot.");
-                if (ReferenceEquals(supplied, _lastHitboxSettings))
-                    return;
-
-                // Copy the public value object at the host boundary. A plugin cannot mutate the active draw policy later.
-                _hitboxSettings = new HitboxOverlaySettingsSnapshot(
-                    supplied.ShowPlayerHitboxes,
-                    supplied.ShowNpcHitboxes,
-                    supplied.ShowProjectileHitboxes,
-                    supplied.ShowFriendlyProjectiles,
-                    supplied.ShowHostileProjectiles,
-                    supplied.ShowSwingHitboxes,
-                    supplied.PlayerColor,
-                    supplied.NpcColor,
-                    supplied.FriendlyProjectileColor,
-                    supplied.HostileProjectileColor,
-                    supplied.SwingColor);
-                _lastHitboxSettings = supplied;
-                _hitboxDiagnosticPublished = false;
-                PublishHitboxChatDiagnostic("[Hitboxes] Service active: player=" + supplied.ShowPlayerHitboxes + ", npc=" + supplied.ShowNpcHitboxes + ", projectile=" + supplied.ShowProjectileHitboxes + ", swing=" + supplied.ShowSwingHitboxes + ".", false);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Hitboxes settings", exception);
-                _hitboxSettings = DisabledHitboxSettings;
-                _lastHitboxSettings = null;
-                HitboxRuntime.Reset();
-            }
-        }
-
-        private static bool CanUseHitboxSettings(PluginManifest publisher)
-        {
-            if (publisher == null)
-                return false;
-            const PluginCapability requiredCapabilities = PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation;
-            const PluginPermission requiredPermissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer;
-            return (publisher.Capabilities & requiredCapabilities) == requiredCapabilities && (publisher.Permissions & requiredPermissions) == requiredPermissions;
-        }
-
-        private static void PublishHitboxDiagnostic(HitboxRuntime.HitboxDrawDiagnostic diagnostic)
-        {
-            if (_hitboxDiagnosticPublished)
-                return;
-            _hitboxDiagnosticPublished = true;
-            _notifications?.Publish("Hitboxes diagnostics: " + diagnostic.Candidates + " candidate(s), " + diagnostic.Submitted + " submitted.", TimeSpan.FromSeconds(8));
-        }
-
-        private static void PublishHitboxChatDiagnostic(string message, bool drawDiagnostic)
-        {
-            if (drawDiagnostic ? _hitboxDrawChatDiagnosticPublished : _hitboxServiceChatDiagnosticPublished)
-                return;
-            if (drawDiagnostic)
-                _hitboxDrawChatDiagnosticPublished = true;
-            else
-                _hitboxServiceChatDiagnosticPublished = true;
-            Main.NewText(message, 190, 220, 255);
-        }
-
-        private static HitboxOverlaySettingsSnapshot DisabledHitboxSettings => new HitboxOverlaySettingsSnapshot(false, false, false, false, false, false, new PluginColor(90, 170, 255), new PluginColor(255, 90, 90), new PluginColor(90, 255, 110), new PluginColor(255, 230, 90), new PluginColor(255, 150, 60));
 
         private static void RemoveStaleKeybindState(IReadOnlyList<PluginKeybindRegistration> keybinds, long version)
         {
@@ -1500,9 +1409,10 @@ namespace AlacrityTerraria
             _serviceHub = new PluginServiceHub();
             _chat = new PluginChatHost();
             _commands = new PluginCommandHost();
-            var overlays = new PluginOverlayHost();
+            _overlays = new PluginOverlayHost();
             _userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
-            var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, _commands, overlays, _chat, _userInteraction);
+            var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, _commands, _overlays, _chat, _userInteraction, _notifications,
+                (manifest, resources, chatService) => new PluginTerrariaServices(chatService, new TerrariaEntitySnapshotService()));
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
@@ -2398,10 +2308,10 @@ namespace AlacrityTerraria
                     return;
 
                 _nextStatusRefreshUtc = now.AddMilliseconds(250);
-                var active = _notifications.GetActive(new DateTimeOffset(now));
+                var active = _notifications.GetActive(new DateTimeOffset(now)).Where(notification => (notification.Options.Target & PluginNotificationTarget.PluginManager) != 0).ToArray();
                 string text;
-                if (active.Count > 0)
-                    text = active[active.Count - 1].Message;
+                if (active.Length > 0)
+                    text = active[active.Length - 1].Message;
                 else
                 {
                     var warning = _diagnostics.ActiveWarnings.FirstOrDefault();

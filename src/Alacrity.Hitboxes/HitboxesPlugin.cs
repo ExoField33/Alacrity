@@ -3,10 +3,13 @@ using Alacrity.PluginSdk;
 
 namespace Alacrity.Hitboxes;
 
-/// <summary>Publishes cached, presentation-only collision overlay settings for the Terraria integration layer.</summary>
-public sealed class HitboxesPlugin : IAlacrityPlugin, IHitboxOverlaySettings
+/// <summary>Renders host-provided collision snapshots through the framework-neutral overlay service.</summary>
+public sealed class HitboxesPlugin : IAlacrityPlugin
 {
     private IPluginContext? context;
+    private IPluginEntitySnapshotService? entities;
+    private readonly System.Collections.Generic.List<PluginEntitySnapshot> entityBuffer = new System.Collections.Generic.List<PluginEntitySnapshot>(512);
+    private readonly System.Collections.Generic.List<PluginEntitySnapshot> swingBuffer = new System.Collections.Generic.List<PluginEntitySnapshot>(32);
     private bool showPlayers;
     private bool showNpcs;
     private bool showProjectiles;
@@ -18,11 +21,11 @@ public sealed class HitboxesPlugin : IAlacrityPlugin, IHitboxOverlaySettings
     private PluginColor friendlyProjectileColor = new PluginColor(90, 255, 110);
     private PluginColor hostileProjectileColor = new PluginColor(255, 230, 90);
     private PluginColor swingColor = new PluginColor(255, 150, 60);
-    private HitboxOverlaySettingsSnapshot snapshot = new HitboxOverlaySettingsSnapshot(false, false, false, true, true, false, new PluginColor(90, 170, 255), new PluginColor(255, 90, 90), new PluginColor(90, 255, 110), new PluginColor(255, 230, 90), new PluginColor(255, 150, 60));
 
     public void Initialize(IPluginContext context)
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
+        entities = context.Terraria.Entities;
         showPlayers = context.Settings.Get("showPlayerHitboxes", false);
         showNpcs = context.Settings.Get("showNpcHitboxes", false);
         showProjectiles = context.Settings.Get("showProjectileHitboxes", false);
@@ -34,7 +37,6 @@ public sealed class HitboxesPlugin : IAlacrityPlugin, IHitboxOverlaySettings
         friendlyProjectileColor = ReadColor("friendlyProjectileHitboxColor", friendlyProjectileColor);
         hostileProjectileColor = ReadColor("hostileProjectileHitboxColor", hostileProjectileColor);
         swingColor = ReadColor("swingHitboxColor", swingColor);
-        RebuildSnapshot();
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("hitboxes", "Hitboxes"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-hitboxes", "Player Hitboxes", () => showPlayers, value => Set("showPlayerHitboxes", value, ref showPlayers)));
@@ -48,14 +50,18 @@ public sealed class HitboxesPlugin : IAlacrityPlugin, IHitboxOverlaySettings
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("friendly-projectile-hitbox-color", "Friendly Projectile Color", () => friendlyProjectileColor, value => SetColor("friendlyProjectileHitboxColor", value, ref friendlyProjectileColor)));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("hostile-projectile-hitbox-color", "Hostile Projectile Color", () => hostileProjectileColor, value => SetColor("hostileProjectileHitboxColor", value, ref hostileProjectileColor)));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("swing-hitbox-color", "Swing Hitbox Color", () => swingColor, value => SetColor("swingHitboxColor", value, ref swingColor)));
-        context.Services.Publish<IHitboxOverlaySettings>(this);
+        context.Overlays.Register(new PluginOverlayDescriptor("hitbox-overlay", PluginOverlayLayer.WorldMarkers), DrawOverlay);
     }
 
     public void Enable() { }
     public void Disable() { }
-    public void Shutdown() => context = null;
-
-    public HitboxOverlaySettingsSnapshot GetSnapshot() => snapshot;
+    public void Shutdown()
+    {
+        entityBuffer.Clear();
+        swingBuffer.Clear();
+        entities = null;
+        context = null;
+    }
 
     private PluginColor ReadColor(string key, PluginColor fallback)
     {
@@ -68,7 +74,6 @@ public sealed class HitboxesPlugin : IAlacrityPlugin, IHitboxOverlaySettings
         if (field == value) return;
         field = value;
         context?.Settings.Set(key, value);
-        RebuildSnapshot();
     }
 
     private void SetColor(string key, PluginColor value, ref PluginColor field)
@@ -76,12 +81,34 @@ public sealed class HitboxesPlugin : IAlacrityPlugin, IHitboxOverlaySettings
         if (field.Equals(value)) return;
         field = value;
         context?.Settings.Set(key, value.ToHex());
-        RebuildSnapshot();
     }
 
-    private void RebuildSnapshot()
+    private void DrawOverlay(IPluginOverlayCanvas canvas, PluginOverlayFrame frame)
     {
-        snapshot = new HitboxOverlaySettingsSnapshot(showPlayers, showNpcs, showProjectiles, showFriendlyProjectiles, showHostileProjectiles, showSwings, playerColor, npcColor, friendlyProjectileColor, hostileProjectileColor, swingColor);
+        if (entities == null || frame.IsGameMenu || (!showPlayers && !showNpcs && !showProjectiles && !showSwings)) return;
+        entityBuffer.Clear();
+        entities.CopyActiveEntities(entityBuffer);
+        for (int index = 0; index < entityBuffer.Count; index++)
+        {
+            PluginEntitySnapshot entity = entityBuffer[index];
+            if (entity.Kind == PluginEntityKind.Player && showPlayers) Draw(canvas, entity, playerColor);
+            else if (entity.Kind == PluginEntityKind.Npc && showNpcs) Draw(canvas, entity, npcColor);
+            else if (entity.Kind == PluginEntityKind.Projectile && showProjectiles)
+            {
+                if (entity.Friendly && showFriendlyProjectiles) Draw(canvas, entity, friendlyProjectileColor);
+                else if (entity.Hostile && showHostileProjectiles) Draw(canvas, entity, hostileProjectileColor);
+            }
+        }
+        if (!showSwings) return;
+        swingBuffer.Clear();
+        entities.CopyMeleeHitboxes(swingBuffer);
+        for (int index = 0; index < swingBuffer.Count; index++) Draw(canvas, swingBuffer[index], swingColor);
+    }
+
+    private static void Draw(IPluginOverlayCanvas canvas, PluginEntitySnapshot entity, PluginColor color)
+    {
+        if (entity.Width <= 0f || entity.Height <= 0f) return;
+        canvas.DrawWorldRectangle(entity.X, entity.Y, entity.Width, entity.Height, new PluginOverlayColor(color.Red, color.Green, color.Blue, 220), 2f);
     }
 
 }

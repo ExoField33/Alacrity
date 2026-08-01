@@ -10,17 +10,17 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
 {
     private IPluginContext? context;
     private bool clickableLinks = true;
-    private string visibility = "Enabled";
+    private bool chatVisibility = true;
 
     public void Initialize(IPluginContext context)
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
         clickableLinks = context.Settings.Get("clickableLinks", true);
-        visibility = NormalizeVisibility(context.Settings.Get("visibility", "Enabled"));
+        chatVisibility = ReadChatVisibility(context.Settings);
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("better-chat", "Better Chat"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", () => clickableLinks, SetClickableLinks));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("visibility", "Chat Visibility", new[] { "Enabled", "Disabled" }, () => visibility, SetVisibility));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("chat-visibility", "Chat Visibility", () => chatVisibility, SetChatVisibility));
 
         context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), new Editor());
         context.Terraria.Chat.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("better-chat-links"), new LinkDecorator(this));
@@ -40,15 +40,30 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         context?.Settings.Set("clickableLinks", value);
     }
 
-    private void SetVisibility(string value)
+    private static bool ReadChatVisibility(IPluginSettings settings)
     {
-        value = NormalizeVisibility(value);
-        if (string.Equals(visibility, value, StringComparison.Ordinal)) return;
-        visibility = value;
-        context?.Settings.Set("visibility", value);
+        bool? current = settings.Get<bool?>("chat-visibility", null);
+        if (current.HasValue)
+            return current.Value;
+
+        // `visibility` was the initial string setting. Retain its user choice once, then persist
+        // only the stable boolean setting used by the toggle.
+        string? legacy = settings.Get<string?>("visibility", null);
+        if (legacy == null)
+            return true;
+        bool migrated = !string.Equals(legacy, "Disabled", StringComparison.Ordinal);
+        settings.Set("chat-visibility", migrated);
+        settings.Remove("visibility");
+        return migrated;
     }
 
-    private static string NormalizeVisibility(string? value) => string.Equals(value, "Disabled", StringComparison.Ordinal) ? "Disabled" : "Enabled";
+    private void SetChatVisibility(bool value)
+    {
+        if (chatVisibility == value) return;
+        chatVisibility = value;
+        context?.Settings.Set("chat-visibility", value);
+    }
+
     private bool TryOpenExternalLink(Uri uri) => context != null && context.UserInteraction.TryOpenExternalLink(uri);
 
     private sealed class VisibilityFilter : IChatMessageFilter
@@ -57,7 +72,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         public VisibilityFilter(BetterChatPlugin plugin) { this.plugin = plugin; }
         public bool ShouldDisplay(ChatMessageOrigin origin)
         {
-            return !string.Equals(plugin.visibility, "Disabled", StringComparison.Ordinal);
+            return plugin.chatVisibility;
         }
     }
 

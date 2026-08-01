@@ -14,7 +14,6 @@ namespace AlacrityTerraria
     /// <summary>Terraria-owned renderer for the Player List plugin's immutable local presentation state.</summary>
     internal static class PlayerListRuntime
     {
-        private const int TombstoneItemId = 321;
         private const int BotMarkerItemId = 3015;
         private const int CyborgNpcId = 209;
         private static readonly Regex TerrariaTagRegex = new Regex("\\[[a-zA-Z]+(?:/[^:\\]]+)?[:]([^\\]]*)\\]", RegexOptions.Compiled);
@@ -38,15 +37,12 @@ namespace AlacrityTerraria
         private static MethodInfo cyborgHeadIndexMethod;
         private static FieldInfo npcHeadAssetsField;
         private static FieldInfo ghostTextureAssetsField;
-        private static FieldInfo itemTextureAssetsField;
         private static PropertyInfo assetValueProperty;
         private static Texture2D sortTexture;
         private static Texture2D cyborgHeadTexture;
         private static Texture2D ghostTexture;
-        private static Texture2D tombstoneTexture;
         private static bool sortTextureLookupAttempted;
         private static bool ghostTextureLookupAttempted;
-        private static bool tombstoneTextureLookupAttempted;
         private static bool cyborgHeadIndexLookupAttempted;
         private static int cyborgHeadIndex = -1;
 
@@ -389,13 +385,7 @@ namespace AlacrityTerraria
                 return true;
             }
             if (row.Dead)
-            {
-                Texture2D tombstone = GetTombstoneTexture();
-                if (tombstone == null)
-                    return false;
-                spriteBatch.Draw(tombstone, position, null, Color.White, 0f, new Vector2(tombstone.Width / 2f, tombstone.Height / 2f), 0.42f * uiScale, SpriteEffects.None, 0f);
-                return true;
-            }
+                return false;
             return TryDrawPlayerHead(row.Player, position + new Vector2(0f, -2f * uiScale), uiScale);
         }
 
@@ -457,7 +447,6 @@ namespace AlacrityTerraria
                 cyborgHeadIndexMethod = typeof(NPC).GetMethod("TypeToDefaultHeadIndex", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] { typeof(int) }, null);
                 npcHeadAssetsField = typeof(TextureAssets).GetField("NpcHead", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
                 ghostTextureAssetsField = typeof(TextureAssets).GetField("Ghost", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                itemTextureAssetsField = typeof(TextureAssets).GetField("Item", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
             }
             catch
             {
@@ -465,7 +454,6 @@ namespace AlacrityTerraria
                 cyborgHeadIndexMethod = null;
                 npcHeadAssetsField = null;
                 ghostTextureAssetsField = null;
-                itemTextureAssetsField = null;
             }
         }
 
@@ -479,20 +467,6 @@ namespace AlacrityTerraria
                 EnsureRendererLookup();
                 ghostTexture = ghostTextureAssetsField == null ? null : GetTextureFromAsset(ghostTextureAssetsField.GetValue(null));
                 return ghostTexture;
-            }
-            catch { return null; }
-        }
-
-        private static Texture2D GetTombstoneTexture()
-        {
-            if (tombstoneTexture != null || tombstoneTextureLookupAttempted)
-                return tombstoneTexture;
-            tombstoneTextureLookupAttempted = true;
-            try
-            {
-                EnsureRendererLookup();
-                tombstoneTexture = itemTextureAssetsField == null ? null : GetTextureFromAsset(itemTextureAssetsField.GetValue(null) as Array, TombstoneItemId);
-                return tombstoneTexture;
             }
             catch { return null; }
         }

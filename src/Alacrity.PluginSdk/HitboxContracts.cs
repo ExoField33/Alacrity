@@ -2,14 +2,16 @@ using System;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>Read-only presentation settings published by the bundled Hitboxes diagnostics plugin.</summary>
+/// <summary>Legacy compatibility contract for earlier Hitboxes package builds.</summary>
+[Obsolete("Hitboxes now uses IPluginEntitySnapshotService and IPluginOverlayService. This compatibility contract is retained for binary compatibility only.")]
 public interface IHitboxOverlaySettings
 {
     /// <summary>Returns the current immutable presentation policy without exposing Terraria state.</summary>
     HitboxOverlaySettingsSnapshot GetSnapshot();
 }
 
-/// <summary>Immutable host-copied settings used by Terraria diagnostics rendering.</summary>
+/// <summary>Legacy immutable Hitboxes presentation policy.</summary>
+[Obsolete("Hitboxes now owns a generic overlay registration. This compatibility value remains only for earlier package builds.")]
 public sealed class HitboxOverlaySettingsSnapshot
 {
     /// <summary>Creates an immutable client-presentation hitbox policy.</summary>

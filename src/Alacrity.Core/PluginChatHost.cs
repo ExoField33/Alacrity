@@ -207,6 +207,25 @@ public sealed class PluginChatHost
 /// <summary>Concrete Terraria service grouping assembled by the host.</summary>
 public sealed class PluginTerrariaServices : ITerrariaServices
 {
-    public PluginTerrariaServices(IPluginChatService chat) { Chat = chat ?? throw new ArgumentNullException(nameof(chat)); }
+    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null)
+    {
+        Chat = chat ?? throw new ArgumentNullException(nameof(chat));
+        Entities = entities ?? EmptyPluginEntitySnapshotService.Instance;
+    }
     public IPluginChatService Chat { get; }
+    public IPluginEntitySnapshotService Entities { get; }
+}
+
+internal sealed class EmptyPluginEntitySnapshotService : IPluginEntitySnapshotService
+{
+    internal static readonly EmptyPluginEntitySnapshotService Instance = new EmptyPluginEntitySnapshotService();
+    private EmptyPluginEntitySnapshotService() { }
+    public void CopyActiveEntities(System.Collections.Generic.ICollection<PluginEntitySnapshot> destination)
+    {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+    }
+    public void CopyMeleeHitboxes(System.Collections.Generic.ICollection<PluginEntitySnapshot> destination)
+    {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+    }
 }

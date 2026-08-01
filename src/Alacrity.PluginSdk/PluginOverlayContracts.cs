@@ -88,12 +88,18 @@ public interface IPluginOverlayCanvas
     void DrawText(string text, float x, float y, PluginOverlayColor color, float scale = 1f);
     /// <summary>Queues a filled screen-space rectangle.</summary>
     void FillRectangle(float x, float y, float width, float height, PluginOverlayColor color);
+
+    /// <summary>Draws an outlined screen-space rectangle using host-owned rendering state.</summary>
+    void DrawRectangle(float x, float y, float width, float height, PluginOverlayColor color, float thickness = 1f);
     /// <summary>Queues a screen-space line.</summary>
     void DrawLine(float startX, float startY, float endX, float endY, PluginOverlayColor color, float thickness = 1f);
     /// <summary>Queues a host-approved asset by identifier.</summary>
     void DrawAsset(string approvedAssetId, float x, float y, float scale = 1f, PluginOverlayColor? tint = null);
     /// <summary>Queues a host-projected world marker.</summary>
     void DrawWorldMarker(float worldX, float worldY, string text, PluginOverlayColor color);
+
+    /// <summary>Draws an outlined world-space rectangle after host-owned world-to-screen conversion.</summary>
+    void DrawWorldRectangle(float worldX, float worldY, float width, float height, PluginOverlayColor color, float thickness = 1f);
 }
 
 /// <summary>Registers an overlay that is removed automatically with its plugin resource scope.</summary>

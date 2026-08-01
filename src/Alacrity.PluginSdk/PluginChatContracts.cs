@@ -10,6 +10,9 @@ public interface ITerrariaServices
 {
     /// <summary>Player-chat editing and presentation services available on supported Terraria versions.</summary>
     IPluginChatService Chat { get; }
+
+    /// <summary>Read-only, allocation-conscious entity snapshots supplied by the active Terraria integration.</summary>
+    IPluginEntitySnapshotService Entities { get; }
 }
 
 /// <summary>Registers bounded player-chat extensions. The host owns Terraria hooks and rendering internals.</summary>

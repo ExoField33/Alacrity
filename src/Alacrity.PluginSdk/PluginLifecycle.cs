@@ -131,6 +131,8 @@ public interface IPluginContext
     IPluginResourceScope Resources { get; }
     /// <summary>Host logger.</summary>
     IPluginLogger Logger { get; }
+    /// <summary>Scoped host-rendered transient notifications.</summary>
+    IPluginNotificationService Notifications { get; }
     /// <summary>Dependency-aware cross-plugin services scoped to this plugin.</summary>
     IPluginServiceRegistry Services { get; }
     /// <summary>Plugin-scoped settings service.</summary>

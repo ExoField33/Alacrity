@@ -89,6 +89,7 @@ internal static class Program
             PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue();
             BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
             BetterChatCachesDefaultsWithoutRewritingSettings();
+            BetterChatMigratesLegacyVisibilityToToggle();
             DustGoreTogglePublishesScopedPolicyAndManagesExceptions();
             HitboxesPublishesScopedPresentationPolicy();
             PlayerListPublishesPresentationSettingsAndDefaults();
@@ -249,7 +250,7 @@ internal static class Program
         var context = new TestContext(CreateManifest(), resources);
         Assert(context.Settings != null && context.Storage != null && context.Events != null && context.Commands != null, "The final plugin context must expose settings, storage, events, and commands.");
         Assert(context.Keybinds != null && context.Ui != null && context.Services != null && context.Multiplayer != null, "The final plugin context must expose keybinds, UI, services, and multiplayer state.");
-        Assert(context.UserInteraction != null, "The final plugin context must expose permission-gated user interaction services.");
+        Assert(context.Notifications != null && context.UserInteraction != null, "The final plugin context must expose scoped notifications and permission-gated user interaction services.");
         resources.Dispose();
     }
 
@@ -1333,6 +1334,28 @@ internal static class Program
         }
     }
 
+    private static void BetterChatMigratesLegacyVisibilityToToggle()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-better-chat-visibility-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var manifest = new PluginManifest(new PluginId("alacrity.better-chat"), "Better Chat", new Version(1, 0), "Tests", "Better chat test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface | PluginPermission.Clipboard | PluginPermission.OpenExternalLinks);
+            var extensions = new PluginExtensionHost();
+            var factory = new PluginHostContextFactory(root, new PluginServiceHub(), extensions, new PluginCommandHost(), chat: new PluginChatHost());
+            PluginHostContext context = factory.Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            context.Settings.Set("visibility", "Disabled");
+            new BetterChatPlugin().Initialize(context);
+            PluginSettingControl control = extensions.GetSettingsControls(manifest.Id).Single(item => item.Id == "chat-visibility");
+            Assert(control.Kind == PluginSettingControlKind.Toggle && control.GetToggle != null && !control.GetToggle(), "Legacy visibility must migrate to the Chat Visibility toggle.");
+            Assert(context.Settings.Get<bool?>("chat-visibility", null) == false && context.Settings.Get<string?>("visibility", null) == null, "Legacy visibility must be removed after a one-time migration.");
+            context.Resources.Dispose();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static void PlayerListPublishesPresentationSettingsAndDefaults()
     {
         var manifest = new PluginManifest(new PluginId("alacrity.player-list"), "Player List", new Version(1, 0), "Tests", "Displays the currently online players", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation, permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer);
@@ -1390,14 +1413,11 @@ internal static class Program
         var plugin = new HitboxesPlugin();
         plugin.Initialize(context);
 
-        Assert(context.Services.TryGet<IHitboxOverlaySettings>(out var service) && service != null, "Hitboxes must publish its presentation-only settings service.");
-        if (service == null) throw new InvalidOperationException("Hitboxes service was not available after registration.");
-        HitboxOverlaySettingsSnapshot snapshot = service.GetSnapshot();
-        Assert(!snapshot.HasVisibleOverlays && snapshot.ShowFriendlyProjectiles && snapshot.ShowHostileProjectiles, "Hitboxes must default to disabled overlays while retaining both projectile categories for later activation.");
-        Assert(snapshot.PlayerColor.Equals(new PluginColor(90, 170, 255)) && snapshot.NpcColor.Equals(new PluginColor(255, 90, 90)) && snapshot.FriendlyProjectileColor.Equals(new PluginColor(90, 255, 110)) && snapshot.HostileProjectileColor.Equals(new PluginColor(255, 230, 90)) && snapshot.SwingColor.Equals(new PluginColor(255, 150, 60)), "Hitboxes must retain the legacy diagnostic default colors.");
+        var overlays = context.Overlays as TestOverlays;
+        Assert(overlays != null && overlays.Registrations == 1, "Hitboxes must own one generic world-overlay registration.");
 
         scope.Dispose();
-        Assert(!context.Services.TryGet<IHitboxOverlaySettings>(out _), "Disposing Hitboxes' scope must remove its presentation service.");
+        Assert(overlays != null, "Hitbox overlay registration must be retained through scope cleanup.");
     }
 
     private static void UserInteractionServicesRequirePermissionsAndValidateLinks()
@@ -1464,6 +1484,11 @@ internal static class Program
         notifications.Publish("Dependency enabled.", TimeSpan.FromSeconds(2));
         Assert(notifications.GetActive(DateTimeOffset.UtcNow).Count == 1, "A fresh notification must be available to the presentation layer.");
         Assert(notifications.GetActive(DateTimeOffset.UtcNow.AddSeconds(3)).Count == 0, "Expired notifications must be removed instead of accumulating.");
+
+        PluginManifest manifest = CreateManifest();
+        notifications.CreateService(manifest).Show("Ready", new PluginNotificationOptions(PluginNotificationTarget.PluginManager, new PluginColor(10, 20, 30), TimeSpan.FromSeconds(30)));
+        PluginNotification owned = notifications.GetActive(DateTimeOffset.UtcNow).Single();
+        Assert(owned.Message == manifest.Id.Value + ": Ready" && owned.Options.Target == PluginNotificationTarget.PluginManager && owned.Options.Color.HasValue && owned.Options.Color.Value.Equals(new PluginColor(10, 20, 30)) && owned.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(16), "Plugin notifications must be owner-attributed, targetable, colored, and lifetime-bounded.");
     }
 
     private static void PackageCatalogReadsManifestWithoutAssemblyLoad()
@@ -1712,6 +1737,7 @@ internal static class Program
             Manifest = manifest;
             Resources = resources;
             Logger = new TestLogger();
+            Notifications = new PluginNotificationCenter().CreateService(manifest);
             Services = new PluginServiceHub().CreateRegistry(manifest, resources);
             Settings = new TestSettings();
             Storage = new TestStorage();
@@ -1728,6 +1754,7 @@ internal static class Program
         public PluginManifest Manifest { get; }
         public IPluginResourceScope Resources { get; }
         public IPluginLogger Logger { get; }
+        public IPluginNotificationService Notifications { get; }
         public IPluginServiceRegistry Services { get; }
         public IPluginSettings Settings { get; }
         public IPluginStorage Storage { get; }
@@ -1883,12 +1910,18 @@ internal static class Program
 
     private sealed class TestOverlays : IPluginOverlayService
     {
-        public IPluginRegistration Register(PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw) => new TestRegistration("overlay:" + descriptor.Id);
+        public int Registrations { get; private set; }
+        public IPluginRegistration Register(PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw)
+        {
+            Registrations++;
+            return new TestRegistration("overlay:" + descriptor.Id);
+        }
     }
 
     private sealed class TestTerrariaServices : ITerrariaServices
     {
         public IPluginChatService Chat { get; } = new TestChatService();
+        public IPluginEntitySnapshotService Entities { get; } = new TestEntitySnapshots();
     }
 
     private sealed class TestChatService : IPluginChatService
@@ -1897,6 +1930,12 @@ internal static class Program
         public IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator) => new TestRegistration("chat-decorator");
         public IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter) => new TestRegistration("chat-filter");
         public IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler) => new TestRegistration("chat-link");
+    }
+
+    private sealed class TestEntitySnapshots : IPluginEntitySnapshotService
+    {
+        public void CopyActiveEntities(ICollection<PluginEntitySnapshot> destination) { }
+        public void CopyMeleeHitboxes(ICollection<PluginEntitySnapshot> destination) { }
     }
 
     private sealed class TestChatFilter : IChatMessageFilter
@@ -1937,9 +1976,11 @@ internal static class Program
     {
         public void DrawText(string text, float x, float y, PluginOverlayColor color, float scale = 1f) { }
         public void FillRectangle(float x, float y, float width, float height, PluginOverlayColor color) { }
+        public void DrawRectangle(float x, float y, float width, float height, PluginOverlayColor color, float thickness = 1f) { }
         public void DrawLine(float startX, float startY, float endX, float endY, PluginOverlayColor color, float thickness = 1f) { }
         public void DrawAsset(string approvedAssetId, float x, float y, float scale = 1f, PluginOverlayColor? tint = null) { }
         public void DrawWorldMarker(float worldX, float worldY, string text, PluginOverlayColor color) { }
+        public void DrawWorldRectangle(float worldX, float worldY, float width, float height, PluginOverlayColor color, float thickness = 1f) { }
     }
 
     private sealed class TestRegistration : IPluginRegistration

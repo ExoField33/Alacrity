@@ -52,8 +52,6 @@ namespace AlacrityTerraria
         private static bool _bridgeLoadAttempted;
         private static string _lastDiagnostic;
         private static bool _shutdownHooked;
-        private static bool _hitboxHookDiagnosticSent;
-        private static bool _hitboxBridgeDiagnosticSent;
 
         /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
         public static string LastBridgeDiagnostic { get { return _lastDiagnostic ?? string.Empty; } }
@@ -227,46 +225,19 @@ namespace AlacrityTerraria
             }
         }
 
-        /// <summary>Draws world-space diagnostic overlays at Terraria's verified emote-bubble layer.</summary>
+        /// <summary>Forwards the verified world draw phase to the optional host-owned Hitboxes renderer.</summary>
         public static void DrawHitboxes(SpriteBatch spriteBatch)
         {
             if (spriteBatch == null || Main.gameMenu)
                 return;
             try
             {
-                if (!_hitboxHookDiagnosticSent)
-                {
-                    _hitboxHookDiagnosticSent = true;
-                    Main.NewText("[Hitboxes] World draw hook reached.", 190, 220, 255);
-                }
-                if (!EnsureBridge())
-                {
-                    if (!_hitboxBridgeDiagnosticSent)
-                    {
-                        _hitboxBridgeDiagnosticSent = true;
-                        Main.NewText("[Hitboxes] Bridge unavailable: " + LastBridgeDiagnostic, 255, 110, 110);
-                    }
+                if (!EnsureBridge() || _drawHitboxes == null)
                     return;
-                }
-                if (_drawHitboxes == null)
-                {
-                    if (!_hitboxBridgeDiagnosticSent)
-                    {
-                        _hitboxBridgeDiagnosticSent = true;
-                        Main.NewText("[Hitboxes] Bridge loaded, but DrawHitboxes was not resolved.", 255, 110, 110);
-                    }
-                    return;
-                }
                 _drawHitboxes(spriteBatch);
             }
             catch (Exception exception)
             {
-                if (!_hitboxBridgeDiagnosticSent)
-                {
-                    _hitboxBridgeDiagnosticSent = true;
-                    Exception root = exception.GetBaseException();
-                    Main.NewText("[Hitboxes] Core draw failed: " + root.GetType().Name + ": " + root.Message, 255, 110, 110);
-                }
                 RecordFailure("Draw hitboxes", exception);
             }
         }
