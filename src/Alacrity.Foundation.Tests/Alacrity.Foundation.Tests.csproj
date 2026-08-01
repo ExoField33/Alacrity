@@ -18,5 +18,6 @@
   <ItemGroup>
     <Compile Include="..\Alacrity.TerrariaIntegration\BridgeReflectionContracts.cs" Link="BridgeReflectionContracts.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\TileStorage.cs" Link="TileStorage.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\TerrariaWorldProjectionMath.cs" Link="TerrariaWorldProjectionMath.cs" />
   </ItemGroup>
 </Project>

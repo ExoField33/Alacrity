@@ -234,7 +234,12 @@ public sealed class PluginLifecycleController : IDisposable
     {
         try
         {
-            context.Resources.ReleaseAll();
+            // Runtime activations receive a context factory and never reuse a scope. Legacy
+            // direct-controller callers remain releasable because they cannot supply a fresh one.
+            if (contextFactory != null)
+                context.Resources.Dispose();
+            else
+                context.Resources.ReleaseAll();
             return new List<PluginCleanupFailure>();
         }
         catch (Exception exception)

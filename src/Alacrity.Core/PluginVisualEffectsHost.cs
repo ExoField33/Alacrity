@@ -25,9 +25,8 @@ public sealed class PluginVisualEffectsHost
 
     private IPluginRegistration Register(PluginManifest manifest, IPluginResourceScope resources, PluginVisualEffectsPolicy policy)
     {
-        if ((manifest.Capabilities & (PluginCapability.Rendering | PluginCapability.GameStateRead)) != (PluginCapability.Rendering | PluginCapability.GameStateRead) ||
-            (manifest.Permissions & (PluginPermission.DrawUserInterface | PluginPermission.ReadGameState)) != (PluginPermission.DrawUserInterface | PluginPermission.ReadGameState))
-            throw new UnauthorizedAccessException("Visual-effects policies require Rendering and GameStateRead capabilities plus DrawUserInterface and ReadGameState permissions.");
+        if ((manifest.Capabilities & PluginCapability.Rendering) == 0 || (manifest.Permissions & PluginPermission.DrawUserInterface) == 0)
+            throw new UnauthorizedAccessException("Visual-effects policies require Rendering capability and DrawUserInterface permission.");
         if (policy == null) throw new ArgumentNullException(nameof(policy));
         var entry = new Entry(policy);
         lock (gate) { entries.Add(entry); Rebuild(); }

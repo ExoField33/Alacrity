@@ -3,13 +3,13 @@ using System.Collections.Generic;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>Stable identifier for one centrally owned patch.</summary>
+/// Stable identifier for one centrally owned patch.
 public readonly struct PatchId : IEquatable<PatchId>
 {
-    /// <summary>Maximum number of characters in a package-safe patch identifier.</summary>
+    /// Maximum number of characters in a package-safe patch identifier.
     public const int MaximumLength = 96;
 
-    /// <summary>Creates a patch identifier.</summary>
+    /// Creates a patch identifier.
     public PatchId(string value)
     {
         if (!TryValidate(value, out var error))
@@ -17,16 +17,16 @@ public readonly struct PatchId : IEquatable<PatchId>
         Value = value;
     }
 
-    /// <summary>Canonical patch identifier text.</summary>
+    /// Canonical patch identifier text.
     public string Value { get; }
 
-    /// <summary>Whether this instance contains a valid non-default identifier.</summary>
+    /// Whether this instance contains a valid non-default identifier.
     public bool IsValid => TryValidate(Value, out _);
 
-    /// <summary>Parses a package-safe patch identifier.</summary>
+    /// Parses a package-safe patch identifier.
     public static PatchId Parse(string value) => new PatchId(value);
 
-    /// <summary>Attempts to parse a package-safe patch identifier.</summary>
+    /// Attempts to parse a package-safe patch identifier.
     public static bool TryParse(string? value, out PatchId id)
     {
         if (TryValidate(value, out _))
@@ -51,10 +51,10 @@ public readonly struct PatchId : IEquatable<PatchId>
     /// <inheritdoc />
     public override string ToString() => Value;
 
-    /// <summary>Compares two patch identifiers.</summary>
+    /// Compares two patch identifiers.
     public static bool operator ==(PatchId left, PatchId right) => left.Equals(right);
 
-    /// <summary>Compares two patch identifiers for inequality.</summary>
+    /// Compares two patch identifiers for inequality.
     public static bool operator !=(PatchId left, PatchId right) => !left.Equals(right);
 
     private static bool TryValidate(string? value, out string error)
@@ -103,13 +103,13 @@ public readonly struct PatchId : IEquatable<PatchId>
     }
 }
 
-/// <summary>
+/// 
 /// Immutable declaration of a full-file patch owned by one plugin. The host derives all backup
 /// locations; plugin code never receives control of rollback paths.
-/// </summary>
+/// 
 public sealed class PatchDefinition
 {
-    /// <summary>Creates a patch declaration. Contents are copied defensively.</summary>
+    /// Creates a patch declaration. Contents are copied defensively.
     public PatchDefinition(
         PatchId id,
         PluginId owner,
@@ -126,17 +126,17 @@ public sealed class PatchDefinition
         replacement = replacementContents == null ? throw new ArgumentNullException(nameof(replacementContents)) : (byte[])replacementContents.Clone();
     }
 
-    /// <summary>Patch identifier.</summary>
+    /// Patch identifier.
     public PatchId Id { get; }
-    /// <summary>Plugin that owns registration, application, and rollback.</summary>
+    /// Plugin that owns registration, application, and rollback.
     public PluginId Owner { get; }
-    /// <summary>Target file path within the host-managed patch root.</summary>
+    /// Target file path within the host-managed patch root.
     public string TargetPath { get; }
-    /// <summary>Hash required before application.</summary>
+    /// Hash required before application.
     public string ExpectedOriginalSha256 { get; }
-    /// <summary>Replacement bytes written by the transaction.</summary>
+    /// Replacement bytes written by the transaction.
     public byte[] ReplacementContents => (byte[])replacement.Clone();
-    /// <summary>Hash required after application.</summary>
+    /// Hash required after application.
     public string ExpectedPatchedSha256 { get; }
 
     private readonly byte[] replacement;
@@ -166,25 +166,25 @@ public sealed class PatchDefinition
     }
 }
 
-/// <summary>File operations needed by the patch engine.</summary>
+/// File operations needed by the patch engine.
 public interface IPatchFileStore
 {
-    /// <summary>Returns a stable canonical comparison key for a managed path and rejects paths outside the managed root.</summary>
+    /// Returns a stable canonical comparison key for a managed path and rejects paths outside the managed root.
     string GetPathIdentity(string path);
-    /// <summary>Checks whether a managed path exists.</summary>
+    /// Checks whether a managed path exists.
     bool Exists(string path);
-    /// <summary>Reads a complete file snapshot.</summary>
+    /// Reads a complete file snapshot.
     byte[] ReadAllBytes(string path);
-    /// <summary>Atomically writes only when the current file exactly matches the expected snapshot; a null expectation requires the path to remain absent.</summary>
+    /// Atomically writes only when the current file exactly matches the expected snapshot; a null expectation requires the path to remain absent.
     bool TryWriteAtomically(string path, byte[]? expectedContents, byte[] contents);
-    /// <summary>Copies a file to a backup path.</summary>
+    /// Copies a file to a backup path.
     void Copy(string sourcePath, string destinationPath, bool overwrite);
 }
 
-/// <summary>Result of comparing a file snapshot to a declared patch hash.</summary>
+/// Result of comparing a file snapshot to a declared patch hash.
 public sealed class PatchVerificationResult
 {
-    /// <summary>Creates a verification result.</summary>
+    /// Creates a verification result.
     public PatchVerificationResult(bool isMatch, string expectedSha256, string actualSha256)
     {
         IsMatch = isMatch;
@@ -192,50 +192,50 @@ public sealed class PatchVerificationResult
         ActualSha256 = actualSha256;
     }
 
-    /// <summary>Whether expected and actual hashes match.</summary>
+    /// Whether expected and actual hashes match.
     public bool IsMatch { get; }
-    /// <summary>Declared hash.</summary>
+    /// Declared hash.
     public string ExpectedSha256 { get; }
-    /// <summary>Observed hash.</summary>
+    /// Observed hash.
     public string ActualSha256 { get; }
 }
 
-/// <summary>Verification service kept separate from file mutation.</summary>
+/// Verification service kept separate from file mutation.
 public interface IPatchVerifier
 {
-    /// <summary>Computes the canonical SHA-256 representation.</summary>
+    /// Computes the canonical SHA-256 representation.
     string ComputeSha256(byte[] contents);
-    /// <summary>Compares content to an expected hash.</summary>
+    /// Compares content to an expected hash.
     PatchVerificationResult Verify(byte[] contents, string expectedSha256);
 }
 
-/// <summary>Journal state for one patch transaction.</summary>
+/// Journal state for one patch transaction.
 public enum PatchTransactionState
 {
-    /// <summary>No transaction has been recorded.</summary>
+    /// No transaction has been recorded.
     None,
-    /// <summary>Original content was verified.</summary>
+    /// Original content was verified.
     VerifiedOriginal,
-    /// <summary>Backup was created and verified.</summary>
+    /// Backup was created and verified.
     BackupCreated,
-    /// <summary>Replacement write is in progress.</summary>
+    /// Replacement write is in progress.
     Writing,
-    /// <summary>Replacement content was verified.</summary>
+    /// Replacement content was verified.
     Applied,
-    /// <summary>Rollback is in progress.</summary>
+    /// Rollback is in progress.
     RollingBack,
-    /// <summary>Original content was restored and verified.</summary>
+    /// Original content was restored and verified.
     RolledBack,
-    /// <summary>Transaction failed and requires inspection.</summary>
+    /// Transaction failed and requires inspection.
     Failed,
-    /// <summary>Transaction failed and the engine could not restore or verify a known-safe target state.</summary>
+    /// Transaction failed and the engine could not restore or verify a known-safe target state.
     RecoveryFailed
 }
 
-/// <summary>Immutable journal snapshot for diagnostics and recovery.</summary>
+/// Immutable journal snapshot for diagnostics and recovery.
 public sealed class PatchTransactionRecord
 {
-    /// <summary>Creates a journal snapshot.</summary>
+    /// Creates a journal snapshot.
     public PatchTransactionRecord(PatchId id, PluginId owner, PatchTransactionState state, string? error = null)
     {
         Id = id;
@@ -244,38 +244,38 @@ public sealed class PatchTransactionRecord
         Error = error;
     }
 
-    /// <summary>Patch identifier.</summary>
+    /// Patch identifier.
     public PatchId Id { get; }
-    /// <summary>Recorded owner.</summary>
+    /// Recorded owner.
     public PluginId Owner { get; }
-    /// <summary>Latest transaction state.</summary>
+    /// Latest transaction state.
     public PatchTransactionState State { get; }
-    /// <summary>Failure detail, when present.</summary>
+    /// Failure detail, when present.
     public string? Error { get; }
 }
 
-/// <summary>Storage boundary for transaction records.</summary>
+/// Storage boundary for transaction records.
 public interface IPatchJournal
 {
-    /// <summary>Gets the latest record for a patch.</summary>
+    /// Gets the latest record for a patch.
     PatchTransactionRecord? Get(PatchId id);
-    /// <summary>Returns immutable snapshots used by host startup recovery.</summary>
+    /// Returns immutable snapshots used by host startup recovery.
     IReadOnlyList<PatchTransactionRecord> GetAll();
-    /// <summary>Publishes a new immutable transaction record.</summary>
+    /// Publishes a new immutable transaction record.
     void Record(PatchTransactionRecord record);
 }
 
-/// <summary>Owner-bound transaction capability for one plugin's patches.</summary>
+/// Owner-bound transaction capability for one plugin's patches.
 public interface IPatchEngine
 {
-    /// <summary>Plugin identity bound to this capability by the host.</summary>
+    /// Plugin identity bound to this capability by the host.
     PluginId Owner { get; }
-    /// <summary>Registers a patch and rejects ownership/target conflicts.</summary>
+    /// Registers a patch and rejects ownership/target conflicts.
     void Register(PatchDefinition definition);
-    /// <summary>Applies an owned patch.</summary>
+    /// Applies an owned patch.
     PatchTransactionRecord Apply(PatchId id);
-    /// <summary>Rolls an owned patch back.</summary>
+    /// Rolls an owned patch back.
     PatchTransactionRecord Rollback(PatchId id);
-    /// <summary>Returns the journaled state for a patch.</summary>
+    /// Returns the journaled state for a patch.
     PatchTransactionRecord? GetStatus(PatchId id);
 }

@@ -77,7 +77,15 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     }
 
     public void Enable() { }
-    public void Disable() { }
+    public void Disable()
+    {
+        meleeCaptureDemand?.Dispose();
+        meleeCaptureDemand = null;
+        meleeSnapshots = null;
+        entities = null;
+        entityBuffer.Clear();
+        swingBuffer.Clear();
+    }
     public void Shutdown()
     {
         entityBuffer.Clear();
@@ -97,7 +105,7 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     {
         if (showSwings)
         {
-            if (meleeCaptureDemand == null && meleeSnapshots != null)
+            if ((meleeCaptureDemand == null || meleeCaptureDemand.IsReleased) && meleeSnapshots != null)
                 meleeCaptureDemand = meleeSnapshots.RequestMeleeCollisionSnapshots();
         }
         else

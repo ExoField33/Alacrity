@@ -92,19 +92,24 @@ internal sealed class TerrariaOverlayCanvas : IPluginOverlayCanvas
 internal sealed class TerrariaOverlayGraphicsResources : IDisposable
 {
     private Texture2D pixel;
+    private GraphicsDevice device;
 
     internal void Prepare(GraphicsDevice graphicsDevice)
     {
-        if (graphicsDevice == null || (pixel != null && !pixel.IsDisposed)) return;
+        if (graphicsDevice == null) return;
+        if (pixel != null && !pixel.IsDisposed && ReferenceEquals(device, graphicsDevice)) return;
         try
         {
+            pixel?.Dispose();
             var created = new Texture2D(graphicsDevice, 1, 1);
             created.SetData(new[] { Color.White });
             pixel = created;
+            device = graphicsDevice;
         }
         catch
         {
             pixel = null;
+            device = null;
         }
     }
 
@@ -119,5 +124,6 @@ internal sealed class TerrariaOverlayGraphicsResources : IDisposable
         if (pixel == null) return;
         pixel.Dispose();
         pixel = null;
+        device = null;
     }
 }

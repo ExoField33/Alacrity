@@ -2,19 +2,19 @@ using System;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>Legacy compatibility contract for earlier Hitboxes package builds.</summary>
+/// Legacy compatibility contract for earlier Hitboxes package builds.
 [Obsolete("Hitboxes now uses IPluginEntitySnapshotService and IPluginOverlayService. This compatibility contract is retained for binary compatibility only.")]
 public interface IHitboxOverlaySettings
 {
-    /// <summary>Returns the current immutable presentation policy without exposing Terraria state.</summary>
+    /// Returns the current immutable presentation policy without exposing Terraria state.
     HitboxOverlaySettingsSnapshot GetSnapshot();
 }
 
-/// <summary>Legacy immutable Hitboxes presentation policy.</summary>
+/// Legacy immutable Hitboxes presentation policy.
 [Obsolete("Hitboxes now owns a generic overlay registration. This compatibility value remains only for earlier package builds.")]
 public sealed class HitboxOverlaySettingsSnapshot
 {
-    /// <summary>Creates an immutable client-presentation hitbox policy.</summary>
+    /// Creates an immutable client-presentation hitbox policy.
     public HitboxOverlaySettingsSnapshot(bool showPlayerHitboxes, bool showNpcHitboxes, bool showProjectileHitboxes, bool showFriendlyProjectiles, bool showHostileProjectiles, bool showSwingHitboxes, PluginColor playerColor, PluginColor npcColor, PluginColor friendlyProjectileColor, PluginColor hostileProjectileColor, PluginColor swingColor)
     {
         ShowPlayerHitboxes = showPlayerHitboxes;
@@ -30,29 +30,29 @@ public sealed class HitboxOverlaySettingsSnapshot
         SwingColor = swingColor;
     }
 
-    /// <summary>Whether player collision bounds are visible.</summary>
+    /// Whether player collision bounds are visible.
     public bool ShowPlayerHitboxes { get; }
-    /// <summary>Whether NPC collision bounds are visible.</summary>
+    /// Whether NPC collision bounds are visible.
     public bool ShowNpcHitboxes { get; }
-    /// <summary>Whether projectile collision bounds are visible.</summary>
+    /// Whether projectile collision bounds are visible.
     public bool ShowProjectileHitboxes { get; }
-    /// <summary>Whether friendly projectile bounds are visible.</summary>
+    /// Whether friendly projectile bounds are visible.
     public bool ShowFriendlyProjectiles { get; }
-    /// <summary>Whether hostile projectile bounds are visible.</summary>
+    /// Whether hostile projectile bounds are visible.
     public bool ShowHostileProjectiles { get; }
-    /// <summary>Whether vanilla-computed melee swing bounds are visible.</summary>
+    /// Whether vanilla-computed melee swing bounds are visible.
     public bool ShowSwingHitboxes { get; }
-    /// <summary>Outline color for player bounds.</summary>
+    /// Outline color for player bounds.
     public PluginColor PlayerColor { get; }
-    /// <summary>Outline color for NPC bounds.</summary>
+    /// Outline color for NPC bounds.
     public PluginColor NpcColor { get; }
-    /// <summary>Outline color for friendly projectile bounds.</summary>
+    /// Outline color for friendly projectile bounds.
     public PluginColor FriendlyProjectileColor { get; }
-    /// <summary>Outline color for hostile projectile bounds.</summary>
+    /// Outline color for hostile projectile bounds.
     public PluginColor HostileProjectileColor { get; }
-    /// <summary>Outline color for melee swing bounds.</summary>
+    /// Outline color for melee swing bounds.
     public PluginColor SwingColor { get; }
 
-    /// <summary>Whether at least one overlay category can be drawn.</summary>
+    /// Whether at least one overlay category can be drawn.
     public bool HasVisibleOverlays => ShowPlayerHitboxes || ShowNpcHitboxes || (ShowProjectileHitboxes && (ShowFriendlyProjectiles || ShowHostileProjectiles)) || ShowSwingHitboxes;
 }

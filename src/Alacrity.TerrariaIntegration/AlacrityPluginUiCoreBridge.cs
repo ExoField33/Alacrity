@@ -5,8 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Alacrity.App;
@@ -30,7 +28,7 @@ using Terraria.Utilities;
 
 namespace AlacrityTerraria
 {
-    public static class PluginUiRuntime
+    public static partial class PluginUiRuntime
     {
         private static PluginManagerRuntime _runtime;
         private static PluginManagementMenu _menu;
@@ -44,6 +42,7 @@ namespace AlacrityTerraria
         private static TerrariaEntitySnapshotCache _entitySnapshots;
         private static TerrariaSessionPresentationService _sessionPresentation;
         private static PluginChatHost _chat;
+        private static TerrariaPluginChatAdapter _chatAdapter;
         private static PluginUserInteractionHost _userInteraction;
         private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
@@ -56,6 +55,7 @@ namespace AlacrityTerraria
         private static FieldInfo _mainAssetsField;
         private static readonly HashSet<string> ReportedOptionalUiFailures = new HashSet<string>(StringComparer.Ordinal);
         private static Texture2D _ingameBlankTexture;
+        private static GraphicsDevice _ingameBlankTextureDevice;
         private static bool _pluginMenuOpen;
         private static PluginSelectionMenu _selectionMenu;
         private static PluginManagerRow[] _ingameEntries = Array.Empty<PluginManagerRow>();
@@ -64,28 +64,21 @@ namespace AlacrityTerraria
         private static float _ingameScroll;
         private static float _ingameDescriptionScroll;
         private static string _ingameHoveredSettingId;
-        private static bool _enabledStateRestored;
+        private static TerrariaPluginEnabledStateStore _enabledStateStore;
         private static readonly object RuntimeGate = new object();
         private static PluginVisualEffectsHost _visualEffects;
-        private static VisualEffectsRuntimePolicy _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
+        private static TerrariaVisualEffectsRuntimePolicy _visualEffectsPolicy = TerrariaVisualEffectsRuntimePolicy.Vanilla;
         private static PluginVisualEffectsPolicy _lastVisualEffectsSnapshot;
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
         private static readonly Dictionary<string, bool> KeybindDownState = new Dictionary<string, bool>(StringComparer.Ordinal);
-        private static readonly Dictionary<PluginId, PendingPluginOperation> PendingPluginOperations = new Dictionary<PluginId, PendingPluginOperation>();
+        private static TerrariaPluginOperationCoordinator _pluginOperations;
         private static long _keybindRegistryVersion = -1;
         private static PlayerInputProfile _nativeKeybindProfile;
         private static long _nativeKeybindRegistryVersion = -1;
         private static readonly HashSet<string> NativePluginKeybindIds = new HashSet<string>(StringComparer.Ordinal);
-        private static readonly ConditionalWeakTable<UIManageControls, KeybindControlsState> KeybindControlsStates = new ConditionalWeakTable<UIManageControls, KeybindControlsState>();
-        private static FieldInfo _controlsListField;
-        private static FieldInfo _controlsKeyboardField;
-        private static FieldInfo _controlsGameplayField;
-        private static readonly object KeybindPersistenceGate = new object();
-        private static readonly Dictionary<string, List<string>> PersistedPluginKeybinds = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        private static bool _pluginKeybindsLoaded;
-        private static int _pluginKeybindSaveQueued;
-        private static bool _pluginKeybindsDirty;
+        private static TerrariaPluginKeybindPersistence _keybindPersistence;
+        private static TerrariaPluginKeybindControlsAdapter _keybindControlsAdapter;
         private static uint _iconInteractionInputTick = uint.MaxValue;
         private static bool _iconInteractionWasDown;
         private static bool _iconInteractionPressed;
@@ -132,6 +125,10 @@ namespace AlacrityTerraria
                     }
                 }
                 _drawAdapter?.Dispose();
+                _pluginOperations?.CancelAll();
+                _ingameBlankTexture?.Dispose();
+                _ingameBlankTexture = null;
+                _ingameBlankTextureDevice = null;
             }
         }
 
@@ -144,16 +141,7 @@ namespace AlacrityTerraria
         /// <summary>Registration-driven chat-editor availability for all chat plugins.</summary>
         public static bool HasChatInputEditors()
         {
-            try
-            {
-                EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditors;
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Chat extension activation", exception);
-                return false;
-            }
+            return _chatAdapter != null && _chatAdapter.HasInputEditors();
         }
 
         /// <summary>Processes player-chat input through the enabled scoped chat editor registrations.</summary>
@@ -165,16 +153,7 @@ namespace AlacrityTerraria
         /// <summary>Processes player chat through the active generic editor pipeline.</summary>
         public static string ProcessChatInput(string text, bool allowMultiLine)
         {
-            try
-            {
-                EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditors ? TerrariaChatRuntime.Process(_chat, GetActiveChatUserInteraction(), text, allowMultiLine) : text;
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Chat extension input", exception);
-                return text;
-            }
+            return _chatAdapter == null ? text : _chatAdapter.ProcessInput(text, allowMultiLine);
         }
 
         /// <summary>Consumes only registered local plugin commands before Terraria creates an outgoing chat packet.</summary>
@@ -217,90 +196,49 @@ namespace AlacrityTerraria
         /// <summary>Formats focused player-chat input through the generic chat extension runtime.</summary>
         public static string FormatChatInputForDraw(string text)
         {
-            try { return TerrariaChatRuntime.FormatForDraw(HasChatInputEditors(), text); }
-            catch (Exception exception) { ReportOptionalUiFailure("Chat extension draw text", exception); return text; }
+            return _chatAdapter == null ? text : _chatAdapter.FormatInputForDraw(text);
         }
 
         /// <summary>Decorates parsed normal chat snippets outside the draw loop.</summary>
         public static object DecorateChatMessage(object snippets, Color baseColor, string originalMessage)
         {
-            try
-            {
-                EnsureChatRuntime();
-                return _chat != null && _chat.HasMessageDecorators ? TerrariaChatRuntime.Decorate(_chat, snippets, baseColor, originalMessage) : snippets;
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Chat extension message decoration", exception);
-                return snippets;
-            }
+            return _chatAdapter == null ? snippets : _chatAdapter.Decorate(snippets, baseColor, originalMessage);
         }
 
         /// <summary>Filters network chat before Terraria creates overhead or scrolling-chat entries.</summary>
         public static bool ShouldDisplayNetworkChatMessage(byte messageAuthor)
         {
-            try
-            {
-                EnsureChatRuntime();
-                if (_chat == null || !_chat.HasMessageFilters) return true;
-                return _chat.ShouldDisplay(messageAuthor == byte.MaxValue ? ChatMessageOrigin.Server : ChatMessageOrigin.Player);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Chat extension network visibility", exception);
-                return true;
-            }
+            return _chatAdapter == null || _chatAdapter.ShouldDisplayNetworkMessage(messageAuthor);
         }
 
         /// <summary>Filters client-originated system messages without affecting network receive behavior.</summary>
         public static bool ShouldDisplayLocalChatMessage()
         {
-            try
-            {
-                EnsureChatRuntime();
-                return _chat == null || !_chat.HasMessageFilters || _chat.ShouldDisplay(ChatMessageOrigin.LocalSystem);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Chat extension local visibility", exception);
-                return true;
-            }
+            return _chatAdapter == null || _chatAdapter.ShouldDisplayLocalMessage();
         }
 
         /// <summary>Shows bounded vanilla-style hover feedback and handles copy-on-right-click.</summary>
         public static void HandleChatSnippetHover(object snippet)
         {
-            try { if (HasChatInputEditors()) TerrariaChatRuntime.Hover(snippet, GetActiveChatUserInteraction()); }
-            catch (Exception exception) { ReportOptionalUiFailure("Chat extension hover", exception); }
+            if (_chatAdapter != null) _chatAdapter.HandleHover(snippet);
         }
 
         /// <summary>Activates only validated http or https links registered by an enabled plugin.</summary>
         public static bool HandleChatSnippetClick(object snippet)
         {
-            try
-            {
-                EnsureChatRuntime();
-                return _chat != null && _chat.HasLinkHandlers && TerrariaChatRuntime.Click(_chat, snippet);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Chat extension link activation", exception);
-                return false;
-            }
+            return _chatAdapter != null && _chatAdapter.HandleClick(snippet);
         }
 
         /// <summary>Applies the current hover highlight without mutating the original snippet color.</summary>
         public static Color GetChatSnippetVisibleColor(object snippet, Color color)
         {
-            try { return TerrariaChatRuntime.VisibleColor(snippet, color); }
-            catch (Exception exception) { ReportOptionalUiFailure("Chat extension hover color", exception); return color; }
+            return _chatAdapter == null ? color : _chatAdapter.GetVisibleColor(snippet, color);
         }
 
         /// <summary>Transfers parse-time line ownership when Terraria clones a snippet during layout.</summary>
         public static void CopyChatSnippetContext(object source, object copy)
         {
-            try { TerrariaChatRuntime.CopyContext(source, copy); }
-            catch (Exception exception) { ReportOptionalUiFailure("Chat extension snippet copy", exception); }
+            if (_chatAdapter != null) _chatAdapter.CopySnippetContext(source, copy);
         }
 
         public static void Open()
@@ -421,222 +359,19 @@ namespace AlacrityTerraria
         /// </summary>
         public static void AppendPluginKeybindControls(UIManageControls controls)
         {
-            if (!Volatile.Read(ref _runtimeBootstrapped) || _extensions == null || controls == null)
-                return;
-
-            try
-            {
-                if (!TryGetControlsList(controls, out var list))
-                    return;
-                PluginKeybindRegistrySnapshot snapshot = _extensions.GetKeybindSnapshot();
-                var state = KeybindControlsStates.GetOrCreateValue(controls);
-                if (state.Version == snapshot.Version)
-                    return;
-
-                RemovePluginKeybindGroups(list);
-                state.Version = snapshot.Version;
-                if (snapshot.Registrations.Count == 0)
-                    return;
-
-                var mode = GetControlsInputMode(controls);
-                // Runtime dispatch currently uses Terraria's gameplay keyboard profile only.
-                // Do not show rows in UI modes that cannot activate them.
-                if (mode != InputMode.Keyboard)
-                    return;
-
-                int groupOrder = 10000;
-                int rowOrder = 20000;
-                foreach (var group in snapshot.Registrations.GroupBy(keybind => keybind.Owner.Value + "\u001f" + keybind.Heading, StringComparer.Ordinal))
-                    list.Add(CreatePluginKeybindGroup(groupOrder++, ref rowOrder, group.First().Heading, group.ToArray(), mode));
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Plugin controls-menu adapter", exception);
-            }
-        }
-
-        private static bool TryGetControlsList(UIManageControls controls, out UIList list)
-        {
-            list = null;
-            _controlsListField ??= typeof(UIManageControls).GetField("_uilist", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_controlsListField == null || _controlsListField.FieldType != typeof(UIList))
-                throw new MissingFieldException(typeof(UIManageControls).FullName, "_uilist");
-            list = _controlsListField.GetValue(controls) as UIList;
-            return list != null;
-        }
-
-        private static InputMode GetControlsInputMode(UIManageControls controls)
-        {
-            _controlsKeyboardField ??= typeof(UIManageControls).GetField("OnKeyboard", BindingFlags.Instance | BindingFlags.NonPublic);
-            _controlsGameplayField ??= typeof(UIManageControls).GetField("OnGameplay", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_controlsKeyboardField?.FieldType != typeof(bool) || _controlsGameplayField?.FieldType != typeof(bool))
-                throw new MissingFieldException(typeof(UIManageControls).FullName, "OnKeyboard/OnGameplay");
-
-            bool keyboard = (bool)_controlsKeyboardField.GetValue(controls);
-            bool gameplay = (bool)_controlsGameplayField.GetValue(controls);
-            if (keyboard)
-                return gameplay ? InputMode.Keyboard : InputMode.KeyboardUI;
-            return gameplay ? InputMode.XBoxGamepad : InputMode.XBoxGamepadUI;
-        }
-
-        private static void RemovePluginKeybindGroups(UIList list)
-        {
-            foreach (var existing in list.Where(element => element is PluginKeybindControlGroup).ToArray())
-                list.Remove(existing);
-        }
-
-        private static UIElement CreatePluginKeybindGroup(int groupOrder, ref int rowOrder, string heading, IReadOnlyList<PluginKeybindRegistration> keybinds, InputMode mode)
-        {
-            var group = new PluginKeybindControlGroup(groupOrder) { HAlign = 0.5f, Width = StyleDimension.Fill, Height = new StyleDimension(2000f, 0f) };
-            var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-16f, 1f), VAlign = 1f, BackgroundColor = Color.Lerp(new Color(33, 43, 79) * 0.8f, Color.MediumPurple, 0.18f) };
-            group.Append(panel);
-            var rows = new UIList { OverflowHidden = false, Width = StyleDimension.Fill, Height = new StyleDimension(-8f, 1f), VAlign = 1f, ListPadding = 5f };
-            panel.Append(rows);
-            foreach (var keybind in keybinds)
-            {
-                EnsureInputBinding(keybind, mode);
-                int currentRowOrder = rowOrder++;
-                var row = new UISortableElement(currentRowOrder) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f), HAlign = 0.5f };
-                var item = new PluginKeybindingListItem(keybind, mode, panel.BackgroundColor) { Width = StyleDimension.Fill, Height = StyleDimension.Fill };
-                item.SetSnapPoint("Wide", currentRowOrder);
-                row.Append(item);
-                rows.Add(row);
-            }
-
-            panel.BackgroundColor = panel.BackgroundColor.MultiplyRGBA(new Color(111, 111, 111));
-            group.Append(new UITextPanel<string>(heading, 0.7f) { VAlign = 0f, HAlign = 0.5f });
-            group.Recalculate();
-            group.Height = new StyleDimension(rows.GetTotalHeight() + 46f, 0f);
-            return group;
+            if (Volatile.Read(ref _runtimeBootstrapped) && controls != null) _keybindControlsAdapter?.Append(controls);
         }
 
         private static void EnsureInputBinding(PluginKeybindRegistration keybind, InputMode mode)
         {
             var configuration = PlayerInput.CurrentProfile.InputModes[mode];
             if (!configuration.KeyStatus.ContainsKey(keybind.HostId))
-            {
-                EnsurePluginKeybindsLoaded();
-                List<string> bindings;
-                lock (KeybindPersistenceGate)
-                {
-                    if (!PersistedPluginKeybinds.TryGetValue(GetPersistedKeybindKey(keybind, mode), out var saved))
-                    {
-                        // Import the pre-profile persistence format once, then write it back with the
-                        // selected Terraria profile encoded into the key on the next real change.
-                        PersistedPluginKeybinds.TryGetValue(GetLegacyPersistedKeybindKey(keybind, mode), out saved);
-                    }
-                    bindings = saved == null ? (mode == InputMode.Keyboard ? new List<string> { keybind.Descriptor.DefaultBinding } : new List<string>()) : new List<string>(saved);
-                }
-                configuration.KeyStatus.Add(keybind.HostId, bindings);
-            }
+                configuration.KeyStatus.Add(keybind.HostId, _keybindPersistence.GetBindings(keybind, mode, PlayerInput.CurrentProfile?.Name));
         }
 
         private static void ObservePluginKeybindBindings(PluginKeybindRegistration keybind, InputMode mode, IReadOnlyList<string> bindings)
         {
-            EnsurePluginKeybindsLoaded();
-            string key = GetPersistedKeybindKey(keybind, mode);
-            lock (KeybindPersistenceGate)
-            {
-                if (PersistedPluginKeybinds.TryGetValue(key, out var current) && current.SequenceEqual(bindings, StringComparer.Ordinal))
-                    return;
-                PersistedPluginKeybinds[key] = bindings.ToList();
-                _pluginKeybindsDirty = true;
-            }
-
-            QueuePluginKeybindPersistence();
-        }
-
-        private static string GetPersistedKeybindKey(PluginKeybindRegistration keybind, InputMode mode)
-        {
-            string profile = PlayerInput.CurrentProfile == null || string.IsNullOrWhiteSpace(PlayerInput.CurrentProfile.Name)
-                ? "default"
-                : PlayerInput.CurrentProfile.Name;
-            return Convert.ToBase64String(Encoding.UTF8.GetBytes(profile)) + ":" + ((int)mode).ToString() + ":" + keybind.HostId;
-        }
-
-        private static string GetLegacyPersistedKeybindKey(PluginKeybindRegistration keybind, InputMode mode) => ((int)mode).ToString() + ":" + keybind.HostId;
-
-        private static string PluginKeybindsPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-keybinds.dat");
-
-        private static void EnsurePluginKeybindsLoaded()
-        {
-            lock (KeybindPersistenceGate)
-            {
-                if (_pluginKeybindsLoaded)
-                    return;
-                _pluginKeybindsLoaded = true;
-                try
-                {
-                    if (!File.Exists(PluginKeybindsPath))
-                        return;
-                    foreach (string line in File.ReadAllLines(PluginKeybindsPath))
-                    {
-                        string[] parts = line.Split('|');
-                        if (parts.Length != 2)
-                            continue;
-                        string key = Encoding.UTF8.GetString(Convert.FromBase64String(parts[0]));
-                        var bindings = new List<string>();
-                        if (!string.IsNullOrEmpty(parts[1]))
-                            foreach (string encoded in parts[1].Split(','))
-                                bindings.Add(Encoding.UTF8.GetString(Convert.FromBase64String(encoded)));
-                        PersistedPluginKeybinds[key] = bindings;
-                    }
-                }
-                catch (Exception exception)
-                {
-                    ReportOptionalUiFailure("Plugin keybind persistence load", exception);
-                    PersistedPluginKeybinds.Clear();
-                }
-            }
-        }
-
-        private static void QueuePluginKeybindPersistence()
-        {
-            if (Interlocked.Exchange(ref _pluginKeybindSaveQueued, 1) != 0)
-                return;
-            ThreadPool.QueueUserWorkItem(_ => SavePluginKeybinds());
-        }
-
-        private static void SavePluginKeybinds()
-        {
-            Dictionary<string, List<string>> snapshot;
-            lock (KeybindPersistenceGate)
-            {
-                if (!_pluginKeybindsDirty)
-                {
-                    Interlocked.Exchange(ref _pluginKeybindSaveQueued, 0);
-                    return;
-                }
-                snapshot = new Dictionary<string, List<string>>(PersistedPluginKeybinds.Count, StringComparer.Ordinal);
-                foreach (var pair in PersistedPluginKeybinds)
-                    snapshot.Add(pair.Key, new List<string>(pair.Value));
-                _pluginKeybindsDirty = false;
-            }
-
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(PluginKeybindsPath));
-                var lines = snapshot.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => Convert.ToBase64String(Encoding.UTF8.GetBytes(pair.Key)) + "|" + string.Join(",", pair.Value.Select(binding => Convert.ToBase64String(Encoding.UTF8.GetBytes(binding))))).ToArray();
-                string temporaryPath = PluginKeybindsPath + ".tmp";
-                File.WriteAllLines(temporaryPath, lines);
-                if (File.Exists(PluginKeybindsPath))
-                    File.Replace(temporaryPath, PluginKeybindsPath, null);
-                else
-                    File.Move(temporaryPath, PluginKeybindsPath);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Plugin keybind persistence save", exception);
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _pluginKeybindSaveQueued, 0);
-                lock (KeybindPersistenceGate)
-                {
-                    if (_pluginKeybindsDirty)
-                        QueuePluginKeybindPersistence();
-                }
-            }
+            _keybindPersistence.Observe(keybind, mode, PlayerInput.CurrentProfile?.Name, bindings);
         }
 
         /// <summary>
@@ -781,7 +516,7 @@ namespace AlacrityTerraria
         {
             if (_visualEffects == null)
             {
-                _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
+                _visualEffectsPolicy = TerrariaVisualEffectsRuntimePolicy.Vanilla;
                 _lastVisualEffectsSnapshot = null;
                 return;
             }
@@ -791,13 +526,13 @@ namespace AlacrityTerraria
                 PluginVisualEffectsPolicy snapshot = _visualEffects.GetEffectivePolicy();
                 if (ReferenceEquals(snapshot, _lastVisualEffectsSnapshot))
                     return;
-                _visualEffectsPolicy = VisualEffectsRuntimePolicy.Create(snapshot);
+                _visualEffectsPolicy = TerrariaVisualEffectsRuntimePolicy.Create(snapshot);
                 _lastVisualEffectsSnapshot = snapshot;
             }
             catch (Exception exception)
             {
                 ReportOptionalUiFailure("Dust & Gore Toggle policy", exception);
-                _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
+                _visualEffectsPolicy = TerrariaVisualEffectsRuntimePolicy.Vanilla;
                 _lastVisualEffectsSnapshot = null;
             }
         }
@@ -813,19 +548,7 @@ namespace AlacrityTerraria
 
         private static void PrunePersistedKeybinds(HashSet<string> active)
         {
-            EnsurePluginKeybindsLoaded();
-            bool changed = false;
-            lock (KeybindPersistenceGate)
-            {
-                foreach (string key in PersistedPluginKeybinds.Keys.Where(key => !active.Any(hostId => key.EndsWith(":" + hostId, StringComparison.Ordinal))).ToArray())
-                {
-                    PersistedPluginKeybinds.Remove(key);
-                    changed = true;
-                }
-                _pluginKeybindsDirty |= changed;
-            }
-            if (changed)
-                QueuePluginKeybindPersistence();
+            _keybindPersistence.Prune(active);
         }
 
         private static bool IsKeybindDown(PluginKeybindRegistration keybind, KeyboardState keyboardState)
@@ -1374,18 +1097,21 @@ namespace AlacrityTerraria
 
         private static void EnsureIngameBlankTexture(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || (_ingameBlankTexture != null && !_ingameBlankTexture.IsDisposed))
+            if (spriteBatch == null)
                 return;
+            if (_ingameBlankTexture != null && !_ingameBlankTexture.IsDisposed && ReferenceEquals(_ingameBlankTextureDevice, spriteBatch.GraphicsDevice)) return;
 
             try
             {
                 _ingameBlankTexture?.Dispose();
                 _ingameBlankTexture = new Texture2D(spriteBatch.GraphicsDevice, 1, 1);
                 _ingameBlankTexture.SetData(new[] { Color.White });
+                _ingameBlankTextureDevice = spriteBatch.GraphicsDevice;
             }
             catch
             {
                 _ingameBlankTexture = null;
+                _ingameBlankTextureDevice = null;
             }
         }
 
@@ -1423,7 +1149,12 @@ namespace AlacrityTerraria
             _sessionPresentation = services.SessionPresentation;
             _chat = services.Chat;
             _userInteraction = services.UserInteraction;
+            _chatAdapter = new TerrariaPluginChatAdapter(_chat, EnsureChatRuntime, GetActiveChatUserInteraction, ReportOptionalUiFailure);
             _visualEffects = services.VisualEffects;
+            _enabledStateStore = new TerrariaPluginEnabledStateStore(root);
+            _keybindPersistence = new TerrariaPluginKeybindPersistence(root, ReportOptionalUiFailure);
+            _keybindControlsAdapter = new TerrariaPluginKeybindControlsAdapter(_extensions, EnsureInputBinding, ObservePluginKeybindBindings, ReportOptionalUiFailure);
+            _pluginOperations = new TerrariaPluginOperationCoordinator(_runtime, PersistEnabledPlugins, PublishPluginOperationNotification);
         }
 
         private static IPluginUserInteractionService GetActiveChatUserInteraction()
@@ -1464,25 +1195,9 @@ namespace AlacrityTerraria
             BootstrapPluginRuntime();
         }
 
-        private static string PluginStatePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "plugin-state.json");
-        private static string LegacyEnabledPluginsPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "enabled-plugins.txt");
-
         private static void RestoreEnabledPlugins()
         {
-            if (_enabledStateRestored) return;
-            _enabledStateRestored = true;
-            try
-            {
-                var requested = ReadEnabledPluginIds();
-                foreach (var record in _runtime.Registry.Records.Where(record => requested.Contains(record.Manifest.Id.Value) && (record.State == PluginPackageLifecycleState.Loaded || record.State == PluginPackageLifecycleState.Disabled)).ToArray())
-                    EnablePlugin(record.Manifest.Id);
-                if (!File.Exists(PluginStatePath) && File.Exists(LegacyEnabledPluginsPath))
-                    PersistEnabledPlugins();
-            }
-            catch (Exception exception)
-            {
-                _notifications.Publish("Unable to restore enabled plugins: " + exception.Message, TimeSpan.FromSeconds(4));
-            }
+            _enabledStateStore?.RestoreOnce(_runtime, EnablePlugin, message => _notifications?.Publish(message, TimeSpan.FromSeconds(4)));
         }
 
         private static void EnablePlugin(PluginId id)
@@ -1511,51 +1226,22 @@ namespace AlacrityTerraria
 
         private static bool BeginPluginOperation(PluginId id, bool enable, out string error)
         {
-            error = string.Empty;
-            if (PendingPluginOperations.ContainsKey(id))
+            if (_pluginOperations == null)
             {
-                error = "Plugin operation is already in progress.";
+                error = "Plugin runtime is unavailable.";
                 return false;
             }
-
-            var record = _runtime.Registry.Records.Single(record => record.Manifest.Id == id);
-            if (record.Controller == null || !record.Controller.UsesAsyncLifecycle)
-            {
-                if (enable)
-                    EnablePlugin(id);
-                else
-                    DisablePlugin(id);
-                PersistEnabledPlugins();
-                return true;
-            }
-
-            var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-            Task task = enable ? _runtime.EnableAsync(id, cancellation.Token) : _runtime.DisableAsync(id, cancellation.Token);
-            PendingPluginOperations.Add(id, new PendingPluginOperation(enable, task, cancellation));
-            return true;
+            return _pluginOperations.Begin(id, enable, out error);
         }
 
         private static bool CompletePluginOperations()
         {
-            bool changed = false;
-            foreach (PluginId id in PendingPluginOperations.Where(pair => pair.Value.Task.IsCompleted).Select(pair => pair.Key).ToArray())
-            {
-                PendingPluginOperation operation = PendingPluginOperations[id];
-                PendingPluginOperations.Remove(id);
-                operation.Cancellation.Dispose();
-                try
-                {
-                    operation.Task.GetAwaiter().GetResult();
-                    PersistEnabledPlugins();
-                    _notifications?.Publish((operation.Enable ? "Enabled " : "Disabled ") + id.Value + ".", TimeSpan.FromSeconds(4));
-                }
-                catch (Exception exception)
-                {
-                    _notifications?.Publish("Unable to " + (operation.Enable ? "enable " : "disable ") + id.Value + ": " + exception.Message, TimeSpan.FromSeconds(4));
-                }
-                changed = true;
-            }
-            return changed;
+            return _pluginOperations != null && _pluginOperations.CompleteFinished();
+        }
+
+        private static void PublishPluginOperationNotification(string message, TimeSpan duration)
+        {
+            _notifications?.Publish(message, duration);
         }
 
         private static IEnumerable<PluginPackageRuntimeRecord> GetShutdownOrder()
@@ -1580,1164 +1266,14 @@ namespace AlacrityTerraria
 
         private static void PersistEnabledPlugins()
         {
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(PluginStatePath));
-                var records = _runtime.Registry.Records.Where(record => record.State != PluginPackageLifecycleState.Uninstalled).OrderBy(record => record.Manifest.Id.Value, StringComparer.Ordinal).ToArray();
-                string json = "{\n  \"plugins\": [\n" + string.Join(",\n", records.Select(record => "    { \"id\": \"" + record.Manifest.Id.Value + "\", \"enabled\": " + (record.State == PluginPackageLifecycleState.Enabled ? "true" : "false") + " }")) + "\n  ]\n}\n";
-                string temporaryPath = PluginStatePath + ".tmp";
-                File.WriteAllText(temporaryPath, json);
-                File.Copy(temporaryPath, PluginStatePath, true);
-                File.Delete(temporaryPath);
-            }
-            catch (Exception exception)
-            {
-                _notifications.Publish("Unable to save enabled plugins: " + exception.Message, TimeSpan.FromSeconds(4));
-            }
+            _enabledStateStore?.Persist(_runtime, message => _notifications?.Publish(message, TimeSpan.FromSeconds(4)));
         }
 
-        private static HashSet<string> ReadEnabledPluginIds()
-        {
-            if (File.Exists(PluginStatePath))
-            {
-                string json = File.ReadAllText(PluginStatePath);
-                return new HashSet<string>(Regex.Matches(json, "\\\"id\\\"\\s*:\\s*\\\"([a-z0-9.-]+)\\\"\\s*,\\s*\\\"enabled\\\"\\s*:\\s*true", RegexOptions.CultureInvariant).Cast<Match>().Select(match => match.Groups[1].Value), StringComparer.Ordinal);
-            }
-            return File.Exists(LegacyEnabledPluginsPath) ? new HashSet<string>(File.ReadAllLines(LegacyEnabledPluginsPath), StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
-        }
 
-        private readonly struct VisualEffectsRuntimePolicy
-        {
-            internal static readonly VisualEffectsRuntimePolicy Vanilla = new VisualEffectsRuntimePolicy(true, true, Array.Empty<bool>());
 
-            private VisualEffectsRuntimePolicy(bool dustEffectsEnabled, bool goreEffectsEnabled, bool[] dustExceptions)
-            {
-                DustEffectsEnabled = dustEffectsEnabled;
-                GoreEffectsEnabled = goreEffectsEnabled;
-                this.dustExceptions = dustExceptions;
-            }
 
-            private readonly bool[] dustExceptions;
-            internal bool DustEffectsEnabled { get; }
-            internal bool GoreEffectsEnabled { get; }
-            internal bool HasExceptions => dustExceptions != null && dustExceptions.Length > 0;
 
-            internal static VisualEffectsRuntimePolicy Create(PluginVisualEffectsPolicy snapshot)
-            {
-                if (snapshot == null)
-                    return Vanilla;
-                int maximum = -1;
-                for (int index = 0; index < snapshot.DustExceptionIds.Count; index++)
-                    if (snapshot.DustExceptionIds[index] >= 0 && snapshot.DustExceptionIds[index] <= 999)
-                        maximum = Math.Max(maximum, snapshot.DustExceptionIds[index]);
-                if (maximum < 0)
-                    return new VisualEffectsRuntimePolicy(snapshot.DustEnabled, snapshot.GoreEnabled, Array.Empty<bool>());
-                var exceptions = new bool[maximum + 1];
-                for (int index = 0; index < snapshot.DustExceptionIds.Count; index++)
-                {
-                    int dustType = snapshot.DustExceptionIds[index];
-                    if (dustType >= 0 && dustType < exceptions.Length)
-                        exceptions[dustType] = true;
-                }
-                return new VisualEffectsRuntimePolicy(snapshot.DustEnabled, snapshot.GoreEnabled, exceptions);
-            }
 
-            internal bool ContainsDustException(int dustType) => dustType >= 0 && dustExceptions != null && dustType < dustExceptions.Length && dustExceptions[dustType];
-        }
-
-        private sealed class KeybindControlsState
-        {
-            public long Version = -1;
-        }
-
-        private sealed class PendingPluginOperation
-        {
-            internal PendingPluginOperation(bool enable, Task task, CancellationTokenSource cancellation)
-            {
-                Enable = enable;
-                Task = task;
-                Cancellation = cancellation;
-            }
-
-            internal bool Enable { get; }
-            internal Task Task { get; }
-            internal CancellationTokenSource Cancellation { get; }
-        }
-
-        private sealed class PluginKeybindControlGroup : UISortableElement
-        {
-            public PluginKeybindControlGroup(int order) : base(order) { }
-        }
-
-        /// <summary>Native controls-list row with a verified plugin label and Terraria's own rebind flow.</summary>
-        private sealed class PluginKeybindingListItem : UIElement
-        {
-            private readonly PluginKeybindRegistration keybind;
-            private readonly InputMode mode;
-            private readonly Color color;
-
-            public PluginKeybindingListItem(PluginKeybindRegistration keybind, InputMode mode, Color color)
-            {
-                this.keybind = keybind;
-                this.mode = mode;
-                this.color = color;
-                OnLeftClick += Listen;
-            }
-
-            private void Listen(UIMouseEvent _, UIElement __)
-            {
-                if (PlayerInput.CurrentProfile.AllowEditing)
-                    PlayerInput.ListenFor(keybind.HostId, mode);
-                else
-                    PlayerInput.ListenFor(null, mode);
-            }
-
-            protected override void DrawSelf(SpriteBatch spriteBatch)
-            {
-                var dimensions = GetDimensions();
-                EnsureInputBinding(keybind, mode);
-                bool listening = PlayerInput.ListeningTrigger == keybind.HostId;
-                var textColor = listening ? Color.Gold : (IsMouseHovering ? Color.White : Color.Silver);
-                textColor = Color.Lerp(textColor, Color.White, IsMouseHovering ? 0.5f : 0f);
-                var panelColor = IsMouseHovering ? color : color.MultiplyRGBA(new Color(180, 180, 180));
-                var textScale = new Vector2(0.8f);
-                Utils.DrawSettingsPanel(spriteBatch, dimensions.Position(), dimensions.Width + 1f, panelColor);
-                var namePosition = dimensions.Position() + new Vector2(8f, 8f);
-                Utils.DrawBorderString(spriteBatch, keybind.Descriptor.DisplayName, namePosition, textColor, textScale.X, 0f, 0f, -1);
-
-                var bindings = PlayerInput.CurrentProfile.InputModes[mode].KeyStatus[keybind.HostId];
-                ObservePluginKeybindBindings(keybind, mode, bindings);
-                string bindingText = DescribeBindings(bindings, mode);
-                if (string.IsNullOrEmpty(bindingText))
-                {
-                    bindingText = Lang.menu[195].Value;
-                    if (!listening)
-                        textColor = new Color(80, 80, 80);
-                }
-
-                var size = new Vector2(bindingText.Length * 11f * textScale.X, 18f * textScale.Y);
-                var bindingPosition = new Vector2(dimensions.X + dimensions.Width - size.X - 10f, dimensions.Y + 8f);
-                if (mode == InputMode.XBoxGamepad || mode == InputMode.XBoxGamepadUI)
-                    bindingPosition.Y -= 3f;
-                float previousGlyphScale = GlyphTagHandler.GlyphsScale;
-                try
-                {
-                    GlyphTagHandler.GlyphsScale = 0.85f;
-                    Utils.DrawBorderString(spriteBatch, bindingText, bindingPosition, textColor, textScale.X, 0f, 0f, -1);
-                }
-                finally
-                {
-                    GlyphTagHandler.GlyphsScale = previousGlyphScale;
-                }
-            }
-
-            private static string DescribeBindings(IReadOnlyList<string> bindings, InputMode mode)
-            {
-                if (bindings.Count == 0)
-                    return string.Empty;
-                if (mode == InputMode.XBoxGamepad || mode == InputMode.XBoxGamepadUI)
-                    return string.Join("/", bindings.Select(GlyphTagHandler.GenerateTag));
-                return string.Join("/", bindings);
-            }
-        }
-
-        private sealed class PluginSelectionMenu : UIState
-        {
-            private readonly UIList _availableList = new UIList();
-            private readonly UIList _enabledList = new UIList();
-            private readonly UIList _packageList = new UIList();
-            private readonly UIText _availableTitle = new UIText("", 1f, false);
-            private readonly UIText _enabledTitle = new UIText("", 1f, false);
-            private readonly UIText _packageTitle = new UIText("", 1f, false);
-            private UIGamepadHelper _gamepadHelper;
-            private UIText _settingsHint;
-            private DateTime _nextStatusRefreshUtc;
-            private DateTime _manualHintExpiresUtc;
-            private bool _addRemoveView;
-
-            public PluginSelectionMenu(PluginManagementMenu menu)
-            {
-                BuildPage();
-            }
-
-            private void BuildPage()
-            {
-                RemoveAllChildren();
-                var root = new UIElement {
-                    Width = new StyleDimension(0f, 0.8f),
-                    MaxWidth = new StyleDimension(800f, 0f),
-                    MinWidth = new StyleDimension(600f, 0f),
-                    Top = new StyleDimension(240f, 0f),
-                    Height = new StyleDimension(-240f, 1f),
-                    HAlign = 0.5f
-                };
-                Append(root);
-
-                var panel = new UIPanel {
-                    Width = StyleDimension.Fill,
-                    Height = new StyleDimension(-110f, 1f),
-                    BackgroundColor = new Color(33, 43, 79) * 0.8f,
-                    PaddingLeft = 0f,
-                    PaddingRight = 0f
-                };
-                root.Append(panel);
-
-                var listArea = new UIElement {
-                    Width = StyleDimension.Fill,
-                    Height = new StyleDimension(-39f, 1f),
-                    VAlign = 1f
-                };
-                listArea.SetPadding(0f);
-                panel.Append(listArea);
-
-                if (_addRemoveView)
-                {
-                    var packageContainer = new UIElement { Width = new StyleDimension(-20f, 1f), Height = StyleDimension.Fill, HAlign = 0.5f };
-                    listArea.Append(packageContainer);
-                    ConfigureList(_packageList, 0.5f);
-                    packageContainer.Append(_packageList);
-                    _packageTitle.HAlign = 0.5f;
-                    _packageTitle.Width = new StyleDimension(-25f, 1f);
-                    _packageTitle.Top = new StyleDimension(10f, 0f);
-                    panel.Append(_packageTitle);
-                    AddScrollbar(packageContainer, _packageList, 1f);
-                }
-                else
-                {
-                    var availableContainer = CreateColumn(0f, 10f);
-                    var enabledContainer = CreateColumn(1f, -10f);
-                    listArea.Append(availableContainer);
-                    listArea.Append(enabledContainer);
-                    ConfigureList(_availableList, 1f);
-                    ConfigureList(_enabledList, 0f);
-                    availableContainer.Append(_availableList);
-                    enabledContainer.Append(_enabledList);
-                    ConfigureTitle(_availableTitle, 0f, 25f);
-                    ConfigureTitle(_enabledTitle, 1f, -25f);
-                    panel.Append(_availableTitle);
-                    panel.Append(_enabledTitle);
-                    AddScrollbar(availableContainer, _availableList, 0f);
-                    AddScrollbar(enabledContainer, _enabledList, 1f);
-                    AddSeparator(panel);
-                }
-
-                var title = new UITextPanel<string>("Plugins", 1f, true) {
-                    HAlign = 0.5f,
-                    VAlign = 0f,
-                    Top = new StyleDimension(-44f, 0f),
-                    BackgroundColor = new Color(73, 94, 171)
-                };
-                title.SetPadding(13f);
-                root.Append(title);
-
-                AddBottomControls(root);
-                RefreshLists();
-            }
-
-            private static UIElement CreateColumn(float align, float offset)
-            {
-                var column = new UIElement {
-                    Width = new StyleDimension(-20f, 0.5f),
-                    Height = StyleDimension.Fill,
-                    HAlign = align,
-                    Left = new StyleDimension(offset, 0f)
-                };
-                column.SetPadding(0f);
-                return column;
-            }
-
-            private static void ConfigureList(UIList list, float align)
-            {
-                list.Width = new StyleDimension(-25f, 1f);
-                list.Height = StyleDimension.Fill;
-                list.ListPadding = 5f;
-                list.HAlign = align;
-            }
-
-            private static void ConfigureTitle(UIText title, float align, float offset)
-            {
-                title.HAlign = align;
-                title.Left = new StyleDimension(offset, 0f);
-                title.Width = new StyleDimension(-25f, 0.5f);
-                title.VAlign = 0f;
-                title.Top = new StyleDimension(10f, 0f);
-            }
-
-            private static void AddScrollbar(UIElement container, UIList list, float align)
-            {
-                var scrollbar = new UIScrollbar((UIScrollbar.ColorTheme)0) {
-                    Height = StyleDimension.Fill,
-                    HAlign = align
-                };
-                container.Append(scrollbar);
-                list.SetScrollbar(scrollbar);
-            }
-
-            private static void AddSeparator(UIPanel panel)
-            {
-                var separator = new UIVerticalSeparator {
-                    Height = new StyleDimension(-12f, 1f),
-                    HAlign = 0.5f,
-                    VAlign = 1f,
-                    Color = new Color(89, 116, 213, 255) * 0.9f
-                };
-                panel.Append(separator);
-            }
-
-            private void AddBottomControls(UIElement root)
-            {
-                var footer = new UIElement { Width = StyleDimension.Fill, Height = new StyleDimension(50f, 0f), VAlign = 1f, Top = new StyleDimension(-45f, 0f) };
-                root.Append(footer);
-                var back = CreateFooterButton("Back", 0.7f, false, Close);
-                PlaceFooterButton(back, 0);
-                back.SetSnapPoint("GoBack", 0);
-                footer.Append(back);
-
-                var manage = CreateFooterButton("Manage Plugins", 0.48f, !_addRemoveView, () => { _addRemoveView = false; BuildPage(); });
-                PlaceFooterButton(manage, 1);
-                manage.SetSnapPoint("ManagePlugins", 0);
-                footer.Append(manage);
-                var addRemove = CreateFooterButton("Add / Remove Plugins", 0.34f, _addRemoveView, () => { _addRemoveView = true; BuildPage(); });
-                PlaceFooterButton(addRemove, 2);
-                addRemove.SetSnapPoint("AddRemovePlugins", 0);
-                footer.Append(addRemove);
-
-                var folder = CreateFooterButton("Open Folder", 0.48f, false, OpenPluginsFolder);
-                PlaceFooterButton(folder, 3);
-                folder.SetSnapPoint("OpenFolder", 0);
-                footer.Append(folder);
-
-                _settingsHint = new UIText("", 0.7f, false) {
-                    HAlign = 0.5f,
-                    VAlign = 1f,
-                    Top = new StyleDimension(-160f, 0f)
-                };
-                root.Append(_settingsHint);
-            }
-
-            private static void PlaceFooterButton(UIElement button, int column)
-            {
-                var width = new StyleDimension(-12f, 0.25f);
-                button.Width = width;
-                button.MinWidth = width;
-                button.MaxWidth = width;
-                button.Height = StyleDimension.Fill;
-                button.Left = new StyleDimension(6f, column * 0.25f);
-                button.HAlign = 0f;
-                button.VAlign = 0f;
-                button.OverflowHidden = true;
-            }
-
-            private static UITextPanel<string> CreateFooterButton(string text, float textScale, bool selected, Action activate)
-            {
-                var button = new UITextPanel<string>(text, textScale, large: true) {
-                    BackgroundColor = selected ? new Color(73, 94, 171) : new Color(63, 82, 151) * 0.8f,
-                    OverflowHidden = true
-                };
-                button.SetPadding(12f);
-                button.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
-                button.OnMouseOut += (evt, element) => {
-                    var panel = (UIPanel)element;
-                    if (selected) {
-                        panel.BackgroundColor = new Color(73, 94, 171);
-                        panel.BorderColor = Color.Black;
-                    }
-                    else FadedMouseOut(panel);
-                };
-                button.OnLeftClick += (evt, element) => activate();
-                return button;
-            }
-
-            private static void FadedMouseOver(UIPanel panel)
-            {
-                SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                panel.BackgroundColor = new Color(73, 94, 171);
-                panel.BorderColor = Colors.FancyUIFatButtonMouseOver;
-            }
-
-            private static void FadedMouseOut(UIPanel panel)
-            {
-                panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                panel.BorderColor = Color.Black;
-            }
-
-            private static void OpenPluginsFolder()
-            {
-                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Plugins");
-                Directory.CreateDirectory(path);
-                SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                Utils.OpenFolder(path);
-            }
-
-            public override void Draw(SpriteBatch spriteBatch)
-            {
-                base.Draw(spriteBatch);
-                RefreshRuntimeStatusHint(false);
-                SetupGamepadPoints(spriteBatch);
-            }
-
-            private void SetupGamepadPoints(SpriteBatch spriteBatch)
-            {
-                UILinkPointNavigator.Shortcuts.BackButtonCommand = 7;
-                int startId = 3000;
-                int nextId = startId;
-                var allPoints = GetSnapPoints();
-
-                if (_addRemoveView)
-                {
-                    SetupPackageGamepadPoints(spriteBatch, allPoints, startId, ref nextId);
-                    return;
-                }
-
-                var availablePoints = _availableList.GetSnapPoints();
-                _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, availablePoints, _availableList);
-                var enabledPoints = _enabledList.GetSnapPoints();
-                _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, enabledPoints, _enabledList);
-
-                var availableDescription = GetVisualVerticalStrip(ref nextId, availablePoints, "DescriptionOff");
-                var availableToggle = GetVisualVerticalStrip(ref nextId, availablePoints, "ToggleToOn");
-                var enabledDescription = GetVisualVerticalStrip(ref nextId, enabledPoints, "DescriptionOn");
-                var enabledSettings = GetVisualVerticalStrip(ref nextId, enabledPoints, "SettingsOn");
-                var enabledToggle = GetVisualVerticalStrip(ref nextId, enabledPoints, "ToggleToOff");
-                GetFooterLinkPoints(allPoints, ref nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder);
-
-                // Disabled plugins intentionally have no settings action. Link their two actual actions directly.
-                _gamepadHelper.LinkVerticalStrips(availableDescription, availableToggle, 0);
-                _gamepadHelper.LinkVerticalStrips(availableToggle, enabledDescription, 0);
-                _gamepadHelper.LinkVerticalStrips(enabledDescription, enabledSettings, 0);
-                _gamepadHelper.LinkVerticalStrips(enabledSettings, enabledToggle, 0);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(availableToggle, back);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(availableDescription, back);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(enabledToggle, folder);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(enabledSettings, folder);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(enabledDescription, folder);
-                _gamepadHelper.MoveToVisuallyClosestPoint(startId, nextId);
-            }
-
-            // UIList children are independently populated; their snap IDs are not a reliable visual
-            // order across the enabled and available columns. Navigator up/down must follow screen Y.
-            private UILinkPoint[] GetVisualVerticalStrip(ref int nextId, List<SnapPoint> points, string category)
-            {
-                var ordered = points
-                    .Where(point => point.Name == category)
-                    .OrderBy(point => point.Position.Y)
-                    .ThenBy(point => point.Position.X)
-                    .ThenBy(point => point.Id)
-                    .ToList();
-                return ordered.Count == 0 ? null : _gamepadHelper.CreateUILinkStripVertical(ref nextId, ordered);
-            }
-
-            private void SetupPackageGamepadPoints(SpriteBatch spriteBatch, List<SnapPoint> allPoints, int startId, ref int nextId)
-            {
-                var packagePoints = _packageList.GetSnapPoints();
-                _gamepadHelper.CullPointsOutOfElementArea(spriteBatch, packagePoints, _packageList);
-                var description = GetVisualVerticalStrip(ref nextId, packagePoints, "PackageDescription");
-                var uninstall = GetVisualVerticalStrip(ref nextId, packagePoints, "PackageUninstall");
-                GetFooterLinkPoints(allPoints, ref nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder);
-
-                _gamepadHelper.LinkVerticalStrips(description, uninstall, 0);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(description, back);
-                _gamepadHelper.LinkVerticalStripBottomSideToSingle(uninstall, folder);
-                LinkFooterStrip(back, manage, addRemove, folder);
-                _gamepadHelper.MoveToVisuallyClosestPoint(startId, nextId);
-            }
-
-            private void GetFooterLinkPoints(List<SnapPoint> allPoints, ref int nextId, out UILinkPoint back, out UILinkPoint manage, out UILinkPoint addRemove, out UILinkPoint folder)
-            {
-                back = null;
-                manage = null;
-                addRemove = null;
-                folder = null;
-                foreach (SnapPoint point in allPoints)
-                {
-                    if (point.Name == "GoBack")
-                        back = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                    else if (point.Name == "ManagePlugins")
-                        manage = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                    else if (point.Name == "AddRemovePlugins")
-                        addRemove = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                    else if (point.Name == "OpenFolder")
-                        folder = _gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                }
-
-                LinkFooterStrip(back, manage, addRemove, folder);
-            }
-
-            private void LinkFooterStrip(UILinkPoint back, UILinkPoint manage, UILinkPoint addRemove, UILinkPoint folder)
-            {
-                _gamepadHelper.PairLeftRight(back, manage);
-                _gamepadHelper.PairLeftRight(manage, addRemove);
-                _gamepadHelper.PairLeftRight(addRemove, folder);
-            }
-
-            private void RefreshLists()
-            {
-                _availableList.Clear();
-                _enabledList.Clear();
-                _packageList.Clear();
-                int order = 0;
-                foreach (PluginManagerRow plugin in _presenter.Present(_runtime, _diagnostics.ActiveWarnings))
-                {
-                    if (_addRemoveView)
-                    {
-                        _packageList.Add(CreatePackageRow(plugin, order++));
-                        continue;
-                    }
-                    UIElement row = CreatePluginRow(plugin, order++);
-                    if (plugin.IsEnabled)
-                        _enabledList.Add(row);
-                    else
-                        _availableList.Add(row);
-                }
-
-                _availableTitle.SetText("Available Plugins (" + _availableList.Count + ")");
-                _enabledTitle.SetText("Enabled Plugins (" + _enabledList.Count + ")");
-                _packageTitle.SetText("Installed Plugins (" + _packageList.Count + ")");
-            }
-
-            private UIElement CreatePackageRow(PluginManagerRow plugin, int order)
-            {
-                var row = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(92f, 0f), BackgroundColor = ResourcePackBackground, BorderColor = ResourcePackBorder };
-                row.SetPadding(5f);
-                AppendDependencyBadge(row, plugin);
-                var name = new UIText(plugin.Name, 0.9f, false) { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(4f, 0f) };
-                var author = new UIText(plugin.Author, 0.65f, false) { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(28f, 0f) };
-                row.Append(name); row.Append(author);
-                var content = new UIElement { Left = new StyleDimension(12f, 0f), Top = new StyleDimension(48f, 0f), Width = new StyleDimension(-24f, 1f), Height = new StyleDimension(-53f, 1f) };
-                row.Append(content);
-                var description = CreateDescriptionButton(plugin); description.Width = new StyleDimension(0f, plugin.IsEnabled ? 0.5f : 1f / 3f); description.Height = StyleDimension.Fill; description.SetSnapPoint("PackageDescription", order, null, null); description.OnLeftClick += (evt, element) => OpenDescription(plugin); content.Append(description);
-                var status = CreatePackageStatusButton(); status.Left = StyleDimension.FromPercent(plugin.IsEnabled ? 0.5f : 1f / 3f); status.Width = new StyleDimension(0f, plugin.IsEnabled ? 0.5f : 1f / 3f); status.Height = StyleDimension.Fill; content.Append(status);
-                if (!plugin.IsEnabled)
-                {
-                    var uninstall = CreateUninstallButton(); uninstall.Left = StyleDimension.FromPercent(2f / 3f); uninstall.Width = new StyleDimension(0f, 1f / 3f); uninstall.Height = StyleDimension.Fill; uninstall.SetSnapPoint("PackageUninstall", order, null, null); content.Append(uninstall);
-                }
-                return row;
-            }
-
-            private static UIResourcePackInfoButton<string> CreatePackageStatusButton()
-            {
-                var button = new UIResourcePackInfoButton<string>("", 0.8f, false) { IgnoresMouseInteraction = true };
-                button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonCloudInactive"); button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText("Plugin is up to date"); }; return button;
-            }
-
-            private static UIResourcePackInfoButton<string> CreateUninstallButton()
-            {
-                var button = new UIResourcePackInfoButton<string>("", 0.8f, false); button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonDelete"); button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText("Uninstall Plugin"); }; return button;
-            }
-
-            private static void AppendSmallIcon(UIElement button, string path)
-            {
-                try
-                {
-                    var icon = (UIElement)Activator.CreateInstance(typeof(UIImage), RequestTexture(path));
-                    ConfigureButtonIcon(icon);
-                    button.Append(icon);
-                }
-                catch (Exception exception)
-                {
-                    ReportOptionalUiFailure("Create plugin-manager icon", exception);
-                }
-            }
-
-            private UIElement CreatePluginRow(PluginManagerRow plugin, int order)
-            {
-                var row = new UIPanel {
-                    Width = StyleDimension.Fill,
-                    Height = new StyleDimension(102f, 0f),
-                    MinHeight = new StyleDimension(102f, 0f),
-                    MaxHeight = new StyleDimension(102f, 0f),
-                    BackgroundColor = ResourcePackBackground,
-                    BorderColor = ResourcePackBorder
-                };
-                row.SetPadding(5f);
-                row.OverflowHidden = true;
-                AppendDependencyBadge(row, plugin);
-                row.OnMouseOver += (evt, element) => {
-                    row.BackgroundColor = ResourcePackHoverBackground;
-                    row.BorderColor = ResourcePackHoverBorder;
-                };
-                row.OnMouseOut += (evt, element) => {
-                    row.BackgroundColor = ResourcePackBackground;
-                    row.BorderColor = ResourcePackBorder;
-                };
-
-                var name = new UIText(plugin.Name, 1f, false) {
-                    Left = new StyleDimension(12f, 0f),
-                    Top = new StyleDimension(4f, 0f)
-                };
-                row.Append(name);
-
-                var author = new UIText(plugin.Author, 0.7f, false) {
-                    Left = new StyleDimension(12f, 0f),
-                    Top = new StyleDimension(30f, 0f)
-                };
-                row.Append(author);
-
-                var content = new UIElement {
-                    Left = new StyleDimension(12f, 0f),
-                    Top = new StyleDimension(50f, 0f),
-                    Width = new StyleDimension(-24f, 1f),
-                    Height = new StyleDimension(-55f, 1f)
-                };
-                row.Append(content);
-
-                float buttonFraction = plugin.IsEnabled ? 1f / 3f : 0.5f;
-                var description = CreateDescriptionButton(plugin);
-                description.Width = new StyleDimension(0f, buttonFraction);
-                description.Height = StyleDimension.Fill;
-                description.SetSnapPoint(plugin.IsEnabled ? "DescriptionOn" : "DescriptionOff", order, null, null);
-                description.OnLeftClick += (evt, element) => OpenDescription(plugin);
-                content.Append(description);
-
-                if (plugin.IsEnabled)
-                {
-                    var settings = CreateSettingsButton(plugin);
-                    settings.Left = StyleDimension.FromPercent(buttonFraction);
-                    settings.Width = new StyleDimension(0f, buttonFraction);
-                    settings.Height = StyleDimension.Fill;
-                    settings.SetSnapPoint("SettingsOn", order, null, null);
-                    settings.OnLeftClick += (evt, element) => OpenSettings(plugin);
-                    content.Append(settings);
-                }
-
-                var toggle = CreateToggleButton(plugin);
-                toggle.Left = StyleDimension.FromPercent(plugin.IsEnabled ? 2f / 3f : 0.5f);
-                toggle.Width = new StyleDimension(0f, buttonFraction);
-                toggle.Height = StyleDimension.Fill;
-                toggle.VAlign = 0f;
-                toggle.SetSnapPoint(plugin.IsEnabled ? "ToggleToOff" : "ToggleToOn", order, null, null);
-                if (PendingPluginOperations.ContainsKey(plugin.Id))
-                {
-                    toggle.IgnoresMouseInteraction = true;
-                    toggle.SetColorsBasedOnSelectionState(Color.Gray, Color.Gray, 0.55f, 0.55f);
-                }
-                else if (plugin.CanToggle)
-                {
-                    toggle.OnLeftClick += (evt, element) => {
-                        try
-                        {
-                            if (!BeginPluginOperation(plugin.Id, !plugin.IsEnabled, out string error))
-                            {
-                                ShowStatus(error);
-                                return;
-                            }
-                            RefreshRuntimeStatusHint(true);
-                        }
-                        catch (Exception exception)
-                        {
-                            _settingsHint.SetText("Unable to change " + plugin.Name + ": " + exception.Message);
-                            _nextStatusRefreshUtc = DateTime.MaxValue;
-                        }
-                        RefreshLists();
-                    };
-                }
-                else
-                {
-                    toggle.IgnoresMouseInteraction = true;
-                    toggle.SetColorsBasedOnSelectionState(Color.Gray, Color.Gray, 0.55f, 0.55f);
-                }
-                content.Append(toggle);
-                return row;
-            }
-
-            private void AppendDependencyBadge(UIPanel row, PluginManagerRow plugin)
-            {
-                var dependencies = _runtime.Registry.Records.FirstOrDefault(record => record.Manifest.Id == plugin.Id)?.Manifest.Dependencies;
-                if (dependencies == null || dependencies.Count == 0)
-                    return;
-
-                var badge = new UIPanel {
-                    Width = new StyleDimension(22f, 0f),
-                    Height = new StyleDimension(22f, 0f),
-                    HAlign = 1f,
-                    VAlign = 0f,
-                    Left = new StyleDimension(-5f, 0f),
-                    Top = new StyleDimension(5f, 0f)
-                };
-                badge.SetPadding(2f);
-                badge.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                badge.BorderColor = Color.Black;
-                try
-                {
-                    var image = (UIElement)Activator.CreateInstance(typeof(UIImage), RequestTexture("Images/UI/Wires_6"));
-                    image.Width = StyleDimension.Fill;
-                    image.Height = StyleDimension.Fill;
-                    image.IgnoresMouseInteraction = true;
-                    typeof(UIImage).GetProperty("ScaleToFit", BindingFlags.Public | BindingFlags.Instance)?.SetValue(image, true, null);
-                    badge.Append(image);
-                }
-                catch (Exception exception)
-                {
-                    ReportOptionalUiFailure("Create dependency badge", exception);
-                    return;
-                }
-
-                string tooltip = "Dependencies: \n" + string.Join("\n", dependencies.Select(dependency => {
-                    var dependencyRecord = _runtime.Registry.Records.FirstOrDefault(record => record.Manifest.Id == dependency.Id);
-                    return "-" + (dependencyRecord == null ? dependency.Id.Value : dependencyRecord.Manifest.Name);
-                }));
-                badge.OnMouseOver += (evt, element) => {
-                    var panel = (UIPanel)element;
-                    panel.BackgroundColor = new Color(73, 94, 171);
-                    panel.BorderColor = Colors.FancyUIFatButtonMouseOver;
-                };
-                badge.OnMouseOut += (evt, element) => {
-                    var panel = (UIPanel)element;
-                    panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                    panel.BorderColor = Color.Black;
-                };
-                badge.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText(tooltip); };
-                row.Append(badge);
-            }
-
-            private void OpenSettings(PluginManagerRow plugin)
-            {
-                if (!HasSettings(plugin.Id))
-                {
-                    ShowStatus("No settings are exposed by " + plugin.Name + ".");
-                    return;
-                }
-                Main.MenuUI.SetState(new PluginSettingsMenu(plugin, _extensions.GetSettingsControls(plugin.Id), _extensions.GetSettingsPages(plugin.Id)));
-            }
-
-            private void RefreshRuntimeStatusHint(bool force)
-            {
-                if (CompletePluginOperations())
-                    RefreshLists();
-                var now = DateTime.UtcNow;
-                if (now < _manualHintExpiresUtc)
-                    return;
-                if (!force && now < _nextStatusRefreshUtc)
-                    return;
-
-                _nextStatusRefreshUtc = now.AddMilliseconds(250);
-                var active = _notifications.GetActive(new DateTimeOffset(now)).Where(notification => (notification.Options.Target & PluginNotificationTarget.PluginManager) != 0).ToArray();
-                string text;
-                if (active.Length > 0)
-                    text = active[active.Length - 1].Message;
-                else
-                {
-                    var warning = _diagnostics.ActiveWarnings.FirstOrDefault();
-                    text = warning == null ? string.Empty : warning.Plugin + ": " + warning.Reason;
-                }
-                _settingsHint.SetText(text);
-            }
-
-            private void ShowStatus(string text)
-            {
-                _settingsHint.SetText(text);
-                _manualHintExpiresUtc = DateTime.UtcNow.AddSeconds(4);
-            }
-
-            private static GroupOptionButton<bool> CreateToggleButton(PluginManagerRow plugin)
-            {
-                var toggle = new GroupOptionButton<bool>(
-                    true,
-                    null,
-                    null,
-                    Color.White,
-                    null,
-                    0.8f,
-                    0.5f,
-                    10f) {
-                    ShowHighlightWhenSelected = false
-                };
-                toggle.SetColorsBasedOnSelectionState(Color.LightGreen, Color.PaleVioletRed, 0.7f, 0.7f);
-                toggle.SetCurrentOption(plugin.IsEnabled);
-                toggle.SetPadding(0f);
-
-                AppendTexturePackIcon(toggle, plugin.IsEnabled);
-                toggle.OnUpdate += (element) => DisplayMouseTextIfHovered(element, plugin.IsEnabled ? "Disable Plugin" : "Enable Plugin");
-                return toggle;
-            }
-
-            private static UIResourcePackInfoButton<string> CreateDescriptionButton(PluginManagerRow plugin)
-            {
-                var description = new UIResourcePackInfoButton<string>("", 0.8f, false);
-                description.SetPadding(0f);
-                AppendPluginDescriptionIcon(description);
-                description.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                description.OnUpdate += (element) => DisplayMouseTextIfHovered(element, "Plugin Description");
-                return description;
-            }
-
-            private static UIResourcePackInfoButton<string> CreateSettingsButton(PluginManagerRow plugin)
-            {
-                var settings = new UIResourcePackInfoButton<string>("", 0.8f, false);
-                settings.SetPadding(0f);
-                AppendPluginSettingsIcon(settings);
-                settings.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                settings.OnUpdate += (element) => DisplayMouseTextIfHovered(element, "Plugin Settings");
-                return settings;
-            }
-
-            private static void DisplayMouseTextIfHovered(UIElement element, string text)
-            {
-                if (element.IsMouseHovering)
-                    Main.instance.MouseText(text);
-            }
-
-            private static void AppendTexturePackIcon(UIElement button, bool enabled)
-            {
-                try
-                {
-                    var icon = (UIElement)Activator.CreateInstance(
-                        typeof(UIImageFramed),
-                        RequestTexture("Images/UI/TexturePackButtons"),
-                        GetTextureFrame("Images/UI/TexturePackButtons", 2, 2, enabled ? 0 : 1, 1));
-                    ConfigureButtonIcon(icon);
-                    button.Append(icon);
-                }
-                catch
-                {
-                    // The button remains usable if optional artwork cannot be resolved.
-                }
-            }
-
-            private static void AppendPluginDescriptionIcon(UIElement button)
-            {
-                try
-                {
-                    var icon = (UIElement)Activator.CreateInstance(typeof(UIImage), RequestTexture("Images/UI/CharCreation/CharInfo"));
-                    ConfigureButtonIcon(icon);
-                    button.Append(icon);
-                }
-                catch
-                {
-                    // The button remains usable if optional artwork cannot be resolved.
-                }
-            }
-
-            private static void AppendPluginSettingsIcon(UIElement button)
-            {
-                try
-                {
-                    var icon = (UIElement)Activator.CreateInstance(typeof(UIImage), RequestTexture("Images/UI/Camera_1"));
-                    ConfigureButtonIcon(icon);
-                    button.Append(icon);
-                }
-                catch
-                {
-                    // The button remains usable if optional artwork cannot be resolved.
-                }
-            }
-
-            private static void ConfigureButtonIcon(UIElement icon)
-            {
-                icon.HAlign = 0.5f;
-                icon.VAlign = 0.5f;
-                icon.IgnoresMouseInteraction = true;
-            }
-
-            internal static object RequestTexture(string path)
-            {
-                object assets = GetMainAssets();
-                if (_assetRequest == null)
-                {
-                    _assetRequest = assets.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                        .FirstOrDefault(method => {
-                            ParameterInfo[] parameters = method.GetParameters();
-                            return method.Name == "Request" &&
-                                   method.IsGenericMethodDefinition &&
-                                   parameters.Length == 2 &&
-                                   parameters[0].ParameterType == typeof(string) &&
-                                   parameters[1].ParameterType.IsEnum;
-                        });
-                }
-
-                if (_assetRequest == null)
-                    throw new MissingMethodException(assets.GetType().FullName, "Request<T>(string, AssetRequestMode)");
-
-                Type modeType = _assetRequest.GetParameters()[1].ParameterType;
-                return _assetRequest.MakeGenericMethod(typeof(Texture2D)).Invoke(assets, new object[] { path, Enum.ToObject(modeType, 1) });
-            }
-
-            private static Rectangle GetTextureFrame(string path, int horizontalFrames, int verticalFrames, int horizontalFrame, int verticalFrame)
-            {
-                object asset = RequestTexture(path);
-                if (_assetFrame == null)
-                {
-                    _assetFrame = typeof(Utils).GetMethods(BindingFlags.Public | BindingFlags.Static)
-                        .FirstOrDefault(method => {
-                            ParameterInfo[] parameters = method.GetParameters();
-                            return method.Name == "Frame" &&
-                                   parameters.Length == 7 &&
-                                   parameters[0].ParameterType.IsGenericType &&
-                                   parameters[0].ParameterType.GetGenericTypeDefinition().FullName == "ReLogic.Content.Asset`1";
-                        });
-                }
-
-                if (_assetFrame == null)
-                    throw new MissingMethodException(typeof(Utils).FullName, "Frame(Asset<T>, int, int, int, int, int, int)");
-
-                return (Rectangle)_assetFrame.Invoke(null, new object[] { asset, horizontalFrames, verticalFrames, horizontalFrame, verticalFrame, 0, 0 });
-            }
-        }
-
-        private sealed class PluginSettingsMenu : UIState
-        {
-            private readonly PluginManagerRow plugin;
-            private readonly IReadOnlyList<PluginSettingControl> controls;
-            private readonly IReadOnlyList<PluginUiContribution> legacyPages;
-            private UIGamepadHelper gamepadHelper;
-            private UIList settingsList;
-
-            public PluginSettingsMenu(PluginManagerRow plugin, IReadOnlyList<PluginSettingControl> controls, IReadOnlyList<PluginUiContribution> legacyPages)
-            {
-                this.plugin = plugin;
-                this.controls = controls;
-                this.legacyPages = legacyPages;
-            }
-
-            public override void OnInitialize()
-            {
-                // This deliberately mirrors UIManageControls: Terraria owns the panel, list, slider, and scrollbar visuals.
-                var outer = new UIElement { Width = new StyleDimension(0f, 0.8f), MaxWidth = new StyleDimension(600f, 0f), Top = new StyleDimension(220f, 0f), Height = new StyleDimension(-200f, 1f), HAlign = 0.5f };
-                Append(outer);
-                var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-110f, 1f), BackgroundColor = new Color(33, 43, 79) * 0.8f };
-                outer.Append(panel);
-                // Plugin controls are registered in their intended display order; default UIList sorting is not stable for equal UI elements.
-                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-50f, 1f), VAlign = 1f, PaddingBottom = 5f, ListPadding = 20f, ManualSortMethod = items => { } };
-                settingsList = list;
-                panel.Append(list);
-
-                int snapIndex = 0;
-                foreach (var control in controls)
-                    AddControl(list, control, snapIndex++);
-                foreach (var page in legacyPages.Where(contribution => contribution.IsInteractive))
-                    AddLegacyControl(list, page, snapIndex++);
-
-                var scrollbar = new UIScrollbar { Height = new StyleDimension(-67f, 1f), HAlign = 1f, VAlign = 1f, MarginBottom = 11f };
-                panel.Append(scrollbar);
-                list.SetScrollbar(scrollbar);
-
-                var title = new UITextPanel<string>(plugin.Name + " Settings", 0.7f, true) { HAlign = 0.5f, Top = new StyleDimension(-45f, 0f), Left = new StyleDimension(-10f, 0f), BackgroundColor = new Color(73, 94, 171) };
-                title.SetPadding(15f);
-                outer.Append(title);
-                var back = new UITextPanel<string>("Back", 0.7f, true) {
-                    Width = new StyleDimension(-8f, 0.5f), Height = new StyleDimension(50f, 0f),
-                    HAlign = 0.5f, VAlign = 1f, Top = new StyleDimension(-20f, 0f)
-                };
-                back.OnMouseOver += (evt, element) => {
-                    var button = (UIPanel)element;
-                    button.BackgroundColor = new Color(73, 94, 171);
-                    button.BorderColor = Colors.FancyUIFatButtonMouseOver;
-                };
-                back.OnMouseOut += (evt, element) => {
-                    var button = (UIPanel)element;
-                    button.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                    button.BorderColor = Color.Black;
-                };
-                back.OnLeftClick += (evt, element) => ReturnToPluginList();
-                back.SetSnapPoint("GoBack", 0, null, null);
-                outer.Append(back);
-            }
-
-            private static void AddControl(UIList list, PluginSettingControl control, int snapIndex)
-            {
-                if (control.Kind == PluginSettingControlKind.Slider)
-                {
-                    var slider = new UIKeybindingSliderItem(
-                        () => control.DisplayName + ": " + ReadSettingValue(control),
-                        () => Normalize(control.GetSlider(), control.Minimum, control.Maximum),
-                        value => control.SetSlider(Denormalize(value, control.Minimum, control.Maximum, control.Step)),
-                        () => { }, control.Id.GetHashCode(), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(34f, 0f) };
-                    slider.SetSnapPoint("PluginSetting", snapIndex, null, null);
-                    list.Add(slider);
-                    return;
-                }
-                if (control.Kind == PluginSettingControlKind.Color)
-                {
-                    AddColorControls(list, control, snapIndex);
-                    return;
-                }
-                var entry = new UIKeybindingSimpleListItem(() => control.DisplayName + ": " + ReadSettingValue(control), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f) };
-                entry.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                entry.OnLeftClick += (evt, element) => ActivateSetting(control);
-                entry.SetSnapPoint("PluginSetting", snapIndex, null, null);
-                list.Add(entry);
-            }
-
-            private static void AddLegacyControl(UIList list, PluginUiContribution contribution, int snapIndex)
-            {
-                var entry = new UIKeybindingSimpleListItem(() => contribution.DisplayName + ": " + ReadSettingValue(contribution), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(30f, 0f) };
-                entry.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                entry.OnLeftClick += (evt, element) => ActivateSetting(contribution);
-                entry.SetSnapPoint("PluginSetting", snapIndex, null, null);
-                list.Add(entry);
-            }
-
-            private static void AddColorControls(UIList list, PluginSettingControl control, int snapIndex)
-            {
-                var row = new UIKeybindingSimpleListItem(() => control.DisplayName + ": " + control.GetColor().ToHex(), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(38f, 0f) };
-                var swatch = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f), HAlign = 1f, VAlign = 0.5f, Left = new StyleDimension(-72f, 0f), IgnoresMouseInteraction = true };
-                swatch.OnUpdate += element => ((UIPanel)element).BackgroundColor = new Color(control.GetColor().Red, control.GetColor().Green, control.GetColor().Blue);
-                row.Append(swatch);
-                row.Append(CreateClipboardIcon("Images/UI/CharCreation/Copy", -46f, "Copy color hex", () => TrySetClipboardText(control.GetColor().ToHex())));
-                row.Append(CreateClipboardIcon("Images/UI/CharCreation/Paste", -22f, "Paste color hex", () => { if (PluginColor.TryParseHex(TryGetClipboardText(), out var value)) control.SetColor(value); }));
-                row.SetSnapPoint("PluginSetting", snapIndex, null, null);
-                list.Add(row);
-            }
-
-            private static UIElement CreateClipboardIcon(string assetPath, float offset, string hoverText, Action click)
-            {
-                // 20px is 65% of Terraria's small character-creation button, keeping the action icons inside this compact row.
-                var button = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f) };
-                button.SetPadding(0f);
-                button.HAlign = 1f;
-                button.VAlign = 0.5f;
-                button.Left = new StyleDimension(offset, 0f);
-                var image = (UIElement)Activator.CreateInstance(typeof(UIImage), PluginSelectionMenu.RequestTexture(assetPath));
-                image.Width = StyleDimension.Fill;
-                image.Height = StyleDimension.Fill;
-                image.IgnoresMouseInteraction = true;
-                typeof(UIImage).GetProperty("ScaleToFit", BindingFlags.Public | BindingFlags.Instance)?.SetValue(image, true, null);
-                button.Append(image);
-                button.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                button.BorderColor = Color.Black;
-                button.OnMouseOver += (evt, element) => {
-                    var panel = (UIPanel)element;
-                    panel.BackgroundColor = new Color(73, 94, 171);
-                    panel.BorderColor = Colors.FancyUIFatButtonMouseOver;
-                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                };
-                button.OnMouseOut += (evt, element) => {
-                    var panel = (UIPanel)element;
-                    panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                    panel.BorderColor = Color.Black;
-                };
-                button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText(hoverText); };
-                button.OnLeftClick += (evt, element) => { click(); SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f); };
-                return button;
-            }
-
-            private static float Normalize(float value, float min, float max) => MathHelper.Clamp((value - min) / (max - min), 0f, 1f);
-            private static float Denormalize(float value, float min, float max, float step)
-            {
-                float result = min + MathHelper.Clamp(value, 0f, 1f) * (max - min);
-                return step <= 0f ? result : min + (float)Math.Round((result - min) / step) * step;
-            }
-
-            public override void Draw(SpriteBatch spriteBatch)
-            {
-                base.Draw(spriteBatch);
-                UILinkPointNavigator.Shortcuts.BackButtonCommand = 1;
-                SetupGamepadPoints(spriteBatch);
-            }
-
-            private void SetupGamepadPoints(SpriteBatch spriteBatch)
-            {
-                int firstId = 3600;
-                int nextId = firstId;
-                List<SnapPoint> allPoints = GetSnapPoints();
-                List<SnapPoint> visibleSettings = settingsList.GetSnapPoints();
-                gamepadHelper.CullPointsOutOfElementArea(spriteBatch, visibleSettings, settingsList);
-                UILinkPoint[] settings = gamepadHelper.CreateUILinkStripVertical(ref nextId, gamepadHelper.GetOrderedPointsByCategoryName(visibleSettings, "PluginSetting"));
-                UILinkPoint back = null;
-                foreach (SnapPoint point in allPoints)
-                    if (point.Name == "GoBack")
-                        back = gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                gamepadHelper.LinkVerticalStripBottomSideToSingle(settings, back);
-                gamepadHelper.MoveToVisuallyClosestPoint(firstId, nextId);
-            }
-
-        }
-
-        private sealed class PluginDescriptionMenu : UIState
-        {
-            private readonly PluginManagerRow _plugin;
-            private UIGamepadHelper gamepadHelper;
-
-            public PluginDescriptionMenu(PluginManagerRow plugin)
-            {
-                _plugin = plugin;
-            }
-
-            public override void OnInitialize()
-            {
-                // Mirrors UIResourcePackInfoMenu so variable package text is measured and scrolls instead of clipping.
-                var outer = new UIElement { Width = new StyleDimension(0f, 0.8f), MaxWidth = new StyleDimension(500f, 0f), MinWidth = new StyleDimension(300f, 0f), Top = new StyleDimension(230f, 0f), Height = new StyleDimension(-230f, 1f), HAlign = 0.5f };
-                Append(outer);
-                var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-110f, 1f), BackgroundColor = new Color(33, 43, 79) * 0.8f };
-                outer.Append(panel);
-                var content = new UIElement { Width = StyleDimension.Fill, Height = StyleDimension.Fill };
-                panel.Append(content);
-
-                var title = new UIText(_plugin.Name, 0.935f, true) {
-                    HAlign = 0.5f,
-                    Top = new StyleDimension(0f, 0f)
-                };
-                content.Append(title);
-
-                var author = new UIText("Author: " + _plugin.Author, 0.8f, false) {
-                    HAlign = 0f, VAlign = 0f, Top = new StyleDimension(42f, 0f)
-                };
-                content.Append(author);
-
-                var version = new UIText("Version: " + _plugin.Version, 0.8f, false) {
-                    HAlign = 1f, VAlign = 0f, Top = new StyleDimension(42f, 0f)
-                };
-                content.Append(version);
-
-                var list = new UIList { Width = new StyleDimension(-25f, 1f), Height = new StyleDimension(-112f, 1f), VAlign = 1f, Top = new StyleDimension(-8f, 0f), ListPadding = 14f, PaddingRight = 12f, ManualSortMethod = items => { } };
-                list.Add(CreateSection("Description", _plugin.Description, true));
-                list.Add(CreateSection("Changelog", _plugin.Changelog, false));
-                content.Append(list);
-                var scrollbar = new UIScrollbar { Height = new StyleDimension(-112f, 1f), HAlign = 1f, VAlign = 1f, Top = new StyleDimension(-8f, 0f) };
-                content.Append(scrollbar);
-                list.SetScrollbar(scrollbar);
-
-                var back = new UITextPanel<string>("Back", 0.7f, true) {
-                    Width = new StyleDimension(-8f, 0.5f),
-                    Height = new StyleDimension(50f, 0f),
-                    HAlign = 0.5f,
-                    VAlign = 1f,
-                    Top = new StyleDimension(-20f, 0f)
-                };
-                back.OnMouseOver += (evt, element) => FadedMouseOver((UIPanel)element);
-                back.OnMouseOut += (evt, element) => FadedMouseOut((UIPanel)element);
-                back.OnLeftClick += (evt, element) => ReturnToPluginList();
-                back.SetSnapPoint("GoBack", 0, null, null);
-                outer.Append(back);
-            }
-
-            private static UIElement CreateSection(string heading, string text, bool includeDivider)
-            {
-                string value = string.IsNullOrWhiteSpace(text) ? "No information provided." : text;
-                int lines = Math.Max(1, (value.Length + 45) / 46);
-                float bodyHeight = lines * 19f;
-                float dividerSpace = includeDivider ? 14f : 0f;
-                var section = new UIElement { Width = StyleDimension.Fill, Height = new StyleDimension(38f + bodyHeight + dividerSpace, 0f) };
-                section.Append(new UIText(heading, 0.68f, true) { Width = StyleDimension.Fill, Height = new StyleDimension(20f, 0f) });
-                // The description shifts up by eight pixels; the changelog body shifts up by four after its heading moves with the section.
-                section.Append(new UIText(value, 0.75f, false) { Width = StyleDimension.Fill, Top = new StyleDimension(includeDivider ? 30f : 34f, 0f), IsWrapped = true, WrappedTextBottomPadding = 0f });
-                return section;
-            }
-
-            public override void Draw(SpriteBatch spriteBatch)
-            {
-                base.Draw(spriteBatch);
-                UILinkPointNavigator.Shortcuts.BackButtonCommand = 1;
-                int firstId = 3700;
-                int nextId = firstId;
-                foreach (var point in GetSnapPoints().Where(point => point.Name == "GoBack"))
-                    gamepadHelper.MakeLinkPointFromSnapPoint(nextId++, point);
-                gamepadHelper.MoveToVisuallyClosestPoint(firstId, nextId);
-            }
-
-            private static void FadedMouseOver(UIPanel panel)
-            {
-                SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
-                panel.BackgroundColor = new Color(73, 94, 171);
-                panel.BorderColor = Colors.FancyUIFatButtonMouseOver;
-            }
-
-            private static void FadedMouseOut(UIPanel panel)
-            {
-                panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
-                panel.BorderColor = Color.Black;
-            }
-        }
 
         private sealed class BridgePluginLogger : IPluginLogger
         {
@@ -2746,7 +1282,10 @@ namespace AlacrityTerraria
             public void Debug(string message) { System.Diagnostics.Trace.WriteLine("[Alacrity:" + plugin + "] " + message); }
             public void Info(string message) { System.Diagnostics.Trace.WriteLine("[Alacrity:" + plugin + "] " + message); }
             public void Warn(string message) { System.Diagnostics.Trace.TraceWarning("[Alacrity:" + plugin + "] " + message); }
-            public void Error(string message, Exception exception = null) { System.Diagnostics.Trace.TraceError("[Alacrity:" + plugin + "] " + message + (exception == null ? string.Empty : " " + exception)); }
+            public void Error(string message, Exception exception = null)
+            {
+                System.Diagnostics.Trace.TraceError("[Alacrity:" + plugin + "] " + message + (exception == null ? string.Empty : " " + exception));
+            }
         }
 
         private sealed class TerrariaMultiplayerSession : IMultiplayerSession

@@ -13,13 +13,15 @@ public sealed class PluginOverlayHost
     private readonly List<Entry> entries = new List<Entry>();
     private readonly Dictionary<string, DateTime> lastFailure = new Dictionary<string, DateTime>(StringComparer.Ordinal);
     private readonly TimeSpan failureInterval;
+    private readonly Func<DateTime> utcNow;
     private long nextSequence;
     // Each draw phase reads one immutable array. Rebuilding happens only on registration changes.
     private Entry[][] phaseSnapshots = CreateEmptyPhaseSnapshots();
 
-    public PluginOverlayHost(TimeSpan? failureInterval = null)
+    public PluginOverlayHost(TimeSpan? failureInterval = null, Func<DateTime>? utcNow = null)
     {
         this.failureInterval = failureInterval ?? TimeSpan.FromSeconds(10);
+        this.utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
     public IPluginOverlayService CreateService(PluginManifest manifest, IPluginResourceScope resources, IPluginLogger? logger = null)
@@ -49,16 +51,17 @@ public sealed class PluginOverlayHost
         if (snapshot.Length == 0) return;
         foreach (Entry entry in snapshot)
         {
-            if (entry.IsSuspended) continue;
+            DateTime now = utcNow();
+            if (!entry.CanInvoke(now)) continue;
             try
             {
                 entry.Draw(canvas, frame);
-                entry.RecordSuccess(DateTime.UtcNow, failureInterval);
+                entry.RecordSuccess();
             }
             catch (Exception exception)
             {
                 bool report = ShouldReport(entry.Owner, entry.Descriptor.Id);
-                entry.RecordFailure(DateTime.UtcNow, failureInterval);
+                entry.RecordFailure(now, failureInterval);
                 if (report) (entry.Logger ?? diagnostics)?.Error("Overlay '" + entry.Descriptor.Id + "' in layer " + entry.Descriptor.Layer + " failed for plugin '" + entry.Owner.Value + "'.", exception);
             }
         }
@@ -109,7 +112,7 @@ public sealed class PluginOverlayHost
         lock (gate)
         {
             string key = owner.Value + ":" + overlayId;
-            DateTime now = DateTime.UtcNow;
+            DateTime now = utcNow();
             if (lastFailure.TryGetValue(key, out DateTime previous) && now - previous < failureInterval) return false;
             lastFailure[key] = now;
             return true;
@@ -157,41 +160,21 @@ public sealed class PluginOverlayHost
 
     private sealed class Entry
     {
-        private readonly object failureGate = new object();
-        private int failureCount;
-        private DateTime failureWindowStartedUtc;
+        private readonly PluginFailureWindow failures = new PluginFailureWindow();
         public Entry(PluginId owner, PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw, IPluginLogger? logger, long sequence) { Owner = owner; Descriptor = descriptor; Draw = draw; Logger = logger; Sequence = sequence; }
         public PluginId Owner { get; }
         public PluginOverlayDescriptor Descriptor { get; }
         public Action<IPluginOverlayCanvas, PluginOverlayFrame> Draw { get; }
         public IPluginLogger? Logger { get; }
         public long Sequence { get; }
-        public bool IsSuspended { get { lock (failureGate) return failureCount >= 3; } }
+        public bool CanInvoke(DateTime now) => failures.CanInvoke(now);
         public void RecordFailure(DateTime now, TimeSpan window)
         {
-            lock (failureGate)
-            {
-                if (failureWindowStartedUtc == default(DateTime) || now - failureWindowStartedUtc > window)
-                {
-                    failureWindowStartedUtc = now;
-                    failureCount = 1;
-                }
-                else
-                {
-                    failureCount++;
-                }
-            }
+            failures.RecordFailure(now, window);
         }
-        public void RecordSuccess(DateTime now, TimeSpan window)
+        public void RecordSuccess()
         {
-            lock (failureGate)
-            {
-                if (failureWindowStartedUtc != default(DateTime) && now - failureWindowStartedUtc > window)
-                {
-                    failureWindowStartedUtc = default(DateTime);
-                    failureCount = 0;
-                }
-            }
+            failures.RecordSuccess();
         }
     }
 

@@ -12,6 +12,7 @@ internal static class TerrariaWorldProjection
 {
     internal static Vector2 Project(float worldX, float worldY)
     {
-        return new Vector2(worldX, worldY) - Main.screenPosition;
+        TerrariaWorldProjectionMath.Project(worldX, worldY, Main.screenPosition.X, Main.screenPosition.Y, out float screenX, out float screenY);
+        return new Vector2(screenX, screenY);
     }
 }

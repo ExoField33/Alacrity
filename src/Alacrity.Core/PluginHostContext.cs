@@ -92,7 +92,7 @@ public sealed class PluginHostContextFactory
             : terrariaServicesFactory(manifest, resources, chatService) ?? throw new InvalidOperationException("The Terraria service factory returned null.");
         return new PluginHostContext(manifest, logger, resources, dispatcher.CreateService(manifest, resources, logger), notifications.CreateService(manifest, resources),
             new PluginSettingsStore(alacrityRoot, manifest.Id, resources), new PluginDataStore(alacrityRoot, manifest.Id, resources),
-            extensionServices.Events, commands.CreateService(resources), extensionServices.Keybinds,
+            extensionServices.Events, commands.CreateService(manifest, resources, logger), extensionServices.Keybinds,
             extensionServices.Ui, overlays.CreateService(manifest, resources, logger), hud.CreateService(manifest, resources, logger), scopedUserInteraction, terraria, services.CreateRegistry(manifest, resources), multiplayer);
     }
 }

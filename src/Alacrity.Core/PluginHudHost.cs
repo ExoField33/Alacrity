@@ -12,13 +12,15 @@ public sealed class PluginHudHost
     private readonly List<Entry> entries = new List<Entry>();
     private readonly Dictionary<string, DateTime> lastFailure = new Dictionary<string, DateTime>(StringComparer.Ordinal);
     private readonly TimeSpan failureInterval;
+    private readonly Func<DateTime> utcNow;
     private Entry[] snapshot = Array.Empty<Entry>();
     private bool snapshotDirty = true;
     private long sequence;
 
-    public PluginHudHost(TimeSpan? failureInterval = null)
+    public PluginHudHost(TimeSpan? failureInterval = null, Func<DateTime>? utcNow = null)
     {
         this.failureInterval = failureInterval ?? TimeSpan.FromSeconds(10);
+        this.utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
     /// <summary>Creates the plugin-scoped registration service.</summary>
@@ -48,18 +50,23 @@ public sealed class PluginHudHost
             }
             active = snapshot;
         }
+        var transaction = renderer as IPluginHudRenderTransaction;
         for (int index = 0; index < active.Length; index++)
         {
             Entry entry = active[index];
-            if (entry.IsSuspended) continue;
+            DateTime now = utcNow();
+            if (!entry.CanInvoke(now)) continue;
+            transaction?.BeginWidget();
             try
             {
                 renderer.Render(entry.Owner, entry.Descriptor, entry.Draw, frame);
-                entry.RecordSuccess(DateTime.UtcNow, failureInterval);
+                transaction?.CommitWidget();
+                entry.RecordSuccess();
             }
             catch (Exception exception)
             {
-                entry.RecordFailure(DateTime.UtcNow, failureInterval);
+                transaction?.RollbackWidget();
+                entry.RecordFailure(now, failureInterval);
                 if (ShouldReport(entry.Owner, entry.Descriptor.Id))
                     entry.Logger?.Error("HUD widget '" + entry.Descriptor.Id + "' failed for plugin '" + entry.Owner.Value + "'.", exception);
             }
@@ -95,7 +102,7 @@ public sealed class PluginHudHost
         lock (gate)
         {
             string key = owner.Value + ":" + widgetId;
-            DateTime now = DateTime.UtcNow;
+            DateTime now = utcNow();
             if (lastFailure.TryGetValue(key, out DateTime previous) && now - previous < failureInterval) return false;
             lastFailure[key] = now;
             return true;
@@ -134,25 +141,20 @@ public sealed class PluginHudHost
 
     private sealed class Entry : IPluginRegistration
     {
-        private readonly Action<Entry> remove; private readonly IPluginLogger? logger; private readonly object failureGate = new object(); private bool released; private int failureCount; private DateTime failureWindowStartedUtc;
+        private readonly Action<Entry> remove; private readonly IPluginLogger? logger; private readonly PluginFailureWindow failures = new PluginFailureWindow(); private bool released;
         internal Entry(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, long sequence, Action<Entry> remove, IPluginLogger? logger) { Owner = owner; Descriptor = descriptor; Draw = draw; Sequence = sequence; this.remove = remove; this.logger = logger; }
         internal PluginId Owner { get; } internal PluginHudWidgetDescriptor Descriptor { get; } internal Action<IPluginHudCanvas, PluginHudFrame> Draw { get; } internal long Sequence { get; }
         internal IPluginLogger? Logger => logger;
-        internal bool IsSuspended { get { lock (failureGate) return failureCount >= 3; } }
+        internal bool CanInvoke(DateTime now) => failures.CanInvoke(now);
         public string Name => "hud-widget:" + Descriptor.Id; public bool IsReleased => released;
         public void Dispose() { if (released) return; released = true; remove(this); }
         internal void RecordFailure(DateTime now, TimeSpan window)
         {
-            lock (failureGate)
-            {
-                if (failureWindowStartedUtc == default(DateTime) || now - failureWindowStartedUtc > window) { failureWindowStartedUtc = now; failureCount = 1; }
-                else failureCount++;
-            }
+            failures.RecordFailure(now, window);
         }
-        internal void RecordSuccess(DateTime now, TimeSpan window)
+        internal void RecordSuccess()
         {
-            lock (failureGate)
-                if (failureWindowStartedUtc != default(DateTime) && now - failureWindowStartedUtc > window) { failureWindowStartedUtc = default(DateTime); failureCount = 0; }
+            failures.RecordSuccess();
         }
     }
 }

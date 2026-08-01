@@ -103,11 +103,14 @@ internal static class Program
             PlayerListPublishesPresentationSettingsAndDefaults();
             HudWidgetsAreOwnedAndIsolated();
             OverlayDispatchIsOrderedIsolatedAndScopeOwned();
+            RendererFailureSuspensionRecoversAfterCooldown();
+            WorldProjectionUsesOnlyTheVerifiedCameraTranslation();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
             DependencyWarningsClearWhenResolved();
             NotificationsExpireWithoutPersistence();
             NotificationServicesRejectReleasedScopesAndRateLimit();
+            NotificationPublicationCannotOutliveScopeCleanup();
             DispatcherHonorsFrameBudget();
             PackageCatalogReadsManifestWithoutAssemblyLoad();
             IncompatibleGameVersionNeverLoadsAssembly();
@@ -1769,6 +1772,70 @@ internal static class Program
         order.Clear();
         host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, false, TimeSpan.Zero));
         Assert(order.SequenceEqual(new[] { "second" }) && host.CountFor(firstManifest.Id) == 0 && host.CountFor(secondManifest.Id) == 2, "Disabling one scope must remove only that plugin's overlays.");
+    }
+
+    private static void RendererFailureSuspensionRecoversAfterCooldown()
+    {
+        DateTime now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var manifest = new PluginManifest(new PluginId("recovery.renderer"), "Recovery", new Version(1, 0), "Tests", "Renderer recovery", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Rendering, permissions: PluginPermission.DrawUserInterface);
+        using var hudScope = new PluginResourceScope();
+        var hud = new PluginHudHost(TimeSpan.FromSeconds(5), () => now);
+        int hudCalls = 0;
+        hud.CreateService(manifest, hudScope).Register(new PluginHudWidgetDescriptor("retry", 0), (_, __) => { hudCalls++; if (hudCalls <= 3) throw new InvalidOperationException("expected"); });
+        for (int index = 0; index < 4; index++) hud.Dispatch(new TestHudRenderer(), new PluginHudFrame(1, 1, 1f, TimeSpan.Zero, 0));
+        Assert(hudCalls == 3, "A failed HUD widget must suspend after its rolling threshold.");
+        now = now.AddSeconds(6);
+        hud.Dispatch(new TestHudRenderer(), new PluginHudFrame(1, 1, 1f, TimeSpan.Zero, 0));
+        Assert(hudCalls == 4, "A suspended HUD widget must receive one retry after the cooldown.");
+
+        using var overlayScope = new PluginResourceScope();
+        var overlays = new PluginOverlayHost(TimeSpan.FromSeconds(5), () => now);
+        int overlayCalls = 0;
+        overlays.CreateService(manifest, overlayScope).Register(new PluginOverlayDescriptor("retry", PluginOverlayLayer.Foreground), (_, __) => { overlayCalls++; if (overlayCalls <= 3) throw new InvalidOperationException("expected"); });
+        for (int index = 0; index < 4; index++) overlays.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1, 1, 1f, false, TimeSpan.Zero));
+        Assert(overlayCalls == 3, "A failed overlay must suspend after its rolling threshold.");
+        now = now.AddSeconds(6);
+        overlays.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1, 1, 1f, false, TimeSpan.Zero));
+        Assert(overlayCalls == 4, "A suspended overlay must receive one retry after the cooldown.");
+    }
+
+    private static void WorldProjectionUsesOnlyTheVerifiedCameraTranslation()
+    {
+        TerrariaWorldProjectionMath.Project(320f, 240f, 100f, 75f, out float ordinaryX, out float ordinaryY);
+        Assert(ordinaryX == 220f && ordinaryY == 165f, "World projection must subtract the active camera origin exactly once.");
+
+        TerrariaWorldProjectionMath.Project(-20f, 400f, 75f, -25f, out float negativeX, out float negativeY);
+        Assert(negativeX == -95f && negativeY == 425f, "World projection must preserve negative world and camera coordinates without clamping.");
+
+        TerrariaWorldProjectionMath.Project(640f, 360f, 160f, 90f, out float zoomedX, out float zoomedY);
+        Assert(zoomedX == 480f && zoomedY == 270f, "The screen-space hook must not apply zoom or a view matrix a second time.");
+    }
+
+    private static void NotificationPublicationCannotOutliveScopeCleanup()
+    {
+        var center = new PluginNotificationCenter();
+        var manifest = new PluginManifest(new PluginId("notification.race"), "Notification race", new Version(1, 0), "Tests", "Race test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        using var scope = new PluginResourceScope();
+        IPluginNotificationService service = center.CreateService(manifest, scope);
+        var started = new ManualResetEventSlim(false);
+        var writers = new Task[8];
+        for (int index = 0; index < writers.Length; index++)
+        {
+            writers[index] = Task.Run(() =>
+            {
+                started.Wait();
+                for (int attempt = 0; attempt < 32; attempt++)
+                {
+                    try { service.Show("racing notification"); }
+                    catch (ObjectDisposedException) { return; }
+                }
+            });
+        }
+        started.Set();
+        scope.Dispose();
+        Task.WaitAll(writers);
+        Assert(center.GetActive(DateTimeOffset.UtcNow).All(notification => notification.Owner != manifest.Id), "Scope cleanup must remove notifications and prevent a stale publisher from reviving them.");
+        AssertThrows<ObjectDisposedException>(() => service.Show("after cleanup"));
     }
 
     private static void PackageRegistryRetainsHostLoadFailure()

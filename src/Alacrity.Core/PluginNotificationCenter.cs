@@ -88,6 +88,8 @@ public sealed class PluginNotificationCenter
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         RemoveExpired(now);
+        if (owner.IsValid && !TryConsumePublication(owner, now))
+            return;
         for (int index = 0; index < notifications.Count; index++)
         {
             PluginNotification existing = notifications[index];
@@ -98,8 +100,6 @@ public sealed class PluginNotificationCenter
                 return;
             }
         }
-        if (owner.IsValid && !TryConsumePublication(owner, now))
-            return;
         if (owner.IsValid)
         {
             int owned = 0;
@@ -149,18 +149,22 @@ public sealed class PluginNotificationCenter
         public void Show(string message, PluginNotificationOptions? options = null)
         {
             if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("A notification message is required.", nameof(message));
-            if (guard != null && guard.IsReleased) throw new ObjectDisposedException("IPluginNotificationService", "The owning plugin scope has been released.");
             TimeSpan effective = options?.Duration ?? DefaultDuration;
             if (effective <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options));
             if (effective > MaximumDuration) effective = MaximumDuration;
-            lock (center.gate) center.PublishInternal(owner, message, effective, options ?? new PluginNotificationOptions());
+            lock (center.gate)
+            {
+                if (guard != null && guard.IsReleased) throw new ObjectDisposedException("IPluginNotificationService", "The owning plugin scope has been released.");
+                center.PublishInternal(owner, message, effective, options ?? new PluginNotificationOptions());
+            }
         }
     }
 
     private sealed class OwnerCleanup : IDisposable
     {
-        private PluginNotificationCenter? center;
+        private readonly PluginNotificationCenter center;
         private readonly PluginId owner;
+        private int released;
 
         public OwnerCleanup(PluginNotificationCenter center, PluginId owner)
         {
@@ -170,12 +174,11 @@ public sealed class PluginNotificationCenter
 
         public void Dispose()
         {
-            PluginNotificationCenter? current = center;
-            center = null;
-            if (current != null) current.RemoveOwner(owner);
+            if (System.Threading.Interlocked.Exchange(ref released, 1) == 0)
+                center.RemoveOwner(owner);
         }
 
-        internal bool IsReleased => center == null;
+        internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
     }
 
     private readonly struct PublicationWindow

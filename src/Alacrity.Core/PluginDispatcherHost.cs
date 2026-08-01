@@ -11,16 +11,24 @@ public sealed class PluginDispatcherHost
 {
     private readonly object gate = new object();
     private readonly Queue<WorkItem> pending = new Queue<WorkItem>();
+    private readonly Dictionary<PluginId, int> queuedByOwner = new Dictionary<PluginId, int>();
+    private int queuedWorkCount;
     private readonly int mainThreadId = Environment.CurrentManagedThreadId;
     private readonly int maximumCallbacksPerDrain;
     private readonly TimeSpan maximumDrainTime;
+    private readonly int maximumQueuedWork;
+    private readonly int maximumQueuedWorkPerPlugin;
 
-    public PluginDispatcherHost(int maximumCallbacksPerDrain = 64, TimeSpan? maximumDrainTime = null)
+    public PluginDispatcherHost(int maximumCallbacksPerDrain = 64, TimeSpan? maximumDrainTime = null, int maximumQueuedWork = 512, int maximumQueuedWorkPerPlugin = 64)
     {
         if (maximumCallbacksPerDrain <= 0) throw new ArgumentOutOfRangeException(nameof(maximumCallbacksPerDrain));
         this.maximumCallbacksPerDrain = maximumCallbacksPerDrain;
         this.maximumDrainTime = maximumDrainTime ?? TimeSpan.FromMilliseconds(2);
         if (this.maximumDrainTime <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(maximumDrainTime));
+        if (maximumQueuedWork <= 0) throw new ArgumentOutOfRangeException(nameof(maximumQueuedWork));
+        if (maximumQueuedWorkPerPlugin <= 0 || maximumQueuedWorkPerPlugin > maximumQueuedWork) throw new ArgumentOutOfRangeException(nameof(maximumQueuedWorkPerPlugin));
+        this.maximumQueuedWork = maximumQueuedWork;
+        this.maximumQueuedWorkPerPlugin = maximumQueuedWorkPerPlugin;
     }
 
     public IPluginDispatcher CreateService(PluginManifest manifest, IPluginResourceScope resources, IPluginLogger? logger = null)
@@ -71,10 +79,37 @@ public sealed class PluginDispatcherHost
     {
         if (callback == null) throw new ArgumentNullException(nameof(callback));
         if (guard.IsReleased) throw new ObjectDisposedException("IPluginDispatcher", "The owning plugin scope has been released.");
-        var registration = new WorkRegistration();
-        resources.Own("dispatcher-work", PluginResourceKind.BackgroundTask, registration);
+        ReserveQueueSlot(owner);
+        var registration = new WorkRegistration(() => ReleaseQueueSlot(owner));
+        try { resources.Own("dispatcher-work", PluginResourceKind.BackgroundTask, registration); }
+        catch { registration.Dispose(); throw; }
         lock (gate) pending.Enqueue(new WorkItem(callback, registration, owner, logger));
         return registration;
+    }
+
+    private void ReserveQueueSlot(PluginId owner)
+    {
+        lock (gate)
+        {
+            if (queuedWorkCount >= maximumQueuedWork)
+                throw new InvalidOperationException("The plugin dispatcher queue is full; work was rejected.");
+            int owned = queuedByOwner.TryGetValue(owner, out int current) ? current : 0;
+            if (owned >= maximumQueuedWorkPerPlugin)
+                throw new InvalidOperationException("The plugin dispatcher queue limit was reached for '" + owner.Value + "'; work was rejected.");
+            queuedByOwner[owner] = owned + 1;
+            queuedWorkCount++;
+        }
+    }
+
+    private void ReleaseQueueSlot(PluginId owner)
+    {
+        lock (gate)
+        {
+            if (!queuedByOwner.TryGetValue(owner, out int current)) return;
+            queuedWorkCount--;
+            if (current <= 1) queuedByOwner.Remove(owner);
+            else queuedByOwner[owner] = current - 1;
+        }
     }
 
     private sealed class ScopedDispatcher : IPluginDispatcher
@@ -90,6 +125,6 @@ public sealed class PluginDispatcherHost
     }
 
     private sealed class WorkItem { public WorkItem(Action callback, WorkRegistration registration, PluginId owner, IPluginLogger? logger) { Callback = callback; Registration = registration; Owner = owner; Logger = logger; } public Action Callback { get; } public WorkRegistration Registration { get; } public PluginId Owner { get; } public IPluginLogger? Logger { get; } public string Name => Registration.Name; }
-    private sealed class WorkRegistration : IPluginRegistration { private int released; public string Name => "dispatcher-work"; public bool IsReleased => Volatile.Read(ref released) != 0; public void Dispose() { Interlocked.Exchange(ref released, 1); } }
+    private sealed class WorkRegistration : IPluginRegistration { private readonly Action release; private int released; public WorkRegistration(Action release) { this.release = release; } public string Name => "dispatcher-work"; public bool IsReleased => Volatile.Read(ref released) != 0; public void Dispose() { if (Interlocked.Exchange(ref released, 1) == 0) release(); } }
     private sealed class ScopeGuard : IDisposable { private int released; public bool IsReleased => Volatile.Read(ref released) != 0; public void Dispose() { Interlocked.Exchange(ref released, 1); } }
 }

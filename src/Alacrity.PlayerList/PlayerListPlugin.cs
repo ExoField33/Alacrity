@@ -68,14 +68,14 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
         displayModeSetting = context.Settings.Register(new PluginSettingDefinition<string>("displayMode", "Hold", value => ReadDisplayMode(value).ToString()));
         playersPerColumn = playersPerColumnSetting.Value; rowWidth = rowWidthSetting.Value; textScalePercent = textScaleSetting.Value;
         showPlayerHeads = showPlayerHeadsSetting.Value; showPing = showPingSetting.Value; hideBots = hideBotsSetting.Value;
-        UpdateBotClassificationDemand();
+        EnsureBotClassificationDemand();
         sortMode = ReadSortMode(sortModeSetting.Value); displayMode = ReadDisplayMode(displayModeSetting.Value);
         playersPerColumnSetting.Subscribe(value => { playersPerColumn = value; rosterDirty = true; });
         rowWidthSetting.Subscribe(value => rowWidth = value);
         textScaleSetting.Subscribe(value => textScalePercent = value);
         showPlayerHeadsSetting.Subscribe(value => showPlayerHeads = value);
         showPingSetting.Subscribe(value => showPing = value);
-        hideBotsSetting.Subscribe(value => { hideBots = value; UpdateBotClassificationDemand(); rosterDirty = true; });
+        hideBotsSetting.Subscribe(value => { hideBots = value; rosterDirty = true; });
         sortModeSetting.Subscribe(value => { sortMode = ReadSortMode(value); rosterDirty = true; });
         displayModeSetting.Subscribe(value => displayMode = ReadDisplayMode(value));
 
@@ -96,25 +96,31 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     }
 
     public void Enable() { }
-    public void Disable() { visible = false; ClearRoster(); }
+    public void Disable()
+    {
+        visible = false;
+        ClearRoster();
+        botClassificationDemand?.Dispose();
+        botClassificationDemand = null;
+        playerSnapshotDemand = null;
+        players = null;
+        session = null;
+    }
     public void Shutdown() { visible = false; ClearRoster(); botClassificationDemand?.Dispose(); botClassificationDemand = null; playerSnapshotDemand = null; players = null; session = null; playersPerColumnSetting = null; rowWidthSetting = null; textScaleSetting = null; showPlayerHeadsSetting = null; showPingSetting = null; hideBotsSetting = null; sortModeSetting = null; displayModeSetting = null; }
     public void ToggleVisibility() => visible = !visible;
     public void SetVisibility(bool isVisible) => visible = isVisible;
     public void CycleSortMode() { sortMode = sortMode == PlayerListSortMode.Alphabetical ? PlayerListSortMode.Team : sortMode == PlayerListSortMode.Team ? PlayerListSortMode.Health : PlayerListSortMode.Alphabetical; if (sortModeSetting != null) sortModeSetting.Value = sortMode.ToString(); }
-    public void ToggleBotFiltering() { hideBots = !hideBots; if (hideBotsSetting != null) hideBotsSetting.Value = hideBots; }
-
-    private void UpdateBotClassificationDemand()
+    public void ToggleBotFiltering()
     {
-        if (hideBots)
-        {
-            if (botClassificationDemand == null && playerSnapshotDemand != null)
-                botClassificationDemand = playerSnapshotDemand.RequestSuspectedBotClassification();
-        }
-        else
-        {
-            botClassificationDemand?.Dispose();
-            botClassificationDemand = null;
-        }
+        playerSnapshotDemand?.RefreshSuspectedBotClassification();
+        hideBots = !hideBots;
+        if (hideBotsSetting != null) hideBotsSetting.Value = hideBots;
+    }
+
+    private void EnsureBotClassificationDemand()
+    {
+        if ((botClassificationDemand == null || botClassificationDemand.IsReleased) && playerSnapshotDemand != null)
+            botClassificationDemand = playerSnapshotDemand.RequestSuspectedBotClassification();
     }
 
     private void DrawHud(IPluginHudCanvas canvas, PluginHudFrame frame)
@@ -148,13 +154,13 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
 
     private void DrawRow(IPluginHudCanvas canvas, Row row, PluginUiRect bounds, float uiScale)
     {
-        float nameX = bounds.X + (showPlayerHeads ? 44f * uiScale : 12f * uiScale);
+        float nameX = bounds.X + (showPlayerHeads ? 44f * uiScale : 12f * uiScale) - 3f;
         float nameY = bounds.Y + bounds.Height / 2f - 8f * TextScale;
         float reservedRight = row.Player.IsDead && !row.Player.IsGhost ? 44f : 8f;
-        string name = FitText(row.Name, bounds.X + bounds.Width - nameX - reservedRight, 0.74f * TextScale);
+        string name = FitText(row.Name, bounds.Width - (nameX - bounds.X) - reservedRight, 0.74f * TextScale);
         canvas.DrawText(name, nameX, nameY, row.Player.IsDead ? new PluginOverlayColor(145, 145, 145) : TeamColor(row.Player.Team), 0.74f * TextScale);
         if (row.Player.IsDead && !row.Player.IsGhost) canvas.DrawText(FormatRespawn(row.Player.RespawnTimer), bounds.X + bounds.Width - 40f, nameY, new PluginOverlayColor(220, 220, 220), 0.62f * TextScale);
-        if (showPlayerHeads && (!row.Player.IsDead || row.Player.IsGhost)) canvas.DrawPlayerAvatar(row.Player.Id, bounds.X + 23f * uiScale, bounds.Y + bounds.Height / 2f - 4f * uiScale, uiScale);
+        if (showPlayerHeads && (!row.Player.IsDead || row.Player.IsGhost)) canvas.DrawPlayerAvatar(row.Player.Id, bounds.X + 23f * uiScale - 3f, bounds.Y + bounds.Height / 2f - 4f * uiScale, uiScale);
     }
 
     private void DrawPing(IPluginHudCanvas canvas, PluginHudPoint center, float scale, int? ping)
@@ -220,11 +226,10 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     private static PlayerListDisplayMode ReadDisplayMode(string? value) => string.Equals(value, "Toggle", StringComparison.OrdinalIgnoreCase) ? PlayerListDisplayMode.Toggle : PlayerListDisplayMode.Hold;
     private static int TeamRank(int team) => team >= 1 && team <= 5 ? team - 1 : 5;
     private static string NormalizeName(string value) { string normalized = value ?? string.Empty; for (int pass = 0; pass < 4; pass++) { string next = TerrariaTagRegex.Replace(normalized, "$1"); if (string.Equals(next, normalized, StringComparison.Ordinal)) break; normalized = next; } return normalized.Trim(); }
+    private static string FitText(string text, float availableWidth, float scale) { if (string.IsNullOrEmpty(text) || availableWidth <= 0f) return string.Empty; int maxCharacters = Math.Max(1, (int)(availableWidth / Math.Max(1f, 7f * scale))); return text.Length <= maxCharacters ? text : text.Substring(0, Math.Max(0, maxCharacters - 3)) + "..."; }
     private static PluginOverlayColor TeamColor(int team) => team == 1 ? new PluginOverlayColor(255, 80, 80) : team == 2 ? new PluginOverlayColor(80, 255, 80) : team == 3 ? new PluginOverlayColor(80, 160, 255) : team == 4 ? new PluginOverlayColor(255, 240, 80) : team == 5 ? new PluginOverlayColor(255, 120, 255) : White;
     private static PluginOverlayColor PingColor(int ping) => ping < 150 ? new PluginOverlayColor(120, 255, 120) : ping <= 350 ? new PluginOverlayColor(255, 230, 95) : new PluginOverlayColor(255, 95, 95);
     private static string FormatRespawn(int ticks) => ticks <= 0 ? "now" : ((ticks + 59) / 60) + "s";
-    private static string FitText(string text, float availableWidth, float scale) { if (string.IsNullOrEmpty(text) || text.Length * 11f * scale <= availableWidth) return text; const string ellipsis = "..."; int maximum = Math.Max(0, (int)(availableWidth / (11f * scale)) - ellipsis.Length); return maximum == 0 ? string.Empty : text.Substring(0, Math.Min(maximum, text.Length)) + ellipsis; }
-
     private enum PlayerListDisplayMode { Hold, Toggle }
     private readonly struct Row { internal Row(PluginPlayerSnapshot player, string name) { Player = player; Name = name; } internal PluginPlayerSnapshot Player { get; } internal string Name { get; } }
     private readonly struct PluginHudPoint { internal PluginHudPoint(float x, float y) { X = x; Y = y; } internal float X { get; } internal float Y { get; } }

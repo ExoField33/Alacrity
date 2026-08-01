@@ -5,39 +5,39 @@ using System.Collections.Generic;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>Host-provided Terraria services. New Terraria capabilities belong here rather than expanding <see cref="IPluginContext"/>.</summary>
+/// Host-provided Terraria services. New Terraria capabilities belong here rather than expanding <see cref="IPluginContext"/>.
 public interface ITerrariaServices
 {
-    /// <summary>Player-chat editing and presentation services available on supported Terraria versions.</summary>
+    /// Player-chat editing and presentation services available on supported Terraria versions.
     IPluginChatService Chat { get; }
 
-    /// <summary>Read-only, allocation-conscious entity snapshots supplied by the active Terraria integration.</summary>
+    /// Read-only, allocation-conscious entity snapshots supplied by the active Terraria integration.
     IPluginEntitySnapshotService Entities { get; }
-    /// <summary>Read-only player names, status, and buffs from the shared integration snapshot cache.</summary>
+    /// Read-only player names, status, and buffs from the shared integration snapshot cache.
     IPluginPlayerService Players { get; }
-    /// <summary>Scoped policy registrations for optional client-side visual effects.</summary>
+    /// Scoped policy registrations for optional client-side visual effects.
     IPluginVisualEffectsService VisualEffects { get; }
-    /// <summary>Read-only world/server presentation data such as the display name and sampled ping.</summary>
+    /// Read-only world/server presentation data such as the display name and sampled ping.
     IPluginSessionPresentationService Session { get; }
 }
 
-/// <summary>Registers bounded player-chat extensions. The host owns Terraria hooks and rendering internals.</summary>
+/// Registers bounded player-chat extensions. The host owns Terraria hooks and rendering internals.
 public interface IPluginChatService
 {
-    /// <summary>Registers a player-chat editor. Editors run in ascending priority order until one handles an action.</summary>
+    /// Registers a player-chat editor. Editors run in ascending priority order until one handles an action.
     IPluginRegistration RegisterInputEditor(ChatInputEditorDescriptor descriptor, IChatInputEditor editor);
 
-    /// <summary>Registers a message decorator that returns immutable presentation spans.</summary>
+    /// Registers a message decorator that returns immutable presentation spans.
     IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator);
 
-    /// <summary>Registers a display filter for classified incoming or local chat messages.</summary>
+    /// Registers a display filter for classified incoming or local chat messages.
     IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter);
 
-    /// <summary>Registers an external-link activation handler for a declared URI scheme.</summary>
+    /// Registers an external-link activation handler for a declared URI scheme.
     IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler);
 }
 
-/// <summary>Immutable player-chat text, caret, and selection snapshot.</summary>
+/// Immutable player-chat text, caret, and selection snapshot.
 public sealed class ChatInputSnapshot
 {
     public ChatInputSnapshot(string text, int caret, int selectionAnchor)
@@ -51,7 +51,7 @@ public sealed class ChatInputSnapshot
     public int SelectionAnchor { get; }
 }
 
-/// <summary>Normalized host input action. Plugins never receive raw keyboard state.</summary>
+/// Normalized host input action. Plugins never receive raw keyboard state.
 public sealed class ChatInputAction
 {
     public ChatInputAction(string id, bool control = false, bool shift = false, string? text = null)
@@ -67,7 +67,7 @@ public sealed class ChatInputAction
     public string? Text { get; }
 }
 
-/// <summary>Replacement state returned by a chat editor.</summary>
+/// Replacement state returned by a chat editor.
 public sealed class ChatInputEditResult
 {
     public ChatInputEditResult(string text, int caret, int selectionAnchor, bool handled)
@@ -119,17 +119,17 @@ public sealed class ChatMessageDecoratorDescriptor
 
 public interface IChatMessageDecorator { IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message); }
 
-/// <summary>
+/// 
 /// Optional composable chat decorator. Implement this interface when a decorator needs to preserve
 /// spans produced by earlier registrations, including their host-validated link targets.
-/// </summary>
+/// 
 public interface IChatSpanDecorator : IChatMessageDecorator
 {
-    /// <summary>Transforms the current ordered spans without exposing Terraria chat objects.</summary>
+    /// Transforms the current ordered spans without exposing Terraria chat objects.
     IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot originalMessage, IReadOnlyList<ChatTextSpan> currentSpans);
 }
 
-/// <summary>Origin assigned by the host before chat is converted to display text.</summary>
+/// Origin assigned by the host before chat is converted to display text.
 public enum ChatMessageOrigin
 {
     Player,
@@ -137,7 +137,7 @@ public enum ChatMessageOrigin
     LocalSystem
 }
 
-/// <summary>Stable declaration for a chat display filter.</summary>
+/// Stable declaration for a chat display filter.
 public sealed class ChatMessageFilterDescriptor
 {
     public ChatMessageFilterDescriptor(string id, int priority = 0)
@@ -150,7 +150,7 @@ public sealed class ChatMessageFilterDescriptor
     public int Priority { get; }
 }
 
-/// <summary>Decides whether a host-classified message should reach Terraria's chat display.</summary>
+/// Decides whether a host-classified message should reach Terraria's chat display.
 public interface IChatMessageFilter { bool ShouldDisplay(ChatMessageOrigin origin); }
 
 public sealed class ChatLinkHandlerDescriptor

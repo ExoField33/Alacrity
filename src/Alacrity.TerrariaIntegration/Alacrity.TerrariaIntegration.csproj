@@ -48,8 +48,18 @@
     <Compile Include="TerrariaSessionPresentationService.cs" />
     <Compile Include="TerrariaOverlayCanvas.cs" />
     <Compile Include="TerrariaWorldProjection.cs" />
+    <Compile Include="TerrariaWorldProjectionMath.cs" />
     <Compile Include="TerrariaPluginRuntimeFactory.cs" />
     <Compile Include="TerrariaPluginDrawAdapter.cs" />
+    <Compile Include="TerrariaPluginChatAdapter.cs" />
+    <Compile Include="TerrariaPluginOperationCoordinator.cs" />
+    <Compile Include="TerrariaPluginEnabledStateStore.cs" />
+    <Compile Include="TerrariaVisualEffectsRuntimePolicy.cs" />
+    <Compile Include="TerrariaPluginKeybindPersistence.cs" />
+    <Compile Include="TerrariaPluginKeybindControlsAdapter.cs" />
+    <Compile Include="TerrariaPluginDescriptionMenu.cs" />
+    <Compile Include="TerrariaPluginSelectionMenu.cs" />
+    <Compile Include="TerrariaPluginSettingsMenu.cs" />
     <Compile Include="TileStorage.cs" />
     <Compile Include="TileDataCompatibility.cs" />
   </ItemGroup>

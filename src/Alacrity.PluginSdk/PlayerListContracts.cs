@@ -2,66 +2,66 @@ using System;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>Supported deterministic player-list ordering modes.</summary>
+/// Supported deterministic player-list ordering modes.
 public enum PlayerListSortMode
 {
-    /// <summary>Orders players by their visible name.</summary>
+    /// Orders players by their visible name.
     Alphabetical,
-    /// <summary>Groups teams in Terraria's red-through-pink order.</summary>
+    /// Groups teams in Terraria's red-through-pink order.
     Team,
-    /// <summary>Orders players by current life for local presentation only.</summary>
+    /// Orders players by current life for local presentation only.
     Health
 }
 
-/// <summary>Read-only Player List presentation state exposed to dependent plugins.</summary>
+/// Read-only Player List presentation state exposed to dependent plugins.
 public interface IPlayerListPresentationState
 {
-    /// <summary>Whether the locally requested player list is currently visible.</summary>
+    /// Whether the locally requested player list is currently visible.
     bool IsVisible { get; }
 
-    /// <summary>Maximum rows placed in one column.</summary>
+    /// Maximum rows placed in one column.
     int PlayersPerColumn { get; }
 
-    /// <summary>Width in UI pixels reserved for each player row.</summary>
+    /// Width in UI pixels reserved for each player row.
     int RowWidth { get; }
 
-    /// <summary>Multiplier applied consistently to player-list text, player icons, and row geometry.</summary>
+    /// Multiplier applied consistently to player-list text, player icons, and row geometry.
     float TextScale { get; }
 
-    /// <summary>Whether all player-row icons, including ghost and tombstone icons, are rendered.</summary>
+    /// Whether all player-row icons, including ghost and tombstone icons, are rendered.
     bool ShowPlayerHeads { get; }
 
-    /// <summary>Whether the local ping footer is rendered.</summary>
+    /// Whether the local ping footer is rendered.
     bool ShowPing { get; }
 
-    /// <summary>Whether suspected automated accounts are omitted from the local list and count.</summary>
+    /// Whether suspected automated accounts are omitted from the local list and count.
     bool HideBots { get; }
 
-    /// <summary>Current deterministic ordering selected by the local player.</summary>
+    /// Current deterministic ordering selected by the local player.
     PlayerListSortMode SortMode { get; }
 }
 
-/// <summary>Host-mediated local controls owned by the Player List provider.</summary>
+/// Host-mediated local controls owned by the Player List provider.
 public interface IPlayerListController
 {
-    /// <summary>Toggles the local list visibility from a registered player-controlled keybind.</summary>
+    /// Toggles the local list visibility from a registered player-controlled keybind.
     void ToggleVisibility();
 
-    /// <summary>Sets the local list visibility for a held player-controlled keybind.</summary>
+    /// Sets the local list visibility for a held player-controlled keybind.
     void SetVisibility(bool isVisible);
 
-    /// <summary>Advances through the supported local sorting modes.</summary>
+    /// Advances through the supported local sorting modes.
     void CycleSortMode();
 
-    /// <summary>Toggles whether locally detected automated accounts are excluded from the list.</summary>
+    /// Toggles whether locally detected automated accounts are excluded from the list.
     void ToggleBotFiltering();
 }
 
-/// <summary>
+/// 
 /// Combined Player List provider contract retained for source and package compatibility. New consumers
 /// should request only <see cref="IPlayerListPresentationState"/> or <see cref="IPlayerListController"/>
 /// according to the access they require.
-/// </summary>
+/// 
 public interface IPlayerListService : IPlayerListPresentationState, IPlayerListController
 {
 }

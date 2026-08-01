@@ -12,7 +12,7 @@ using Terraria.Graphics.Renderers;
 namespace AlacrityTerraria;
 
 /// <summary>Terraria-owned renderer for generic gameplay HUD widgets.</summary>
-internal sealed class TerrariaHudAdapter : IPluginHudRenderer
+internal sealed class TerrariaHudAdapter : IPluginHudRenderer, IPluginHudRenderTransaction
 {
     private static readonly Stopwatch Clock = Stopwatch.StartNew();
     private readonly PluginHudHost host;
@@ -41,6 +41,10 @@ internal sealed class TerrariaHudAdapter : IPluginHudRenderer
         canvas.Bind(owner);
         draw(canvas, frame);
     }
+
+    public void BeginWidget() => canvas.BeginWidget();
+    public void CommitWidget() => canvas.CommitWidget();
+    public void RollbackWidget() => canvas.RollbackWidget();
 }
 
 /// <summary>Translates host-neutral HUD commands into Terraria UI drawing while retaining widget ownership.</summary>
@@ -48,6 +52,7 @@ internal sealed class TerrariaHudCanvas : IPluginHudCanvas
 {
     private readonly TerrariaPlayerAvatarRenderer avatars = new TerrariaPlayerAvatarRenderer();
     private readonly System.Collections.Generic.List<AvatarCommand> pendingAvatars = new System.Collections.Generic.List<AvatarCommand>(32);
+    private int avatarCheckpoint = -1;
     private PluginId owner;
     private SpriteBatch spriteBatch;
 
@@ -55,15 +60,25 @@ internal sealed class TerrariaHudCanvas : IPluginHudCanvas
     {
         this.spriteBatch = spriteBatch;
         pendingAvatars.Clear();
+        avatarCheckpoint = -1;
     }
 
     internal void EndFrame()
     {
         pendingAvatars.Clear();
+        avatarCheckpoint = -1;
         spriteBatch = null;
     }
 
     internal void Bind(PluginId owner) { this.owner = owner; }
+    internal void BeginWidget() { avatarCheckpoint = pendingAvatars.Count; }
+    internal void CommitWidget() { avatarCheckpoint = -1; }
+    internal void RollbackWidget()
+    {
+        if (avatarCheckpoint >= 0 && avatarCheckpoint < pendingAvatars.Count)
+            pendingAvatars.RemoveRange(avatarCheckpoint, pendingAvatars.Count - avatarCheckpoint);
+        avatarCheckpoint = -1;
+    }
 
     internal void FlushPlayerAvatars()
     {

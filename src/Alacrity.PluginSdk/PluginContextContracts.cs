@@ -7,58 +7,58 @@ using System.Threading.Tasks;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>One host-owned registration that is released with its plugin resource scope.</summary>
+/// One host-owned registration that is released with its plugin resource scope.
 public interface IPluginRegistration : IDisposable
 {
-    /// <summary>Stable diagnostic name for the registration.</summary>
+    /// Stable diagnostic name for the registration.
     string Name { get; }
 
-    /// <summary>Whether the host has released the registration.</summary>
+    /// Whether the host has released the registration.
     bool IsReleased { get; }
 }
 
-/// <summary>Asynchronous lifecycle for plugins loaded from a host-verified package manifest.</summary>
+/// Asynchronous lifecycle for plugins loaded from a host-verified package manifest.
 public interface IAsyncAlacrityPlugin
 {
-    /// <summary>Initializes plugin state from the host-supplied verified context.</summary>
+    /// Initializes plugin state from the host-supplied verified context.
     Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken);
 
-    /// <summary>Activates registrations and runtime work.</summary>
+    /// Activates registrations and runtime work.
     Task EnableAsync(CancellationToken cancellationToken);
 
-    /// <summary>Stops runtime work before scope cleanup.</summary>
+    /// Stops runtime work before scope cleanup.
     Task DisableAsync(CancellationToken cancellationToken);
 
-    /// <summary>Releases plugin-owned managed state.</summary>
+    /// Releases plugin-owned managed state.
     Task ShutdownAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>Plugin-scoped typed settings boundary. Persistence and recovery are host-owned.</summary>
+/// Plugin-scoped typed settings boundary. Persistence and recovery are host-owned.
 public interface IPluginSettings
 {
-    /// <summary>Registers a typed setting whose persistence is owned by the host.</summary>
+    /// Registers a typed setting whose persistence is owned by the host.
     IPluginSetting<T> Register<T>(PluginSettingDefinition<T> definition);
 
-    /// <summary>Gets a stored value or the supplied default.</summary>
+    /// Gets a stored value or the supplied default.
     T Get<T>(string key, T defaultValue);
 
-    /// <summary>Stores a validated setting value.</summary>
+    /// Stores a validated setting value.
     void Set<T>(string key, T value);
 
-    /// <summary>Removes a stored key.</summary>
+    /// Removes a stored key.
     bool Remove(string key);
 
-    /// <summary>Restores the plugin's registered default values.</summary>
+    /// Restores the plugin's registered default values.
     void ResetToDefaults();
 
-    /// <summary>Raised after a setting changes.</summary>
+    /// Raised after a setting changes.
     event EventHandler<PluginSettingChangedEventArgs> Changed;
 }
 
-/// <summary>Immutable declaration for one plugin-owned typed setting.</summary>
+/// Immutable declaration for one plugin-owned typed setting.
 public sealed class PluginSettingDefinition<T>
 {
-    /// <summary>Creates a typed setting declaration with an optional normalizer.</summary>
+    /// Creates a typed setting declaration with an optional normalizer.
     public PluginSettingDefinition(string key, T defaultValue, Func<T, T>? normalize = null)
     {
         Key = string.IsNullOrWhiteSpace(key) ? throw new ArgumentException("A setting key is required.", nameof(key)) : key;
@@ -66,33 +66,33 @@ public sealed class PluginSettingDefinition<T>
         Normalize = normalize;
     }
 
-    /// <summary>Stable persisted key within the plugin namespace.</summary>
+    /// Stable persisted key within the plugin namespace.
     public string Key { get; }
-    /// <summary>Value returned when no valid persisted value exists.</summary>
+    /// Value returned when no valid persisted value exists.
     public T DefaultValue { get; }
-    /// <summary>Optional host-applied normalization before values are exposed or persisted.</summary>
+    /// Optional host-applied normalization before values are exposed or persisted.
     public Func<T, T>? Normalize { get; }
 }
 
-/// <summary>Host-owned typed setting handle. Subscriptions are released with the owning plugin scope.</summary>
+/// Host-owned typed setting handle. Subscriptions are released with the owning plugin scope.
 public interface IPluginSetting<T>
 {
-    /// <summary>Stable persisted key within the owning plugin namespace.</summary>
+    /// Stable persisted key within the owning plugin namespace.
     string Key { get; }
-    /// <summary>Declared default value.</summary>
+    /// Declared default value.
     T DefaultValue { get; }
-    /// <summary>Current normalized persisted value.</summary>
+    /// Current normalized persisted value.
     T Value { get; set; }
-    /// <summary>Restores the declared default value.</summary>
+    /// Restores the declared default value.
     void Reset();
-    /// <summary>Subscribes to value changes with host-managed lifetime ownership.</summary>
+    /// Subscribes to value changes with host-managed lifetime ownership.
     IPluginRegistration Subscribe(Action<T> handler);
 }
 
-/// <summary>Describes one plugin setting change.</summary>
+/// Describes one plugin setting change.
 public sealed class PluginSettingChangedEventArgs : EventArgs
 {
-    /// <summary>Creates a setting change notification.</summary>
+    /// Creates a setting change notification.
     public PluginSettingChangedEventArgs(string key, object? oldValue, object? newValue)
     {
         Key = string.IsNullOrWhiteSpace(key) ? throw new ArgumentException("A setting key is required.", nameof(key)) : key;
@@ -100,88 +100,88 @@ public sealed class PluginSettingChangedEventArgs : EventArgs
         NewValue = newValue;
     }
 
-    /// <summary>Changed key within the current plugin's settings namespace.</summary>
+    /// Changed key within the current plugin's settings namespace.
     public string Key { get; }
 
-    /// <summary>Previous value, when one existed.</summary>
+    /// Previous value, when one existed.
     public object? OldValue { get; }
 
-    /// <summary>New value, when one exists.</summary>
+    /// New value, when one exists.
     public object? NewValue { get; }
 }
 
-/// <summary>Path-confined storage for one plugin's data directory.</summary>
+/// Path-confined storage for one plugin's data directory.
 public interface IPluginStorage
 {
-    /// <summary>Opens a plugin-owned relative file for reading.</summary>
+    /// Opens a plugin-owned relative file for reading.
     Stream OpenRead(string relativePath);
 
-    /// <summary>Creates or replaces a plugin-owned relative file.</summary>
+    /// Creates or replaces a plugin-owned relative file.
     Stream Create(string relativePath);
 
-    /// <summary>Checks a plugin-owned relative path.</summary>
+    /// Checks a plugin-owned relative path.
     bool Exists(string relativePath);
 
-    /// <summary>Deletes a plugin-owned relative file.</summary>
+    /// Deletes a plugin-owned relative file.
     void Delete(string relativePath);
 
-    /// <summary>Lists paths beneath a plugin-owned relative directory.</summary>
+    /// Lists paths beneath a plugin-owned relative directory.
     IReadOnlyList<string> Enumerate(string relativeDirectory);
 }
 
-/// <summary>Typed snapshot event subscriptions. Handlers run on the host-documented affinity for each event.</summary>
+/// Typed snapshot event subscriptions. Handlers run on the host-documented affinity for each event.
 public interface IPluginEventService
 {
-    /// <summary>Subscribes a handler that is automatically removed when its resource scope is released.</summary>
+    /// Subscribes a handler that is automatically removed when its resource scope is released.
     IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null);
 }
 
-/// <summary>Subscription delivery options.</summary>
+/// Subscription delivery options.
 public sealed class PluginEventOptions
 {
-    /// <summary>Whether host dispatch should stop this subscription after its first delivery.</summary>
+    /// Whether host dispatch should stop this subscription after its first delivery.
     public bool Once { get; set; }
 }
 
-/// <summary>Registers validated plugin commands.</summary>
+/// Registers validated plugin commands.
 public interface IPluginCommandService
 {
-    /// <summary>Registers a command owned by the current plugin.</summary>
+    /// Registers a command owned by the current plugin.
     IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler);
 }
 
-/// <summary>Explicit result of host command dispatch. A failed registered command is still consumed locally.</summary>
+/// Explicit result of host command dispatch. A failed registered command is still consumed locally.
 public enum PluginCommandDispatchResult
 {
-    /// <summary>No plugin owns the requested command.</summary>
+    /// No plugin owns the requested command.
     NotFound,
-    /// <summary>A plugin command handled the invocation successfully.</summary>
+    /// A plugin command handled the invocation successfully.
     Handled,
-    /// <summary>A plugin command was found and consumed but its callback failed.</summary>
+    /// A plugin command was found and consumed but its callback failed.
     HandledWithFailure
 }
 
-/// <summary>Immutable command declaration.</summary>
+/// Immutable command declaration.
 public sealed class PluginCommandDescriptor
 {
-    /// <summary>Creates a command declaration.</summary>
+    /// Creates a command declaration.
     public PluginCommandDescriptor(string id, string helpText)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A command ID is required.", nameof(id)) : id;
         HelpText = string.IsNullOrWhiteSpace(helpText) ? throw new ArgumentException("Help text is required.", nameof(helpText)) : helpText;
     }
 
-    /// <summary>Stable command identifier within the current plugin.</summary>
+    /// Stable command identifier within the current plugin.
     public string Id { get; }
 
-    /// <summary>User-facing help text.</summary>
+    /// User-facing help text.
     public string HelpText { get; }
 }
 
-/// <summary>Validated command invocation arguments.</summary>
+/// Validated command invocation arguments.
 public sealed class PluginCommandInvocation
 {
-    /// <summary>Creates an invocation snapshot.</summary>
+    /// Creates an invocation snapshot.
     public PluginCommandInvocation(IReadOnlyList<string> arguments, Action<string>? reply = null)
     {
         Arguments = arguments ?? throw new ArgumentNullException(nameof(arguments));
@@ -190,10 +190,10 @@ public sealed class PluginCommandInvocation
 
     private readonly Action<string>? reply;
 
-    /// <summary>Immutable argument list.</summary>
+    /// Immutable argument list.
     public IReadOnlyList<string> Arguments { get; }
 
-    /// <summary>Shows host-owned local feedback for this user-issued command when that UI is available.</summary>
+    /// Shows host-owned local feedback for this user-issued command when that UI is available.
     public void Reply(string message)
     {
         if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("A reply message is required.", nameof(message));
@@ -201,35 +201,35 @@ public sealed class PluginCommandInvocation
     }
 }
 
-/// <summary>Registers user-rebindable plugin keybinds.</summary>
+/// Registers user-rebindable plugin keybinds.
 public interface IPluginKeybindService
 {
-    /// <summary>Registers a keybind owned by the current plugin.</summary>
+    /// Registers a keybind owned by the current plugin.
     IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler);
 
-    /// <summary>Registers a held keybind that receives true on press and false on release.</summary>
+    /// Registers a held keybind that receives true on press and false on release.
     IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action<bool> stateHandler);
 }
 
-/// <summary>Determines whether a plugin keybind is invoked once or tracks its held state.</summary>
+/// Determines whether a plugin keybind is invoked once or tracks its held state.
 public enum PluginKeybindActivation
 {
-    /// <summary>Invokes the handler once for each fresh press.</summary>
+    /// Invokes the handler once for each fresh press.
     Press,
-    /// <summary>Invokes the handler when the binding is pressed and released.</summary>
+    /// Invokes the handler when the binding is pressed and released.
     Hold
 }
 
-/// <summary>Immutable keybind declaration.</summary>
+/// Immutable keybind declaration.
 public sealed class PluginKeybindDescriptor
 {
-    /// <summary>Creates a press-activated keybind declaration.</summary>
+    /// Creates a press-activated keybind declaration.
     public PluginKeybindDescriptor(string id, string defaultBinding, string displayName)
         : this(id, defaultBinding, displayName, PluginKeybindActivation.Press)
     {
     }
 
-    /// <summary>Creates a keybind declaration with an explicit activation mode.</summary>
+    /// Creates a keybind declaration with an explicit activation mode.
     public PluginKeybindDescriptor(string id, string defaultBinding, string displayName, PluginKeybindActivation activation)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A keybind ID is required.", nameof(id)) : id;
@@ -239,29 +239,29 @@ public sealed class PluginKeybindDescriptor
         Activation = activation;
     }
 
-    /// <summary>Stable keybind identifier within the current plugin.</summary>
+    /// Stable keybind identifier within the current plugin.
     public string Id { get; }
 
-    /// <summary>Host-parseable default binding.</summary>
+    /// Host-parseable default binding.
     public string DefaultBinding { get; }
 
-    /// <summary>User-facing label.</summary>
+    /// User-facing label.
     public string DisplayName { get; }
 
-    /// <summary>Whether this binding activates once or follows its held state.</summary>
+    /// Whether this binding activates once or follows its held state.
     public PluginKeybindActivation Activation { get; }
 }
 
-/// <summary>Immutable host-provided keybind row used by Terraria's controls-menu adapter.</summary>
+/// Immutable host-provided keybind row used by Terraria's controls-menu adapter.
 public sealed class PluginKeybindRegistration
 {
-    /// <summary>Creates a row owned by a verified plugin package.</summary>
+    /// Creates a row owned by a verified plugin package.
     public PluginKeybindRegistration(PluginId owner, string heading, PluginKeybindDescriptor descriptor)
         : this(owner, heading, descriptor, 0)
     {
     }
 
-    /// <summary>Creates a row with host-owned monotonic registration ordering metadata.</summary>
+    /// Creates a row with host-owned monotonic registration ordering metadata.
     public PluginKeybindRegistration(PluginId owner, string heading, PluginKeybindDescriptor descriptor, long registrationSequence)
     {
         if (!owner.IsValid) throw new ArgumentException("A valid plugin owner is required.", nameof(owner));
@@ -272,107 +272,107 @@ public sealed class PluginKeybindRegistration
         RegistrationSequence = registrationSequence;
     }
 
-    /// <summary>Verified plugin package that owns this binding.</summary>
+    /// Verified plugin package that owns this binding.
     public PluginId Owner { get; }
-    /// <summary>Plugin heading appended after Terraria's built-in control groups.</summary>
+    /// Plugin heading appended after Terraria's built-in control groups.
     public string Heading { get; }
-    /// <summary>Binding declaration and default.</summary>
+    /// Binding declaration and default.
     public PluginKeybindDescriptor Descriptor { get; }
 
-    /// <summary>Host-owned monotonic ordering number; never reused after a registration is removed.</summary>
+    /// Host-owned monotonic ordering number; never reused after a registration is removed.
     public long RegistrationSequence { get; }
 
-    /// <summary>Stable host key used by Terraria input-profile adapters. It is unique across plugin packages.</summary>
+    /// Stable host key used by Terraria input-profile adapters. It is unique across plugin packages.
     public string HostId => Owner.Value + "." + Descriptor.Id;
 }
 
-/// <summary>Atomic immutable view of the host-owned keybind registry.</summary>
+/// Atomic immutable view of the host-owned keybind registry.
 public sealed class PluginKeybindRegistrySnapshot
 {
-    /// <summary>Creates one snapshot returned under the host registry lock.</summary>
+    /// Creates one snapshot returned under the host registry lock.
     public PluginKeybindRegistrySnapshot(long version, IReadOnlyList<PluginKeybindRegistration> registrations)
     {
         Version = version;
         Registrations = registrations ?? throw new ArgumentNullException(nameof(registrations));
     }
 
-    /// <summary>Changes whenever any registration is added or removed.</summary>
+    /// Changes whenever any registration is added or removed.
     public long Version { get; }
 
-    /// <summary>Registrations in deterministic owner and registration order.</summary>
+    /// Registrations in deterministic owner and registration order.
     public IReadOnlyList<PluginKeybindRegistration> Registrations { get; }
 }
 
-/// <summary>Registers UI contributions; the host controls actual layout and rendering.</summary>
+/// Registers UI contributions; the host controls actual layout and rendering.
 public interface IPluginUiService
 {
-    /// <summary>Registers a settings-page contribution.</summary>
+    /// Registers a settings-page contribution.
     IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution);
 
-    /// <summary>Registers a host-rendered interactive setting owned by the current plugin.</summary>
+    /// Registers a host-rendered interactive setting owned by the current plugin.
     IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution);
 
-    /// <summary>Registers a typed host-rendered setting control owned by the current plugin.</summary>
+    /// Registers a typed host-rendered setting control owned by the current plugin.
     IPluginRegistration RegisterSettingsControl(PluginSettingControl control);
 
-    /// <summary>Registers a host-evaluated icon interaction for use by a retained or immediate-mode Terraria surface.</summary>
+    /// Registers a host-evaluated icon interaction for use by a retained or immediate-mode Terraria surface.
     IPluginRegistration RegisterIconInteraction(PluginIconInteractionDescriptor descriptor, Action activate);
 
-    /// <summary>Registers legacy overlay metadata. Use <see cref="IPluginContext.Overlays"/> for drawing callbacks.</summary>
+    /// Registers legacy overlay metadata. Use <see cref="IPluginContext.Overlays"/> for drawing callbacks.
     [Obsolete("Use IPluginContext.Overlays for draw callbacks. This retained UI metadata API is compatibility-only.")]
     IPluginRegistration RegisterOverlay(PluginUiContribution contribution);
 }
 
-/// <summary>Host-neutral rectangle used for pointer hit testing.</summary>
+/// Host-neutral rectangle used for pointer hit testing.
 public readonly struct PluginUiRect
 {
-    /// <summary>Creates a host-neutral rectangle in the coordinate space of the rendering surface.</summary>
+    /// Creates a host-neutral rectangle in the coordinate space of the rendering surface.
     public PluginUiRect(float x, float y, float width, float height) { X = x; Y = y; Width = width; Height = height; }
-    /// <summary>Gets the left coordinate.</summary>
+    /// Gets the left coordinate.
     public float X { get; }
-    /// <summary>Gets the top coordinate.</summary>
+    /// Gets the top coordinate.
     public float Y { get; }
-    /// <summary>Gets the rectangle width.</summary>
+    /// Gets the rectangle width.
     public float Width { get; }
-    /// <summary>Gets the rectangle height.</summary>
+    /// Gets the rectangle height.
     public float Height { get; }
-    /// <summary>Determines whether a point is inside a non-empty rectangle.</summary>
+    /// Determines whether a point is inside a non-empty rectangle.
     public bool Contains(float x, float y) => hasArea && x >= X && x <= X + Width && y >= Y && y <= Y + Height;
     private bool hasArea => Width > 0f && Height > 0f;
 }
 
-/// <summary>Supported visual response when the player hovers a registered icon.</summary>
+/// Supported visual response when the player hovers a registered icon.
 public enum PluginIconHoverEffect
 {
-    /// <summary>Leaves the icon visually unchanged.</summary>
+    /// Leaves the icon visually unchanged.
     None,
-    /// <summary>Applies the configured hover color.</summary>
+    /// Applies the configured hover color.
     Highlight,
-    /// <summary>Applies the configured hover scale.</summary>
+    /// Applies the configured hover scale.
     Expand,
-    /// <summary>Applies both the configured hover color and scale.</summary>
+    /// Applies both the configured hover color and scale.
     HighlightAndExpand
 }
 
-/// <summary>Host-selected placement for a registered icon tooltip.</summary>
+/// Host-selected placement for a registered icon tooltip.
 public enum PluginTooltipPlacement
 {
-    /// <summary>Places the tooltip beside the pointer.</summary>
+    /// Places the tooltip beside the pointer.
     Mouse,
-    /// <summary>Places the tooltip to the left of the pointer.</summary>
+    /// Places the tooltip to the left of the pointer.
     Left,
-    /// <summary>Places the tooltip to the right of the pointer.</summary>
+    /// Places the tooltip to the right of the pointer.
     Right,
-    /// <summary>Places the tooltip above the pointer.</summary>
+    /// Places the tooltip above the pointer.
     Above,
-    /// <summary>Places the tooltip below the pointer.</summary>
+    /// Places the tooltip below the pointer.
     Below
 }
 
-/// <summary>Immutable host-rendered tooltip options for an interactive icon.</summary>
+/// Immutable host-rendered tooltip options for an interactive icon.
 public sealed class PluginTooltipOptions
 {
-    /// <summary>Creates immutable presentation options for an icon tooltip.</summary>
+    /// Creates immutable presentation options for an icon tooltip.
     public PluginTooltipOptions(string text, PluginTooltipPlacement placement = PluginTooltipPlacement.Mouse, PluginColor? color = null, float scale = 1f)
     {
         Text = string.IsNullOrWhiteSpace(text) ? throw new ArgumentException("Tooltip text is required.", nameof(text)) : text;
@@ -380,26 +380,26 @@ public sealed class PluginTooltipOptions
         if (float.IsNaN(scale) || float.IsInfinity(scale) || scale <= 0f) throw new ArgumentOutOfRangeException(nameof(scale));
         Placement = placement; Color = color; Scale = scale;
     }
-    /// <summary>Gets the displayed text.</summary>
+    /// Gets the displayed text.
     public string Text { get; }
-    /// <summary>Gets the requested pointer-relative placement.</summary>
+    /// Gets the requested pointer-relative placement.
     public PluginTooltipPlacement Placement { get; }
-    /// <summary>Gets the optional text color.</summary>
+    /// Gets the optional text color.
     public PluginColor? Color { get; }
-    /// <summary>Gets the host-relative text scale.</summary>
+    /// Gets the host-relative text scale.
     public float Scale { get; }
 }
 
-/// <summary>Immutable declaration for one owner-local icon interaction.</summary>
+/// Immutable declaration for one owner-local icon interaction.
 public sealed class PluginIconInteractionDescriptor
 {
-    /// <summary>Creates an immutable owner-local icon interaction declaration.</summary>
+    /// Creates an immutable owner-local icon interaction declaration.
     public PluginIconInteractionDescriptor(string id, PluginIconHoverEffect hoverEffect = PluginIconHoverEffect.Highlight, float hoverScale = 1.15f, PluginColor? normalColor = null, PluginColor? hoverColor = null, PluginTooltipOptions? tooltip = null)
         : this(id, hoverEffect, hoverScale, normalColor, hoverColor, tooltip, null)
     {
     }
 
-    /// <summary>Creates an immutable owner-local icon interaction declaration.</summary>
+    /// Creates an immutable owner-local icon interaction declaration.
     public PluginIconInteractionDescriptor(string id, PluginIconHoverEffect hoverEffect, float hoverScale, PluginColor? normalColor, PluginColor? hoverColor, PluginTooltipOptions? tooltip, Func<PluginTooltipOptions?>? tooltipProvider)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("An icon interaction ID is required.", nameof(id)) : id;
@@ -407,50 +407,50 @@ public sealed class PluginIconInteractionDescriptor
         if (float.IsNaN(hoverScale) || float.IsInfinity(hoverScale) || hoverScale < 1f || hoverScale > 2f) throw new ArgumentOutOfRangeException(nameof(hoverScale));
         HoverEffect = hoverEffect; HoverScale = hoverScale; NormalColor = normalColor; HoverColor = hoverColor; Tooltip = tooltip; TooltipProvider = tooltipProvider;
     }
-    /// <summary>Gets the owner-local stable interaction identifier.</summary>
+    /// Gets the owner-local stable interaction identifier.
     public string Id { get; }
-    /// <summary>Gets the requested hover visual effect.</summary>
+    /// Gets the requested hover visual effect.
     public PluginIconHoverEffect HoverEffect { get; }
-    /// <summary>Gets the scale applied for expanding hover effects.</summary>
+    /// Gets the scale applied for expanding hover effects.
     public float HoverScale { get; }
-    /// <summary>Gets the optional normal icon color.</summary>
+    /// Gets the optional normal icon color.
     public PluginColor? NormalColor { get; }
-    /// <summary>Gets the optional highlighted icon color.</summary>
+    /// Gets the optional highlighted icon color.
     public PluginColor? HoverColor { get; }
-    /// <summary>Gets the optional tooltip declaration.</summary>
+    /// Gets the optional tooltip declaration.
     public PluginTooltipOptions? Tooltip { get; }
-    /// <summary>Gets an optional hover-time tooltip resolver for state-dependent labels.</summary>
+    /// Gets an optional hover-time tooltip resolver for state-dependent labels.
     public Func<PluginTooltipOptions?>? TooltipProvider { get; }
 }
 
-/// <summary>Resolved visual and activation state returned by the host for the current pointer position.</summary>
+/// Resolved visual and activation state returned by the host for the current pointer position.
 public readonly struct PluginIconInteractionState
 {
-    /// <summary>Creates the state resolved by the host for the current pointer position.</summary>
+    /// Creates the state resolved by the host for the current pointer position.
     public PluginIconInteractionState(bool isRegistered, bool isHovered, float scale, PluginColor? color, PluginTooltipOptions? tooltip) { IsRegistered = isRegistered; IsHovered = isHovered; Scale = scale; Color = color; Tooltip = tooltip; }
-    /// <summary>Gets whether the requested owner-local interaction remains active.</summary>
+    /// Gets whether the requested owner-local interaction remains active.
     public bool IsRegistered { get; }
-    /// <summary>Gets whether the current pointer is within the supplied bounds.</summary>
+    /// Gets whether the current pointer is within the supplied bounds.
     public bool IsHovered { get; }
-    /// <summary>Gets the host-resolved icon scale.</summary>
+    /// Gets the host-resolved icon scale.
     public float Scale { get; }
-    /// <summary>Gets the host-resolved icon color.</summary>
+    /// Gets the host-resolved icon color.
     public PluginColor? Color { get; }
-    /// <summary>Gets the tooltip to render while hovered.</summary>
+    /// Gets the tooltip to render while hovered.
     public PluginTooltipOptions? Tooltip { get; }
 }
 
-/// <summary>Host-rendered UI contribution metadata.</summary>
+/// Host-rendered UI contribution metadata.
 public sealed class PluginUiContribution
 {
-    /// <summary>Creates a contribution declaration.</summary>
+    /// Creates a contribution declaration.
     public PluginUiContribution(string id, string displayName)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A UI contribution ID is required.", nameof(id)) : id;
         DisplayName = string.IsNullOrWhiteSpace(displayName) ? throw new ArgumentException("A display name is required.", nameof(displayName)) : displayName;
     }
 
-    /// <summary>Creates an interactive setting with plugin-owned value and activation delegates.</summary>
+    /// Creates an interactive setting with plugin-owned value and activation delegates.
     public PluginUiContribution(string id, string displayName, Func<string> valueText, Action activate)
         : this(id, displayName)
     {
@@ -458,49 +458,49 @@ public sealed class PluginUiContribution
         Activate = activate ?? throw new ArgumentNullException(nameof(activate));
     }
 
-    /// <summary>Stable contribution identifier within the current plugin.</summary>
+    /// Stable contribution identifier within the current plugin.
     public string Id { get; }
 
-    /// <summary>User-facing display name.</summary>
+    /// User-facing display name.
     public string DisplayName { get; }
 
-    /// <summary>Gets the current setting value while the contribution is visible.</summary>
+    /// Gets the current setting value while the contribution is visible.
     public Func<string>? ValueText { get; }
 
-    /// <summary>Changes the setting when the player activates the control.</summary>
+    /// Changes the setting when the player activates the control.
     public Action? Activate { get; }
 
-    /// <summary>Whether this contribution is a host-rendered interactive setting.</summary>
+    /// Whether this contribution is a host-rendered interactive setting.
     public bool IsInteractive => ValueText != null && Activate != null;
 }
 
-/// <summary>Host-rendered setting control kinds supported by the stable plugin UI contract.</summary>
+/// Host-rendered setting control kinds supported by the stable plugin UI contract.
 public enum PluginSettingControlKind
 {
-    /// <summary>A two-state enabled or disabled control.</summary>
+    /// A two-state enabled or disabled control.
     Toggle,
-    /// <summary>A control which cycles through declared values.</summary>
+    /// A control which cycles through declared values.
     Cycle,
-    /// <summary>A bounded numeric slider.</summary>
+    /// A bounded numeric slider.
     Slider,
-    /// <summary>A three-channel color picker with hexadecimal import and export.</summary>
+    /// A three-channel color picker with hexadecimal import and export.
     Color
 }
 
-/// <summary>Terraria-independent RGB color used by plugin settings contracts.</summary>
+/// Terraria-independent RGB color used by plugin settings contracts.
 public readonly struct PluginColor : IEquatable<PluginColor>
 {
-    /// <summary>Creates an opaque RGB color.</summary>
+    /// Creates an opaque RGB color.
     public PluginColor(byte red, byte green, byte blue) { Red = red; Green = green; Blue = blue; }
-    /// <summary>Red channel.</summary>
+    /// Red channel.
     public byte Red { get; }
-    /// <summary>Green channel.</summary>
+    /// Green channel.
     public byte Green { get; }
-    /// <summary>Blue channel.</summary>
+    /// Blue channel.
     public byte Blue { get; }
-    /// <summary>Formats the color as a six-digit hexadecimal value.</summary>
+    /// Formats the color as a six-digit hexadecimal value.
     public string ToHex() => "#" + Red.ToString("X2") + Green.ToString("X2") + Blue.ToString("X2");
-    /// <summary>Parses a #RRGGBB or RRGGBB color.</summary>
+    /// Parses a #RRGGBB or RRGGBB color.
     public static bool TryParseHex(string? value, out PluginColor color)
     {
         color = default;
@@ -519,7 +519,7 @@ public readonly struct PluginColor : IEquatable<PluginColor>
     public override int GetHashCode() => (Red << 16) | (Green << 8) | Blue;
 }
 
-/// <summary>Typed plugin setting metadata and host callbacks. Factories validate their stable declarations eagerly.</summary>
+/// Typed plugin setting metadata and host callbacks. Factories validate their stable declarations eagerly.
 public sealed class PluginSettingControl
 {
     private PluginSettingControl(string id, string displayName, PluginSettingControlKind kind)
@@ -529,111 +529,111 @@ public sealed class PluginSettingControl
         Kind = kind;
     }
 
-    /// <summary>Stable control ID within the owning plugin.</summary>
+    /// Stable control ID within the owning plugin.
     public string Id { get; }
-    /// <summary>User-facing setting label.</summary>
+    /// User-facing setting label.
     public string DisplayName { get; }
-    /// <summary>How the host renders and edits this control.</summary>
+    /// How the host renders and edits this control.
     public PluginSettingControlKind Kind { get; }
-    /// <summary>Owning settings page ID when the plugin registered this control through the retained page model.</summary>
+    /// Owning settings page ID when the plugin registered this control through the retained page model.
     public string? PageId { get; private set; }
-    /// <summary>Reads the current toggle value.</summary>
+    /// Reads the current toggle value.
     public Func<bool>? GetToggle { get; private set; }
-    /// <summary>Writes a toggle value.</summary>
+    /// Writes a toggle value.
     public Action<bool>? SetToggle { get; private set; }
-    /// <summary>Declared cycle values in display order.</summary>
+    /// Declared cycle values in display order.
     public IReadOnlyList<string>? CycleValues { get; private set; }
-    /// <summary>Reads the current cycle value.</summary>
+    /// Reads the current cycle value.
     public Func<string>? GetCycle { get; private set; }
-    /// <summary>Writes a cycle value.</summary>
+    /// Writes a cycle value.
     public Action<string>? SetCycle { get; private set; }
-    /// <summary>Inclusive slider minimum.</summary>
+    /// Inclusive slider minimum.
     public float Minimum { get; private set; }
-    /// <summary>Inclusive slider maximum.</summary>
+    /// Inclusive slider maximum.
     public float Maximum { get; private set; }
-    /// <summary>Slider increment, or zero for continuous movement.</summary>
+    /// Slider increment, or zero for continuous movement.
     public float Step { get; private set; }
-    /// <summary>Reads the slider value.</summary>
+    /// Reads the slider value.
     public Func<float>? GetSlider { get; private set; }
-    /// <summary>Writes the slider value.</summary>
+    /// Writes the slider value.
     public Action<float>? SetSlider { get; private set; }
-    /// <summary>Optional slider display formatter.</summary>
+    /// Optional slider display formatter.
     public Func<float, string>? FormatSlider { get; private set; }
-    /// <summary>Reads the RGB color.</summary>
+    /// Reads the RGB color.
     public Func<PluginColor>? GetColor { get; private set; }
-    /// <summary>Writes the RGB color.</summary>
+    /// Writes the RGB color.
     public Action<PluginColor>? SetColor { get; private set; }
 
-    /// <summary>Creates a Terraria-style enabled or disabled setting.</summary>
+    /// Creates a Terraria-style enabled or disabled setting.
     public static PluginSettingControl Toggle(string id, string displayName, Func<bool> getValue, Action<bool> setValue)
     {
         var control = new PluginSettingControl(id, displayName, PluginSettingControlKind.Toggle) { GetToggle = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetToggle = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
         return control;
     }
 
-    /// <summary>Creates a toggle directly bound to a host-owned typed setting.</summary>
+    /// Creates a toggle directly bound to a host-owned typed setting.
     public static PluginSettingControl Toggle(string id, string displayName, IPluginSetting<bool> setting)
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Toggle(id, displayName, () => setting.Value, value => setting.Value = value);
     }
 
-    /// <summary>Creates a Terraria-style cycling setting.</summary>
+    /// Creates a Terraria-style cycling setting.
     public static PluginSettingControl Cycle(string id, string displayName, IReadOnlyList<string> values, Func<string> getValue, Action<string> setValue)
     {
         if (values == null || values.Count < 2 || values.Any(string.IsNullOrWhiteSpace)) throw new ArgumentException("A cycle needs at least two non-empty values.", nameof(values));
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Cycle) { CycleValues = values.ToArray(), GetCycle = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetCycle = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
     }
 
-    /// <summary>Creates a cycle directly bound to a host-owned string setting.</summary>
+    /// Creates a cycle directly bound to a host-owned string setting.
     public static PluginSettingControl Cycle(string id, string displayName, IReadOnlyList<string> values, IPluginSetting<string> setting)
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Cycle(id, displayName, values, () => setting.Value, value => setting.Value = value);
     }
 
-    /// <summary>Creates a bounded Terraria-style numeric slider.</summary>
+    /// Creates a bounded Terraria-style numeric slider.
     public static PluginSettingControl Slider(string id, string displayName, float minimum, float maximum, float step, Func<float> getValue, Action<float> setValue, Func<float, string>? formatter = null)
     {
         if (float.IsNaN(minimum) || float.IsNaN(maximum) || minimum >= maximum || step < 0f) throw new ArgumentOutOfRangeException(nameof(minimum), "Slider bounds or step are invalid.");
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Slider) { Minimum = minimum, Maximum = maximum, Step = step, GetSlider = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetSlider = setValue ?? throw new ArgumentNullException(nameof(setValue)), FormatSlider = formatter };
     }
 
-    /// <summary>Creates a slider directly bound to a host-owned float setting.</summary>
+    /// Creates a slider directly bound to a host-owned float setting.
     public static PluginSettingControl Slider(string id, string displayName, float minimum, float maximum, float step, IPluginSetting<float> setting, Func<float, string>? formatter = null)
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Slider(id, displayName, minimum, maximum, step, () => setting.Value, value => setting.Value = value, formatter);
     }
 
-    /// <summary>Creates a discrete slider directly bound to a host-owned integer setting.</summary>
+    /// Creates a discrete slider directly bound to a host-owned integer setting.
     public static PluginSettingControl Slider(string id, string displayName, float minimum, float maximum, float step, IPluginSetting<int> setting, Func<float, string>? formatter = null)
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Slider(id, displayName, minimum, maximum, step, () => setting.Value, value => setting.Value = (int)Math.Round(value), formatter);
     }
 
-    /// <summary>Creates a three-channel Terraria-style color picker with host-owned hexadecimal copy and paste.</summary>
+    /// Creates a three-channel Terraria-style color picker with host-owned hexadecimal copy and paste.
     public static PluginSettingControl Color(string id, string displayName, Func<PluginColor> getValue, Action<PluginColor> setValue)
     {
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Color) { GetColor = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetColor = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
     }
 
-    /// <summary>Creates a color control directly bound to a host-owned color setting.</summary>
+    /// Creates a color control directly bound to a host-owned color setting.
     public static PluginSettingControl Color(string id, string displayName, IPluginSetting<PluginColor> setting)
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Color(id, displayName, () => setting.Value, value => setting.Value = value);
     }
 
-    /// <summary>Creates a color control bound to a legacy hexadecimal string setting without changing its persisted format.</summary>
+    /// Creates a color control bound to a legacy hexadecimal string setting without changing its persisted format.
     public static PluginSettingControl Color(string id, string displayName, IPluginSetting<string> setting, PluginColor defaultValue)
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Color(id, displayName, () => PluginColor.TryParseHex(setting.Value, out PluginColor value) ? value : defaultValue, value => setting.Value = value.ToHex());
     }
 
-    /// <summary>Associates this retained control with one owner-local settings page.</summary>
+    /// Associates this retained control with one owner-local settings page.
     public PluginSettingControl InPage(string pageId)
     {
         if (string.IsNullOrWhiteSpace(pageId)) throw new ArgumentException("A settings page ID is required.", nameof(pageId));
@@ -644,68 +644,68 @@ public sealed class PluginSettingControl
 
 }
 
-/// <summary>Host-mediated service publication and discovery.</summary>
+/// Host-mediated service publication and discovery.
 public interface IPluginServiceRegistry
 {
-    /// <summary>Publishes a contract implementation owned by the current plugin.</summary>
+    /// Publishes a contract implementation owned by the current plugin.
     IPluginRegistration Publish<TService>(TService service) where TService : class;
 
-    /// <summary>Gets an active service contract without referencing its provider implementation.</summary>
+    /// Gets an active service contract without referencing its provider implementation.
     bool TryGet<TService>(out TService? service) where TService : class;
 
-    /// <summary>Gets a declared dependency service or throws a clear availability error.</summary>
+    /// Gets a declared dependency service or throws a clear availability error.
     TService GetRequired<TService>() where TService : class;
 }
 
-/// <summary>Read-only multiplayer session state supplied by the host.</summary>
+/// Read-only multiplayer session state supplied by the host.
 public interface IMultiplayerSession
 {
-    /// <summary>Whether the client has an active multiplayer connection.</summary>
+    /// Whether the client has an active multiplayer connection.
     bool IsConnected { get; }
 
-    /// <summary>Whether the session remains compatible with vanilla servers.</summary>
+    /// Whether the session remains compatible with vanilla servers.
     bool IsVanillaCompatibleMode { get; }
 
-    /// <summary>Whether the connected server understands Alacrity policy negotiation.</summary>
+    /// Whether the connected server understands Alacrity policy negotiation.
     bool IsAlacrityAwareServer { get; }
 
-    /// <summary>Current server identity, when connected.</summary>
+    /// Current server identity, when connected.
     ServerIdentity? Server { get; }
 
-    /// <summary>Current host-validated server policy, when available.</summary>
+    /// Current host-validated server policy, when available.
     ServerPluginPolicySnapshot? ActivePolicy { get; }
 }
 
-/// <summary>Read-only server identity.</summary>
+/// Read-only server identity.
 public sealed class ServerIdentity
 {
-    /// <summary>Creates a server identity.</summary>
+    /// Creates a server identity.
     public ServerIdentity(string address, string? displayName = null)
     {
         Address = string.IsNullOrWhiteSpace(address) ? throw new ArgumentException("A server address is required.", nameof(address)) : address;
         DisplayName = displayName;
     }
 
-    /// <summary>Host and port used for the active session.</summary>
+    /// Host and port used for the active session.
     public string Address { get; }
 
-    /// <summary>Server-provided display name, when available.</summary>
+    /// Server-provided display name, when available.
     public string? DisplayName { get; }
 }
 
-/// <summary>Immutable effective policy state; desired user state never overrides a denial.</summary>
+/// Immutable effective policy state; desired user state never overrides a denial.
 public sealed class ServerPluginPolicySnapshot
 {
-    /// <summary>Creates a policy snapshot.</summary>
+    /// Creates a policy snapshot.
     public ServerPluginPolicySnapshot(IReadOnlyCollection<PluginId> deniedPlugins)
     {
         DeniedPlugins = deniedPlugins ?? throw new ArgumentNullException(nameof(deniedPlugins));
     }
 
-    /// <summary>Plugins denied by the active server policy.</summary>
+    /// Plugins denied by the active server policy.
     public IReadOnlyCollection<PluginId> DeniedPlugins { get; }
 
-    /// <summary>Whether the policy denies a plugin.</summary>
+    /// Whether the policy denies a plugin.
     public bool IsDenied(PluginId pluginId)
     {
         foreach (var deniedPlugin in DeniedPlugins)

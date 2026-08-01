@@ -112,6 +112,8 @@ public interface IPluginPlayerSnapshotDemandService
     IPluginRegistration RequestPlayerBuffSnapshots();
     /// <summary>Requests bounded host-side suspected-bot classification while the registration remains active.</summary>
     IPluginRegistration RequestSuspectedBotClassification();
+    /// <summary>Requests one immediate refresh of the bounded suspected-bot classification cache.</summary>
+    void RefreshSuspectedBotClassification();
 }
 
 #pragma warning restore CS1591
