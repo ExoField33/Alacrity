@@ -13,15 +13,29 @@ public enum PluginOverlayLayer
     Foreground = 200
 }
 
+/// <summary>Coordinate space and verified Terraria draw phase for a host-rendered overlay.</summary>
+public enum PluginOverlaySpace
+{
+    /// <summary>World coordinates projected through the active Terraria camera.</summary>
+    World = 0,
+    /// <summary>Gameplay HUD coordinates after Terraria's UI transform is active.</summary>
+    Hud = 1,
+    /// <summary>Main-menu coordinates while Terraria is drawing its menu UI.</summary>
+    Menu = 2
+}
+
 /// <summary>Immutable declaration for one host-owned overlay callback.</summary>
 public sealed class PluginOverlayDescriptor
 {
     /// <summary>Creates an immutable overlay declaration.</summary>
-    public PluginOverlayDescriptor(string id, PluginOverlayLayer layer = PluginOverlayLayer.Foreground, int order = 0)
+    public PluginOverlayDescriptor(string id, PluginOverlayLayer layer = PluginOverlayLayer.Foreground, int order = 0, PluginOverlaySpace space = PluginOverlaySpace.World)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("An overlay ID is required.", nameof(id)) : id;
+        if (!Enum.IsDefined(typeof(PluginOverlayLayer), layer)) throw new ArgumentOutOfRangeException(nameof(layer));
+        if (!Enum.IsDefined(typeof(PluginOverlaySpace), space)) throw new ArgumentOutOfRangeException(nameof(space));
         Layer = layer;
         Order = order;
+        Space = space;
     }
 
     /// <summary>Stable overlay ID within its plugin.</summary>
@@ -30,6 +44,8 @@ public sealed class PluginOverlayDescriptor
     public PluginOverlayLayer Layer { get; }
     /// <summary>Order within the declared layer.</summary>
     public int Order { get; }
+    /// <summary>Host coordinate space and draw phase for this contribution.</summary>
+    public PluginOverlaySpace Space { get; }
 }
 
 /// <summary>Immutable draw-frame data supplied by the host at the documented overlay phase.</summary>
@@ -37,6 +53,12 @@ public readonly struct PluginOverlayFrame
 {
     /// <summary>Creates an immutable host draw-frame snapshot.</summary>
     public PluginOverlayFrame(int screenWidth, int screenHeight, float uiScale, bool isGameMenu, TimeSpan presentationTime)
+        : this(screenWidth, screenHeight, uiScale, isGameMenu, presentationTime, 0)
+    {
+    }
+
+    /// <summary>Creates an immutable host draw-frame snapshot with a separate simulation identity.</summary>
+    public PluginOverlayFrame(int screenWidth, int screenHeight, float uiScale, bool isGameMenu, TimeSpan presentationTime, long simulationVersion)
     {
         if (screenWidth < 0) throw new ArgumentOutOfRangeException(nameof(screenWidth));
         if (screenHeight < 0) throw new ArgumentOutOfRangeException(nameof(screenHeight));
@@ -46,6 +68,7 @@ public readonly struct PluginOverlayFrame
         UiScale = uiScale;
         IsGameMenu = isGameMenu;
         PresentationTime = presentationTime;
+        SimulationVersion = simulationVersion;
     }
 
     /// <summary>Current drawable width in pixels.</summary>
@@ -58,6 +81,8 @@ public readonly struct PluginOverlayFrame
     public bool IsGameMenu { get; }
     /// <summary>Host-local presentation timestamp.</summary>
     public TimeSpan PresentationTime { get; }
+    /// <summary>Host simulation tick or version; it is not a presentation timestamp.</summary>
+    public long SimulationVersion { get; }
 }
 
 /// <summary>Value color passed to host-rendered overlay commands.</summary>

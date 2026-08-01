@@ -8,6 +8,17 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
 {
     private IPluginContext? context;
     private IPluginEntitySnapshotService? entities;
+    private IPluginSetting<bool>? showPlayersSetting;
+    private IPluginSetting<bool>? showNpcsSetting;
+    private IPluginSetting<bool>? showProjectilesSetting;
+    private IPluginSetting<bool>? showFriendlyProjectilesSetting;
+    private IPluginSetting<bool>? showHostileProjectilesSetting;
+    private IPluginSetting<bool>? showSwingsSetting;
+    private IPluginSetting<string>? playerColorSetting;
+    private IPluginSetting<string>? npcColorSetting;
+    private IPluginSetting<string>? friendlyProjectileColorSetting;
+    private IPluginSetting<string>? hostileProjectileColorSetting;
+    private IPluginSetting<string>? swingColorSetting;
     private readonly System.Collections.Generic.List<PluginEntitySnapshot> entityBuffer = new System.Collections.Generic.List<PluginEntitySnapshot>(512);
     private readonly System.Collections.Generic.List<PluginEntitySnapshot> swingBuffer = new System.Collections.Generic.List<PluginEntitySnapshot>(32);
     private bool showPlayers;
@@ -26,30 +37,40 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
         entities = context.Terraria.Entities;
-        showPlayers = context.Settings.Get("showPlayerHitboxes", false);
-        showNpcs = context.Settings.Get("showNpcHitboxes", false);
-        showProjectiles = context.Settings.Get("showProjectileHitboxes", false);
-        showFriendlyProjectiles = context.Settings.Get("showFriendlyProjectileHitboxes", true);
-        showHostileProjectiles = context.Settings.Get("showHostileProjectileHitboxes", true);
-        showSwings = context.Settings.Get("showSwingHitboxes", false);
-        playerColor = ReadColor("playerHitboxColor", playerColor);
-        npcColor = ReadColor("npcHitboxColor", npcColor);
-        friendlyProjectileColor = ReadColor("friendlyProjectileHitboxColor", friendlyProjectileColor);
-        hostileProjectileColor = ReadColor("hostileProjectileHitboxColor", hostileProjectileColor);
-        swingColor = ReadColor("swingHitboxColor", swingColor);
+        if (entities is IPluginMeleeCollisionSnapshotService meleeSnapshots)
+            meleeSnapshots.RequestMeleeCollisionSnapshots();
+        showPlayersSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showPlayerHitboxes", false));
+        showNpcsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showNpcHitboxes", false));
+        showProjectilesSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showProjectileHitboxes", false));
+        showFriendlyProjectilesSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showFriendlyProjectileHitboxes", true));
+        showHostileProjectilesSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showHostileProjectileHitboxes", true));
+        showSwingsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showSwingHitboxes", false));
+        playerColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("playerHitboxColor", playerColor.ToHex()));
+        npcColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("npcHitboxColor", npcColor.ToHex()));
+        friendlyProjectileColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("friendlyProjectileHitboxColor", friendlyProjectileColor.ToHex()));
+        hostileProjectileColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("hostileProjectileHitboxColor", hostileProjectileColor.ToHex()));
+        swingColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("swingHitboxColor", swingColor.ToHex()));
+        showPlayers = showPlayersSetting.Value; showNpcs = showNpcsSetting.Value; showProjectiles = showProjectilesSetting.Value;
+        showFriendlyProjectiles = showFriendlyProjectilesSetting.Value; showHostileProjectiles = showHostileProjectilesSetting.Value; showSwings = showSwingsSetting.Value;
+        playerColor = ReadColor(playerColorSetting.Value, playerColor); npcColor = ReadColor(npcColorSetting.Value, npcColor);
+        friendlyProjectileColor = ReadColor(friendlyProjectileColorSetting.Value, friendlyProjectileColor); hostileProjectileColor = ReadColor(hostileProjectileColorSetting.Value, hostileProjectileColor); swingColor = ReadColor(swingColorSetting.Value, swingColor);
+        showPlayersSetting.Subscribe(value => showPlayers = value); showNpcsSetting.Subscribe(value => showNpcs = value); showProjectilesSetting.Subscribe(value => showProjectiles = value);
+        showFriendlyProjectilesSetting.Subscribe(value => showFriendlyProjectiles = value); showHostileProjectilesSetting.Subscribe(value => showHostileProjectiles = value); showSwingsSetting.Subscribe(value => showSwings = value);
+        playerColorSetting.Subscribe(value => playerColor = ReadColor(value, playerColor)); npcColorSetting.Subscribe(value => npcColor = ReadColor(value, npcColor));
+        friendlyProjectileColorSetting.Subscribe(value => friendlyProjectileColor = ReadColor(value, friendlyProjectileColor)); hostileProjectileColorSetting.Subscribe(value => hostileProjectileColor = ReadColor(value, hostileProjectileColor)); swingColorSetting.Subscribe(value => swingColor = ReadColor(value, swingColor));
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("hitboxes", "Hitboxes"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-hitboxes", "Player Hitboxes", () => showPlayers, value => Set("showPlayerHitboxes", value, ref showPlayers)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("npc-hitboxes", "NPC Hitboxes", () => showNpcs, value => Set("showNpcHitboxes", value, ref showNpcs)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("projectile-hitboxes", "Projectile Hitboxes", () => showProjectiles, value => Set("showProjectileHitboxes", value, ref showProjectiles)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("friendly-projectile-hitboxes", "Friendly Projectile Hitboxes", () => showFriendlyProjectiles, value => Set("showFriendlyProjectileHitboxes", value, ref showFriendlyProjectiles)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("hostile-projectile-hitboxes", "Hostile Projectile Hitboxes", () => showHostileProjectiles, value => Set("showHostileProjectileHitboxes", value, ref showHostileProjectiles)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("swing-hitboxes", "Swing Hitboxes", () => showSwings, value => Set("showSwingHitboxes", value, ref showSwings)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("player-hitbox-color", "Player Hitbox Color", () => playerColor, value => SetColor("playerHitboxColor", value, ref playerColor)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("npc-hitbox-color", "NPC Hitbox Color", () => npcColor, value => SetColor("npcHitboxColor", value, ref npcColor)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("friendly-projectile-hitbox-color", "Friendly Projectile Color", () => friendlyProjectileColor, value => SetColor("friendlyProjectileHitboxColor", value, ref friendlyProjectileColor)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("hostile-projectile-hitbox-color", "Hostile Projectile Color", () => hostileProjectileColor, value => SetColor("hostileProjectileHitboxColor", value, ref hostileProjectileColor)));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("swing-hitbox-color", "Swing Hitbox Color", () => swingColor, value => SetColor("swingHitboxColor", value, ref swingColor)));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-hitboxes", "Player Hitboxes", showPlayersSetting).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("npc-hitboxes", "NPC Hitboxes", showNpcsSetting).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("projectile-hitboxes", "Projectile Hitboxes", showProjectilesSetting).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("friendly-projectile-hitboxes", "Friendly Projectile Hitboxes", showFriendlyProjectilesSetting).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("hostile-projectile-hitboxes", "Hostile Projectile Hitboxes", showHostileProjectilesSetting).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("swing-hitboxes", "Swing Hitboxes", showSwingsSetting).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("player-hitbox-color", "Player Hitbox Color", playerColorSetting, playerColor).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("npc-hitbox-color", "NPC Hitbox Color", npcColorSetting, npcColor).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("friendly-projectile-hitbox-color", "Friendly Projectile Color", friendlyProjectileColorSetting, friendlyProjectileColor).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("hostile-projectile-hitbox-color", "Hostile Projectile Color", hostileProjectileColorSetting, hostileProjectileColor).InPage("hitboxes"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Color("swing-hitbox-color", "Swing Hitbox Color", swingColorSetting, swingColor).InPage("hitboxes"));
         context.Overlays.Register(new PluginOverlayDescriptor("hitbox-overlay", PluginOverlayLayer.WorldMarkers), DrawOverlay);
     }
 
@@ -60,28 +81,12 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
         entityBuffer.Clear();
         swingBuffer.Clear();
         entities = null;
+        showPlayersSetting = null; showNpcsSetting = null; showProjectilesSetting = null; showFriendlyProjectilesSetting = null; showHostileProjectilesSetting = null; showSwingsSetting = null;
+        playerColorSetting = null; npcColorSetting = null; friendlyProjectileColorSetting = null; hostileProjectileColorSetting = null; swingColorSetting = null;
         context = null;
     }
 
-    private PluginColor ReadColor(string key, PluginColor fallback)
-    {
-        string stored = context!.Settings.Get(key, fallback.ToHex());
-        return PluginColor.TryParseHex(stored, out PluginColor parsed) ? parsed : fallback;
-    }
-
-    private void Set(string key, bool value, ref bool field)
-    {
-        if (field == value) return;
-        field = value;
-        context?.Settings.Set(key, value);
-    }
-
-    private void SetColor(string key, PluginColor value, ref PluginColor field)
-    {
-        if (field.Equals(value)) return;
-        field = value;
-        context?.Settings.Set(key, value.ToHex());
-    }
+    private static PluginColor ReadColor(string value, PluginColor fallback) => PluginColor.TryParseHex(value, out PluginColor parsed) ? parsed : fallback;
 
     private void DrawOverlay(IPluginOverlayCanvas canvas, PluginOverlayFrame frame)
     {

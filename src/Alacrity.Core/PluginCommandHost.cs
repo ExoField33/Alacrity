@@ -17,15 +17,30 @@ public sealed class PluginCommandHost
         return new ScopedService(this, resources);
     }
 
-    /// <summary>Dispatches a parsed command invocation; returns false when no command is registered.</summary>
-    public bool TryInvoke(string id, IReadOnlyList<string> arguments, Action<string>? reply = null)
+    /// <summary>Dispatches a parsed command invocation with explicit consumed/failure semantics.</summary>
+    public PluginCommandDispatchResult Dispatch(string id, IReadOnlyList<string> arguments, Action<string>? reply = null, IPluginLogger? diagnostics = null)
     {
-        if (string.IsNullOrWhiteSpace(id)) return false;
+        if (string.IsNullOrWhiteSpace(id)) return PluginCommandDispatchResult.NotFound;
         CommandRegistration? registration;
         lock (gate) commands.TryGetValue(id, out registration);
-        if (registration == null) return false;
-        registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>(), reply));
-        return true;
+        if (registration == null) return PluginCommandDispatchResult.NotFound;
+        try
+        {
+            registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>(), reply));
+            return PluginCommandDispatchResult.Handled;
+        }
+        catch (Exception exception)
+        {
+            diagnostics?.Error("Plugin command '" + registration.Descriptor.Id + "' failed.", exception);
+            reply?.Invoke("Plugin command failed: " + registration.Descriptor.Id);
+            return PluginCommandDispatchResult.HandledWithFailure;
+        }
+    }
+
+    /// <summary>Compatibility wrapper; failures remain consumed and therefore return true.</summary>
+    public bool TryInvoke(string id, IReadOnlyList<string> arguments, Action<string>? reply = null)
+    {
+        return Dispatch(id, arguments, reply) != PluginCommandDispatchResult.NotFound;
     }
 
     private IPluginRegistration Register(IPluginResourceScope resources, PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler)

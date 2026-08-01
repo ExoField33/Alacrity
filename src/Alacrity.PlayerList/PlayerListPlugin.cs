@@ -1,12 +1,34 @@
 using System;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.PlayerList;
 
-/// <summary>Owns the local presentation preferences and stable service contract for the player list.</summary>
+/// <summary>Owns Player List settings and renders the list through generic snapshot and HUD services.</summary>
 public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
 {
-    private IPluginContext? context;
+    private const int CyborgNpcId = 209;
+    private static readonly Regex TerrariaTagRegex = new Regex("\\[[a-zA-Z]+(?:/[^:\\]]+)?[:]([^\\]]*)\\]", RegexOptions.Compiled);
+    private static readonly PluginOverlayColor PanelColor = new PluginOverlayColor(33, 15, 91, 230);
+    private static readonly PluginOverlayColor LightRowColor = new PluginOverlayColor(48, 36, 112, 95);
+    private static readonly PluginOverlayColor DarkRowColor = new PluginOverlayColor(21, 14, 64, 80);
+    private static readonly PluginOverlayColor White = new PluginOverlayColor(255, 255, 255);
+
+    private IPluginSetting<int>? playersPerColumnSetting;
+    private IPluginSetting<int>? rowWidthSetting;
+    private IPluginSetting<int>? textScaleSetting;
+    private IPluginSetting<bool>? showPlayerHeadsSetting;
+    private IPluginSetting<bool>? showPingSetting;
+    private IPluginSetting<bool>? hideBotsSetting;
+    private IPluginSetting<string>? sortModeSetting;
+    private IPluginSetting<string>? displayModeSetting;
+    private IPluginPlayerService? players;
+    private IPluginSessionPresentationService? session;
+    private readonly List<PluginPlayerSnapshot> playerSnapshots = new List<PluginPlayerSnapshot>(256);
+    private readonly List<Row> rows = new List<Row>(256);
+    private readonly List<int> columnStarts = new List<int>(32);
+    private readonly List<int> columnCounts = new List<int>(32);
     private bool visible;
     private int playersPerColumn = 14;
     private int rowWidth = 260;
@@ -16,6 +38,8 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     private bool hideBots;
     private PlayerListSortMode sortMode;
     private PlayerListDisplayMode displayMode;
+    private int nextRosterRefreshTick;
+    private bool rosterDirty = true;
 
     public bool IsVisible => visible;
     public int PlayersPerColumn => playersPerColumn;
@@ -28,70 +52,171 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
 
     public void Initialize(IPluginContext context)
     {
-        this.context = context ?? throw new ArgumentNullException(nameof(context));
-        playersPerColumn = Clamp(context.Settings.Get("playersPerColumn", 14), 8, 20);
-        rowWidth = Clamp(context.Settings.Get("rowWidth", 260), 180, 420);
-        textScalePercent = Clamp(context.Settings.Get("textScalePercent", 120), 80, 160);
-        showPlayerHeads = context.Settings.Get("showPlayerHeads", true);
-        showPing = context.Settings.Get("showPing", true);
-        hideBots = context.Settings.Get("hideBots", false);
-        sortMode = ReadSortMode(context.Settings.Get("sortMode", "Alphabetical"));
-        displayMode = ReadDisplayMode(context.Settings.Get("displayMode", "Hold"));
+        if (context == null) throw new ArgumentNullException(nameof(context));
+        players = context.Terraria.Players;
+        session = context.Terraria.Session;
+        playersPerColumnSetting = context.Settings.Register(new PluginSettingDefinition<int>("playersPerColumn", 14, value => Clamp(value, 8, 20)));
+        rowWidthSetting = context.Settings.Register(new PluginSettingDefinition<int>("rowWidth", 260, value => Clamp(value, 180, 420)));
+        textScaleSetting = context.Settings.Register(new PluginSettingDefinition<int>("textScalePercent", 120, value => Clamp(value, 80, 160)));
+        showPlayerHeadsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showPlayerHeads", true));
+        showPingSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showPing", true));
+        hideBotsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("hideBots", false));
+        sortModeSetting = context.Settings.Register(new PluginSettingDefinition<string>("sortMode", "Alphabetical", value => ReadSortMode(value).ToString()));
+        displayModeSetting = context.Settings.Register(new PluginSettingDefinition<string>("displayMode", "Hold", value => ReadDisplayMode(value).ToString()));
+        playersPerColumn = playersPerColumnSetting.Value; rowWidth = rowWidthSetting.Value; textScalePercent = textScaleSetting.Value;
+        showPlayerHeads = showPlayerHeadsSetting.Value; showPing = showPingSetting.Value; hideBots = hideBotsSetting.Value;
+        sortMode = ReadSortMode(sortModeSetting.Value); displayMode = ReadDisplayMode(displayModeSetting.Value);
+        playersPerColumnSetting.Subscribe(value => { playersPerColumn = value; rosterDirty = true; });
+        rowWidthSetting.Subscribe(value => rowWidth = value);
+        textScaleSetting.Subscribe(value => textScalePercent = value);
+        showPlayerHeadsSetting.Subscribe(value => showPlayerHeads = value);
+        showPingSetting.Subscribe(value => showPing = value);
+        hideBotsSetting.Subscribe(value => { hideBots = value; rosterDirty = true; });
+        sortModeSetting.Subscribe(value => { sortMode = ReadSortMode(value); rosterDirty = true; });
+        displayModeSetting.Subscribe(value => displayMode = ReadDisplayMode(value));
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("player-list", "Player List"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("players-per-column", "Players Per Column", 8f, 20f, 1f, () => playersPerColumn, value => SetPlayersPerColumn((int)Math.Round(value)), value => ((int)Math.Round(value)).ToString()));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("row-width", "Row Width", 180f, 420f, 5f, () => rowWidth, value => SetRowWidth((int)Math.Round(value / 5f) * 5), value => ((int)Math.Round(value)).ToString()));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("ui-size", "UI Size", 80f, 160f, 5f, () => textScalePercent, value => SetTextScale((int)Math.Round(value / 5f) * 5), value => ((int)Math.Round(value)).ToString() + "%"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-heads", "Show Player Icons", () => showPlayerHeads, SetShowPlayerHeads));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("ping", "Show Ping", () => showPing, SetShowPing));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("hide-bots", "Hide Suspected Bots", () => hideBots, SetHideBots));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("sort", "Sort", new[] { "Alphabetical", "Team", "Health" }, () => sortMode.ToString(), SetSortMode));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("display-mode", "Display Mode", new[] { "Hold", "Toggle" }, () => displayMode.ToString(), SetDisplayMode));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("players-per-column", "Players Per Column", 8f, 20f, 1f, playersPerColumnSetting, value => ((int)Math.Round(value)).ToString()).InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("row-width", "Row Width", 180f, 420f, 5f, rowWidthSetting, value => ((int)Math.Round(value)).ToString()).InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("ui-size", "UI Size", 80f, 160f, 5f, textScaleSetting, value => ((int)Math.Round(value)).ToString() + "%").InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("player-heads", "Show Player Icons", showPlayerHeadsSetting).InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("ping", "Show Ping", showPingSetting).InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("hide-bots", "Hide Suspected Bots", hideBotsSetting).InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("sort", "Sort", new[] { "Alphabetical", "Team", "Health" }, sortModeSetting).InPage("player-list"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Cycle("display-mode", "Display Mode", new[] { "Hold", "Toggle" }, displayModeSetting).InPage("player-list"));
+        context.Ui.RegisterIconInteraction(new PluginIconInteractionDescriptor("sort", PluginIconHoverEffect.HighlightAndExpand, 1.12f, new PluginColor(190, 190, 190), new PluginColor(255, 255, 255), null, GetSortTooltip), CycleSortMode);
+        context.Ui.RegisterIconInteraction(new PluginIconInteractionDescriptor("bot-filter", PluginIconHoverEffect.HighlightAndExpand, 1.12f, new PluginColor(190, 190, 190), new PluginColor(255, 255, 255), null, GetBotFilterTooltip), ToggleBotFiltering);
         context.Keybinds.Register(new PluginKeybindDescriptor("display-player-list", "T", "Display Player List", PluginKeybindActivation.Hold), HandleDisplayKeybind);
+        context.Hud.Register(new PluginHudWidgetDescriptor("player-list", 100), DrawHud);
         context.Services.Publish<IPlayerListService>(this);
     }
 
     public void Enable() { }
-    public void Disable() => visible = false;
-    public void Shutdown() { visible = false; context = null; }
-
+    public void Disable() { visible = false; ClearRoster(); }
+    public void Shutdown() { visible = false; ClearRoster(); players = null; session = null; playersPerColumnSetting = null; rowWidthSetting = null; textScaleSetting = null; showPlayerHeadsSetting = null; showPingSetting = null; hideBotsSetting = null; sortModeSetting = null; displayModeSetting = null; }
     public void ToggleVisibility() => visible = !visible;
     public void SetVisibility(bool isVisible) => visible = isVisible;
-    public void CycleSortMode()
+    public void CycleSortMode() { sortMode = sortMode == PlayerListSortMode.Alphabetical ? PlayerListSortMode.Team : sortMode == PlayerListSortMode.Team ? PlayerListSortMode.Health : PlayerListSortMode.Alphabetical; if (sortModeSetting != null) sortModeSetting.Value = sortMode.ToString(); }
+    public void ToggleBotFiltering() { hideBots = !hideBots; if (hideBotsSetting != null) hideBotsSetting.Value = hideBots; }
+
+    private void DrawHud(IPluginHudCanvas canvas, PluginHudFrame frame)
     {
-        sortMode = sortMode == PlayerListSortMode.Alphabetical ? PlayerListSortMode.Team : sortMode == PlayerListSortMode.Team ? PlayerListSortMode.Health : PlayerListSortMode.Alphabetical;
-        Persist("sortMode", sortMode.ToString());
+        if (!visible || players == null || session == null) return;
+        RefreshRoster();
+        if (rows.Count == 0) return;
+        int columns = columnStarts.Count;
+        int rowsPerColumn = 0;
+        for (int index = 0; index < columnCounts.Count; index++) if (columnCounts[index] > rowsPerColumn) rowsPerColumn = columnCounts[index];
+        float uiScale = TextScale / PlayerListLayout.DefaultUiScale;
+        PlayerListLayout layout = PlayerListLayout.Create(frame.ScreenWidth, frame.ScreenHeight, columns, rowsPerColumn, rowWidth, uiScale);
+        canvas.DrawPanel(layout.PanelBounds, PanelColor);
+        canvas.CapturePointer(layout.PanelBounds);
+        PluginSessionPresentationSnapshot sessionSnapshot = session.GetCurrent();
+        canvas.DrawText(sessionSnapshot.ServerName + " - " + rows.Count + "/" + sessionSnapshot.PlayerCapacity, layout.HeaderCenter.X, layout.HeaderCenter.Y, White, 0.82f * TextScale * 0.8f, 0.5f, 0f);
+        canvas.DrawInteractiveNpcHead("bot-filter", CyborgNpcId, layout.BotToggleBounds);
+        canvas.DrawInteractiveAsset("sort", "Images/UI/CharCreation/HairStyle_Arrow", layout.SortBounds);
+        for (int column = 0; column < columns; column++)
+        {
+            int end = Math.Min(columnStarts[column] + columnCounts[column], rows.Count);
+            for (int index = columnStarts[column]; index < end; index++)
+            {
+                PluginUiRect bounds = layout.GetRowBounds(column, index - columnStarts[column]);
+                canvas.DrawPanel(bounds, (index - columnStarts[column]) % 2 == 0 ? LightRowColor : DarkRowColor);
+                DrawRow(canvas, rows[index], bounds, uiScale);
+            }
+        }
+        if (showPing) DrawPing(canvas, layout.FooterCenter, TextScale, sessionSnapshot.PingMilliseconds);
     }
 
-    public void ToggleBotFiltering()
+    private void DrawRow(IPluginHudCanvas canvas, Row row, PluginUiRect bounds, float uiScale)
     {
-        hideBots = !hideBots;
-        Persist("hideBots", hideBots);
+        float nameX = bounds.X + (showPlayerHeads ? 44f * uiScale : 12f * uiScale);
+        float nameY = bounds.Y + bounds.Height / 2f - 8f * TextScale;
+        float reservedRight = row.Player.IsDead && !row.Player.IsGhost ? 44f : 8f;
+        string name = FitText(row.Name, bounds.X + bounds.Width - nameX - reservedRight, 0.74f * TextScale);
+        canvas.DrawText(name, nameX, nameY, row.Player.IsDead ? new PluginOverlayColor(145, 145, 145) : TeamColor(row.Player.Team), 0.74f * TextScale);
+        if (row.Player.IsDead && !row.Player.IsGhost) canvas.DrawText(FormatRespawn(row.Player.RespawnTimer), bounds.X + bounds.Width - 40f, nameY, new PluginOverlayColor(220, 220, 220), 0.62f * TextScale);
+        if (showPlayerHeads && !row.Player.IsDead) canvas.DrawPlayerAvatar(row.Player.Id, bounds.X + 23f * uiScale, bounds.Y + bounds.Height / 2f - 4f * uiScale, uiScale);
     }
 
-    private void SetPlayersPerColumn(int value) { value = Clamp(value, 8, 20); if (playersPerColumn == value) return; playersPerColumn = value; Persist("playersPerColumn", value); }
-    private void SetRowWidth(int value) { value = Clamp(value, 180, 420); if (rowWidth == value) return; rowWidth = value; Persist("rowWidth", value); }
-    private void SetTextScale(int value) { value = Clamp(value, 80, 160); if (textScalePercent == value) return; textScalePercent = value; Persist("textScalePercent", value); }
-    private void SetShowPlayerHeads(bool value) { if (showPlayerHeads == value) return; showPlayerHeads = value; Persist("showPlayerHeads", value); }
-    private void SetShowPing(bool value) { if (showPing == value) return; showPing = value; Persist("showPing", value); }
-    private void SetHideBots(bool value) { if (hideBots == value) return; hideBots = value; Persist("hideBots", value); }
-    private void SetSortMode(string value) { var next = ReadSortMode(value); if (sortMode == next) return; sortMode = next; Persist("sortMode", sortMode.ToString()); }
-    private void SetDisplayMode(string value) { var next = ReadDisplayMode(value); if (displayMode == next) return; displayMode = next; Persist("displayMode", displayMode.ToString()); }
-    private void HandleDisplayKeybind(bool isDown)
+    private void DrawPing(IPluginHudCanvas canvas, PluginHudPoint center, float scale, int? ping)
     {
-        if (displayMode == PlayerListDisplayMode.Hold)
-            visible = isDown;
-        else if (isDown)
-            visible = !visible;
+        string text = ping.HasValue ? ping.Value + " ms" : "N/A";
+        canvas.DrawText(text, center.X, center.Y - 8f, ping.HasValue ? PingColor(ping.Value) : new PluginOverlayColor(192, 192, 192), 0.68f * scale, 0.5f, 0f);
     }
-    private void Persist<T>(string key, T value) { context?.Settings.Set(key, value); }
+
+    // Snapshot copying is shared and allocation-conscious; this plugin rebuilds its local order at a
+    // bounded interval instead of sorting every HUD draw.
+    private void RefreshRoster()
+    {
+        int now = Environment.TickCount;
+        int interval = sortMode == PlayerListSortMode.Health ? 200 : 500;
+        if (!rosterDirty && unchecked(now - nextRosterRefreshTick) < 0) return;
+        playerSnapshots.Clear(); players!.CopyPlayers(playerSnapshots);
+        rows.Clear();
+        for (int index = 0; index < playerSnapshots.Count; index++)
+        {
+            PluginPlayerSnapshot player = playerSnapshots[index];
+            string name = NormalizeName(player.Name);
+            if (player.IsGhost && string.IsNullOrWhiteSpace(name)) continue;
+            if (hideBots && player.IsSuspectedBot) continue;
+            rows.Add(new Row(player, name));
+        }
+        rows.Sort(CompareRows);
+        BuildColumns();
+        nextRosterRefreshTick = unchecked(now + interval); rosterDirty = false;
+    }
+
+    private int CompareRows(Row left, Row right)
+    {
+        int ghost = left.Player.IsGhost.CompareTo(right.Player.IsGhost); if (ghost != 0) return ghost;
+        if (sortMode == PlayerListSortMode.Team) { int team = TeamRank(left.Player.Team).CompareTo(TeamRank(right.Player.Team)); if (team != 0) return team; }
+        else if (sortMode == PlayerListSortMode.Health) { int life = right.Player.Life.CompareTo(left.Player.Life); if (life != 0) return life; }
+        int name = string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase);
+        return name != 0 ? name : left.Player.Id.CompareTo(right.Player.Id);
+    }
+
+    private void BuildColumns()
+    {
+        columnStarts.Clear(); columnCounts.Clear();
+        int index = 0;
+        while (index < rows.Count)
+        {
+            int groupEnd = rows.Count;
+            if (sortMode == PlayerListSortMode.Team)
+            {
+                int team = rows[index].Player.Team; groupEnd = index + 1;
+                while (groupEnd < rows.Count && rows[groupEnd].Player.Team == team) groupEnd++;
+            }
+            for (int start = index; start < groupEnd; start += playersPerColumn) { columnStarts.Add(start); columnCounts.Add(Math.Min(playersPerColumn, groupEnd - start)); }
+            index = groupEnd;
+        }
+    }
+
+    private void ClearRoster() { playerSnapshots.Clear(); rows.Clear(); columnStarts.Clear(); columnCounts.Clear(); rosterDirty = true; nextRosterRefreshTick = 0; }
+    private void HandleDisplayKeybind(bool isDown) { if (displayMode == PlayerListDisplayMode.Hold) visible = isDown; else if (isDown) visible = !visible; }
+    private PluginTooltipOptions GetSortTooltip() { string name = sortMode == PlayerListSortMode.Team ? "Teams" : sortMode == PlayerListSortMode.Health ? "Health" : "Alphabetically"; return new PluginTooltipOptions("Sorted: " + name, PluginTooltipPlacement.Mouse, new PluginColor(255, 255, 255), 0.75f); }
+    private PluginTooltipOptions GetBotFilterTooltip() => new PluginTooltipOptions("Bots: " + (hideBots ? "Hidden" : "Visible"), PluginTooltipPlacement.Mouse, new PluginColor(255, 255, 255), 0.75f);
     private static int Clamp(int value, int minimum, int maximum) => value < minimum ? minimum : value > maximum ? maximum : value;
     private static PlayerListSortMode ReadSortMode(string? value) => string.Equals(value, "Team", StringComparison.OrdinalIgnoreCase) ? PlayerListSortMode.Team : string.Equals(value, "Health", StringComparison.OrdinalIgnoreCase) ? PlayerListSortMode.Health : PlayerListSortMode.Alphabetical;
     private static PlayerListDisplayMode ReadDisplayMode(string? value) => string.Equals(value, "Toggle", StringComparison.OrdinalIgnoreCase) ? PlayerListDisplayMode.Toggle : PlayerListDisplayMode.Hold;
+    private static int TeamRank(int team) => team >= 1 && team <= 5 ? team - 1 : 5;
+    private static string NormalizeName(string value) { string normalized = value ?? string.Empty; for (int pass = 0; pass < 4; pass++) { string next = TerrariaTagRegex.Replace(normalized, "$1"); if (string.Equals(next, normalized, StringComparison.Ordinal)) break; normalized = next; } return normalized.Trim(); }
+    private static PluginOverlayColor TeamColor(int team) => team == 1 ? new PluginOverlayColor(255, 80, 80) : team == 2 ? new PluginOverlayColor(80, 255, 80) : team == 3 ? new PluginOverlayColor(80, 160, 255) : team == 4 ? new PluginOverlayColor(255, 240, 80) : team == 5 ? new PluginOverlayColor(255, 120, 255) : White;
+    private static PluginOverlayColor PingColor(int ping) => ping < 150 ? new PluginOverlayColor(120, 255, 120) : ping <= 350 ? new PluginOverlayColor(255, 230, 95) : new PluginOverlayColor(255, 95, 95);
+    private static string FormatRespawn(int ticks) => ticks <= 0 ? "now" : ((ticks + 59) / 60) + "s";
+    private static string FitText(string text, float availableWidth, float scale) { if (string.IsNullOrEmpty(text) || text.Length * 11f * scale <= availableWidth) return text; const string ellipsis = "..."; int maximum = Math.Max(0, (int)(availableWidth / (11f * scale)) - ellipsis.Length); return maximum == 0 ? string.Empty : text.Substring(0, Math.Min(maximum, text.Length)) + ellipsis; }
 
-    private enum PlayerListDisplayMode
+    private enum PlayerListDisplayMode { Hold, Toggle }
+    private readonly struct Row { internal Row(PluginPlayerSnapshot player, string name) { Player = player; Name = name; } internal PluginPlayerSnapshot Player { get; } internal string Name { get; } }
+    private readonly struct PluginHudPoint { internal PluginHudPoint(float x, float y) { X = x; Y = y; } internal float X { get; } internal float Y { get; } }
+    private readonly struct PlayerListLayout
     {
-        Hold,
-        Toggle
+        internal const float DefaultUiScale = 1.2f; private const int Padding = 14; private const int ColumnGap = 12; private const int HeaderHeight = 43; private const int RowHeight = 32; private const int FooterHeight = 22; private const int ControlSize = 28;
+        private readonly int rowWidth; private readonly int padding; private readonly int headerHeight; private readonly int rowHeight;
+        private PlayerListLayout(PluginUiRect panelBounds, int rowWidth, int padding, int headerHeight, int rowHeight, int footerHeight) { PanelBounds = panelBounds; this.rowWidth = rowWidth; this.padding = padding; this.headerHeight = headerHeight; this.rowHeight = rowHeight; HeaderCenter = new PluginHudPoint(panelBounds.X + panelBounds.Width / 2f, panelBounds.Y + padding + 2f); FooterCenter = new PluginHudPoint(panelBounds.X + panelBounds.Width / 2f, panelBounds.Y + panelBounds.Height - padding - footerHeight / 2f); SortBounds = new PluginUiRect(panelBounds.X + panelBounds.Width - padding - ControlSize + 4, panelBounds.Y + panelBounds.Height - padding - ControlSize + 5, ControlSize, ControlSize); BotToggleBounds = new PluginUiRect(SortBounds.X - ControlSize - 4, SortBounds.Y, ControlSize, ControlSize); }
+        internal PluginUiRect PanelBounds { get; } internal PluginHudPoint HeaderCenter { get; } internal PluginHudPoint FooterCenter { get; } internal PluginUiRect BotToggleBounds { get; } internal PluginUiRect SortBounds { get; }
+        internal static PlayerListLayout Create(int screenWidth, int screenHeight, int columns, int rowsPerColumn, int rowWidth, float uiScale) { int padding = Math.Max(10, (int)Math.Round(Padding * uiScale)); int header = Math.Max(30, (int)Math.Round(HeaderHeight * uiScale)); int row = Math.Max(24, (int)Math.Round(RowHeight * uiScale)); int footer = Math.Max(20, (int)Math.Round(FooterHeight * uiScale)); int width = padding * 2 + columns * rowWidth + Math.Max(0, columns - 1) * ColumnGap; int height = padding + header + rowsPerColumn * row + footer + padding; int x = Math.Max(padding, (screenWidth - width) / 2); int y = Math.Max(padding, (screenHeight - height) / 8); return new PlayerListLayout(new PluginUiRect(x, y, width, height), rowWidth, padding, header, row, footer); }
+        internal PluginUiRect GetRowBounds(int column, int row) => new PluginUiRect(PanelBounds.X + padding + column * (rowWidth + ColumnGap), PanelBounds.Y + padding + headerHeight + row * rowHeight, rowWidth, rowHeight - Math.Max(3, rowHeight / 8));
     }
 }

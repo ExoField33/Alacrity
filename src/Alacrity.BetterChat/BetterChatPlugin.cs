@@ -9,18 +9,25 @@ namespace Alacrity.BetterChat;
 public sealed class BetterChatPlugin : IAlacrityPlugin
 {
     private IPluginContext? context;
+    private IPluginSetting<bool>? clickableLinksSetting;
+    private IPluginSetting<bool>? chatVisibilitySetting;
     private bool clickableLinks = true;
     private bool chatVisibility = true;
 
     public void Initialize(IPluginContext context)
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
-        clickableLinks = context.Settings.Get("clickableLinks", true);
-        chatVisibility = ReadChatVisibility(context.Settings);
+        ReadChatVisibility(context.Settings);
+        clickableLinksSetting = context.Settings.Register(new PluginSettingDefinition<bool>("clickableLinks", true));
+        chatVisibilitySetting = context.Settings.Register(new PluginSettingDefinition<bool>("chat-visibility", true));
+        clickableLinks = clickableLinksSetting.Value;
+        chatVisibility = chatVisibilitySetting.Value;
+        clickableLinksSetting.Subscribe(value => clickableLinks = value);
+        chatVisibilitySetting.Subscribe(value => chatVisibility = value);
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("better-chat", "Better Chat"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", () => clickableLinks, SetClickableLinks));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("chat-visibility", "Chat Visibility", () => chatVisibility, SetChatVisibility));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", clickableLinksSetting).InPage("better-chat"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("chat-visibility", "Chat Visibility", chatVisibilitySetting).InPage("better-chat"));
 
         context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), new Editor());
         context.Terraria.Chat.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("better-chat-links"), new LinkDecorator(this));
@@ -31,14 +38,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
 
     public void Enable() { }
     public void Disable() { }
-    public void Shutdown() { context = null; }
-
-    private void SetClickableLinks(bool value)
-    {
-        if (clickableLinks == value) return;
-        clickableLinks = value;
-        context?.Settings.Set("clickableLinks", value);
-    }
+    public void Shutdown() { clickableLinksSetting = null; chatVisibilitySetting = null; context = null; }
 
     private static bool ReadChatVisibility(IPluginSettings settings)
     {
@@ -55,13 +55,6 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         settings.Set("chat-visibility", migrated);
         settings.Remove("visibility");
         return migrated;
-    }
-
-    private void SetChatVisibility(bool value)
-    {
-        if (chatVisibility == value) return;
-        chatVisibility = value;
-        context?.Settings.Set("chat-visibility", value);
     }
 
     private bool TryOpenExternalLink(Uri uri) => context != null && context.UserInteraction.TryOpenExternalLink(uri);
@@ -126,13 +119,35 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         private static int NextScalar(string text, int index) => index + 1 < text.Length && char.IsHighSurrogate(text[index]) && char.IsLowSurrogate(text[index + 1]) ? index + 2 : Math.Min(text.Length, index + 1);
     }
 
-    private sealed class LinkDecorator : IChatMessageDecorator
+    private sealed class LinkDecorator : IChatSpanDecorator
     {
         private readonly BetterChatPlugin plugin;
         public LinkDecorator(BetterChatPlugin plugin) { this.plugin = plugin; }
         public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message)
         {
             return plugin.clickableLinks ? BetterChatUrlParser.Decorate(message.Text) : new[] { new ChatTextSpan(message.Text) };
+        }
+
+        public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot originalMessage, IReadOnlyList<ChatTextSpan> currentSpans)
+        {
+            if (!plugin.clickableLinks || currentSpans.Count == 0)
+                return currentSpans;
+
+            var result = new List<ChatTextSpan>(currentSpans.Count);
+            for (int index = 0; index < currentSpans.Count; index++)
+            {
+                ChatTextSpan span = currentSpans[index];
+                if (span.LinkTarget != null)
+                {
+                    result.Add(span);
+                    continue;
+                }
+
+                IReadOnlyList<ChatTextSpan> decorated = BetterChatUrlParser.Decorate(span.Text);
+                for (int decoratedIndex = 0; decoratedIndex < decorated.Count; decoratedIndex++)
+                    result.Add(decorated[decoratedIndex]);
+            }
+            return result;
         }
     }
 

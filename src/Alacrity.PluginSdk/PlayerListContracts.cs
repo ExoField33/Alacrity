@@ -13,8 +13,8 @@ public enum PlayerListSortMode
     Health
 }
 
-/// <summary>Presentation state and local controls exposed by the Player List provider to dependent plugins.</summary>
-public interface IPlayerListService
+/// <summary>Read-only Player List presentation state exposed to dependent plugins.</summary>
+public interface IPlayerListPresentationState
 {
     /// <summary>Whether the locally requested player list is currently visible.</summary>
     bool IsVisible { get; }
@@ -39,7 +39,11 @@ public interface IPlayerListService
 
     /// <summary>Current deterministic ordering selected by the local player.</summary>
     PlayerListSortMode SortMode { get; }
+}
 
+/// <summary>Host-mediated local controls owned by the Player List provider.</summary>
+public interface IPlayerListController
+{
     /// <summary>Toggles the local list visibility from a registered player-controlled keybind.</summary>
     void ToggleVisibility();
 
@@ -51,4 +55,13 @@ public interface IPlayerListService
 
     /// <summary>Toggles whether locally detected automated accounts are excluded from the list.</summary>
     void ToggleBotFiltering();
+}
+
+/// <summary>
+/// Combined Player List provider contract retained for source and package compatibility. New consumers
+/// should request only <see cref="IPlayerListPresentationState"/> or <see cref="IPlayerListController"/>
+/// according to the access they require.
+/// </summary>
+public interface IPlayerListService : IPlayerListPresentationState, IPlayerListController
+{
 }

@@ -7,51 +7,53 @@ using Alacrity.PluginSdk;
 namespace Alacrity.DustGoreToggle;
 
 /// <summary>Owns local Dust/Gore presentation settings and publishes immutable policy snapshots.</summary>
-public sealed class DustGoreTogglePlugin : IAlacrityPlugin, IVisualEffectsPolicyService
+public sealed class DustGoreTogglePlugin : IAlacrityPlugin
 {
     private const int MaximumDustId = 999;
     private IPluginContext? context;
+    private IPluginSetting<bool>? dustEffectsSetting;
+    private IPluginSetting<bool>? goreEffectsSetting;
     private bool dustEffectsEnabled = true;
     private bool goreEffectsEnabled = true;
     private HashSet<int> dustExceptions = new HashSet<int>();
     private int[] dustExceptionSnapshot = Array.Empty<int>();
-    private VisualEffectsPolicySnapshot policySnapshot = new VisualEffectsPolicySnapshot(true, true, Array.Empty<int>());
+    private IPluginRegistration? policyRegistration;
 
     public void Initialize(IPluginContext context)
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
-        dustEffectsEnabled = context.Settings.Get("dustEffectsEnabled", true);
-        goreEffectsEnabled = context.Settings.Get("goreEffectsEnabled", true);
+        dustEffectsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("dustEffectsEnabled", true));
+        goreEffectsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("goreEffectsEnabled", true));
+        dustEffectsEnabled = dustEffectsSetting.Value;
+        goreEffectsEnabled = goreEffectsSetting.Value;
+        dustEffectsSetting.Subscribe(ApplyDustEffectsSetting);
+        goreEffectsSetting.Subscribe(ApplyGoreEffectsSetting);
         dustExceptions = LoadExceptions(context.Settings.Get("dustExceptions", Array.Empty<int>()));
         RebuildExceptionSnapshot();
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("dust-gore-toggle", "Dust & Gore Toggle"));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("dust-effects", "Dust Effects", () => dustEffectsEnabled, SetDustEffectsEnabled));
-        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("gore-effects", "Gore Effects", () => goreEffectsEnabled, SetGoreEffectsEnabled));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("dust-effects", "Dust Effects", dustEffectsSetting).InPage("dust-gore-toggle"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("gore-effects", "Gore Effects", goreEffectsSetting).InPage("dust-gore-toggle"));
         context.Commands.Register(new PluginCommandDescriptor("de", "Manage Dust ID exceptions: /de <id>, /de list, /de clear."), HandleDustExceptionCommand);
-        context.Services.Publish<IVisualEffectsPolicyService>(this);
+        RegisterPolicy();
     }
 
     public void Enable() { }
     public void Disable() { }
-    public void Shutdown() => context = null;
+    public void Shutdown() { policyRegistration = null; dustEffectsSetting = null; goreEffectsSetting = null; context = null; }
 
-    public VisualEffectsPolicySnapshot GetVisualEffectsPolicy() => policySnapshot;
-
-    private void SetDustEffectsEnabled(bool value)
+    private void ApplyDustEffectsSetting(bool value)
     {
         if (dustEffectsEnabled == value) return;
         dustEffectsEnabled = value;
-        context?.Settings.Set("dustEffectsEnabled", value);
-        RebuildPolicySnapshot();
+        RegisterPolicy();
     }
 
-    private void SetGoreEffectsEnabled(bool value)
+    private void ApplyGoreEffectsSetting(bool value)
     {
         if (goreEffectsEnabled == value) return;
         goreEffectsEnabled = value;
-        context?.Settings.Set("goreEffectsEnabled", value);
-        RebuildPolicySnapshot();
+        RegisterPolicy();
     }
 
     private void HandleDustExceptionCommand(PluginCommandInvocation invocation)
@@ -107,11 +109,12 @@ public sealed class DustGoreTogglePlugin : IAlacrityPlugin, IVisualEffectsPolicy
     private void RebuildExceptionSnapshot()
     {
         dustExceptionSnapshot = dustExceptions.OrderBy(value => value).ToArray();
-        RebuildPolicySnapshot();
+        RegisterPolicy();
     }
 
-    private void RebuildPolicySnapshot()
+    private void RegisterPolicy()
     {
-        policySnapshot = new VisualEffectsPolicySnapshot(dustEffectsEnabled, goreEffectsEnabled, dustExceptionSnapshot);
+        policyRegistration?.Dispose();
+        policyRegistration = context?.Terraria.VisualEffects.RegisterPolicy(new PluginVisualEffectsPolicy(dustEffectsEnabled, goreEffectsEnabled, dustExceptionSnapshot));
     }
 }

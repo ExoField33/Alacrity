@@ -97,17 +97,29 @@ public sealed class PluginSettingsStore : IPluginSettings
     private readonly string path;
     private Dictionary<string, string> values;
     private readonly Dictionary<string, Func<object?, bool>> validators = new Dictionary<string, Func<object?, bool>>(StringComparer.Ordinal);
+    private readonly IPluginResourceScope? resources;
     private const string SchemaKey = "__alacrity.schema";
 
     public PluginSettingsStore(string alacrityRoot, PluginId pluginId)
-        : this(alacrityRoot, pluginId, 0, null)
+        : this(alacrityRoot, pluginId, 0, null, null)
     {
     }
 
     /// <summary>Creates settings with an optional host-supplied schema migration.</summary>
     public PluginSettingsStore(string alacrityRoot, PluginId pluginId, int schemaVersion, Action<PluginSettingsStore, int>? migrate)
+        : this(alacrityRoot, pluginId, schemaVersion, migrate, null)
+    {
+    }
+
+    internal PluginSettingsStore(string alacrityRoot, PluginId pluginId, IPluginResourceScope resources)
+        : this(alacrityRoot, pluginId, 0, null, resources)
+    {
+    }
+
+    private PluginSettingsStore(string alacrityRoot, PluginId pluginId, int schemaVersion, Action<PluginSettingsStore, int>? migrate, IPluginResourceScope? resources)
     {
         if (schemaVersion < 0) throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+        this.resources = resources;
         path = Path.Combine(Path.GetFullPath(alacrityRoot), "data", "plugins", pluginId.Value, "settings.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         values = Load();
@@ -121,6 +133,12 @@ public sealed class PluginSettingsStore : IPluginSettings
     }
 
     public event EventHandler<PluginSettingChangedEventArgs>? Changed;
+    public IPluginSetting<T> Register<T>(PluginSettingDefinition<T> definition)
+    {
+        if (definition == null) throw new ArgumentNullException(nameof(definition));
+        ValidateKey(definition.Key);
+        return new RegisteredSetting<T>(this, definition, resources);
+    }
     public T Get<T>(string key, T defaultValue)
     {
         ValidateKey(key);
@@ -227,9 +245,93 @@ public sealed class PluginSettingsStore : IPluginSettings
         private readonly PluginSettingsStore store; private readonly string prefix;
         public PrefixedSettings(PluginSettingsStore store, string prefix) { this.store = store; this.prefix = prefix; }
         public event EventHandler<PluginSettingChangedEventArgs>? Changed { add { store.Changed += value; } remove { store.Changed -= value; } }
+        public IPluginSetting<T> Register<T>(PluginSettingDefinition<T> definition)
+        {
+            if (definition == null) throw new ArgumentNullException(nameof(definition));
+            return new PrefixedSetting<T>(store.Register(new PluginSettingDefinition<T>(prefix + definition.Key, definition.DefaultValue, definition.Normalize)), prefix);
+        }
         public T Get<T>(string key, T defaultValue) => store.Get(prefix + key, defaultValue);
         public void Set<T>(string key, T value) => store.Set(prefix + key, value);
         public bool Remove(string key) => store.Remove(prefix + key);
         public void ResetToDefaults() => store.ResetPrefix(prefix);
+    }
+
+    private sealed class RegisteredSetting<T> : IPluginSetting<T>
+    {
+        private readonly PluginSettingsStore store;
+        private readonly PluginSettingDefinition<T> definition;
+        private readonly IPluginResourceScope? resources;
+
+        public RegisteredSetting(PluginSettingsStore store, PluginSettingDefinition<T> definition, IPluginResourceScope? resources)
+        {
+            this.store = store;
+            this.definition = definition;
+            this.resources = resources;
+        }
+
+        public string Key => definition.Key;
+        public T DefaultValue => definition.DefaultValue;
+        public T Value
+        {
+            get { return Normalize(store.Get(definition.Key, definition.DefaultValue)); }
+            set { store.Set(definition.Key, Normalize(value)); }
+        }
+
+        public void Reset() { Value = definition.DefaultValue; }
+
+        public IPluginRegistration Subscribe(Action<T> handler)
+        {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            var registration = new SettingSubscription<T>(store, definition, handler);
+            if (resources != null) resources.Own("setting-subscription:" + definition.Key, PluginResourceKind.Configuration, registration);
+            return registration;
+        }
+
+        private T Normalize(T value) => definition.Normalize == null ? value : definition.Normalize(value);
+    }
+
+    private sealed class PrefixedSetting<T> : IPluginSetting<T>
+    {
+        private readonly IPluginSetting<T> inner;
+        private readonly string prefix;
+        public PrefixedSetting(IPluginSetting<T> inner, string prefix) { this.inner = inner; this.prefix = prefix; }
+        public string Key => inner.Key.Substring(prefix.Length);
+        public T DefaultValue => inner.DefaultValue;
+        public T Value { get => inner.Value; set => inner.Value = value; }
+        public void Reset() => inner.Reset();
+        public IPluginRegistration Subscribe(Action<T> handler) => inner.Subscribe(handler);
+    }
+
+    private sealed class SettingSubscription<T> : IPluginRegistration
+    {
+        private readonly PluginSettingsStore store;
+        private readonly PluginSettingDefinition<T> definition;
+        private readonly Action<T> handler;
+        private bool released;
+
+        public SettingSubscription(PluginSettingsStore store, PluginSettingDefinition<T> definition, Action<T> handler)
+        {
+            this.store = store;
+            this.definition = definition;
+            this.handler = handler;
+            store.Changed += OnChanged;
+        }
+
+        public string Name => "setting-subscription:" + definition.Key;
+        public bool IsReleased => released;
+        public void Dispose()
+        {
+            if (released) return;
+            released = true;
+            store.Changed -= OnChanged;
+        }
+
+        private void OnChanged(object? sender, PluginSettingChangedEventArgs args)
+        {
+            if (released || !string.Equals(args.Key, definition.Key, StringComparison.Ordinal)) return;
+            handler(args.NewValue is T value ? Normalize(value) : definition.DefaultValue);
+        }
+
+        private T Normalize(T value) => definition.Normalize == null ? value : definition.Normalize(value);
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Diagnostics;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -18,15 +19,17 @@ public sealed class PluginExtensionHost
     private readonly List<OwnedUiContribution> settingsPages = new List<OwnedUiContribution>();
     private readonly List<OwnedSettingControl> settingsControls = new List<OwnedSettingControl>();
     private readonly List<OwnedUiContribution> overlays = new List<OwnedUiContribution>();
+    private readonly List<OwnedIconInteraction> iconInteractions = new List<OwnedIconInteraction>();
+    private readonly Dictionary<string, DateTime> eventFailureTimes = new Dictionary<string, DateTime>(StringComparer.Ordinal);
 
     /// <summary>Creates scope-owned extension services associated with one verified plugin manifest.</summary>
-    public PluginExtensionServices CreateServices(PluginManifest manifest, IPluginResourceScope resources)
+    public PluginExtensionServices CreateServices(PluginManifest manifest, IPluginResourceScope resources, IPluginLogger? logger = null)
     {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         manifest.Validate();
         EnsureOwner(manifest.Id);
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new PluginExtensionServices(new EventService(this, manifest.Id, resources), new UiService(this, manifest, manifest.Id, resources), new KeybindService(this, manifest, manifest.Id, resources));
+        return new PluginExtensionServices(new EventService(this, manifest.Id, resources, logger), new UiService(this, manifest, manifest.Id, resources), new KeybindService(this, manifest, manifest.Id, resources));
     }
 
     /// <summary>Creates scope-owned extension services for a validated plugin identity.</summary>
@@ -34,7 +37,7 @@ public sealed class PluginExtensionHost
     {
         EnsureOwner(owner);
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new PluginExtensionServices(new EventService(this, owner, resources), new UiService(this, null, owner, resources), new KeybindService(this, null, owner, resources));
+        return new PluginExtensionServices(new EventService(this, owner, resources, null), new UiService(this, null, owner, resources), new KeybindService(this, null, owner, resources));
     }
 
     /// <summary>Returns settings-page contributions still owned by the specified active plugin.</summary>
@@ -51,11 +54,66 @@ public sealed class PluginExtensionHost
             return settingsControls.Where(control => control.Owner == pluginId).Select(control => control.Control).ToArray();
     }
 
+    /// <summary>Returns only controls belonging to one verified owner-local settings page.</summary>
+    public IReadOnlyList<PluginSettingControl> GetSettingsControls(PluginId pluginId, string pageId)
+    {
+        if (string.IsNullOrWhiteSpace(pageId)) throw new ArgumentException("A settings page ID is required.", nameof(pageId));
+        lock (gate)
+            return settingsControls.Where(control => control.Owner == pluginId && string.Equals(control.PageId, pageId, StringComparison.Ordinal)).Select(control => control.Control).ToArray();
+    }
+
     /// <summary>Returns overlay contributions still owned by the specified active plugin.</summary>
     public IReadOnlyList<PluginUiContribution> GetOverlays(PluginId pluginId)
     {
         lock (gate)
             return overlays.Where(overlay => overlay.Owner == pluginId).Select(overlay => overlay.Contribution).ToArray();
+    }
+
+    /// <summary>Resolves one scoped icon interaction without exposing host input to plugin code.</summary>
+    public PluginIconInteractionState EvaluateIconInteraction(PluginId owner, string id, PluginUiRect bounds, float pointerX, float pointerY)
+    {
+        if (!owner.IsValid || string.IsNullOrWhiteSpace(id)) return default;
+        lock (gate)
+        {
+            OwnedIconInteraction? entry = iconInteractions.FirstOrDefault(candidate => candidate.Owner == owner && string.Equals(candidate.Descriptor.Id, id, StringComparison.Ordinal));
+            if (entry == null) return default;
+            bool hovered = bounds.Contains(pointerX, pointerY);
+            PluginIconInteractionDescriptor descriptor = entry.Descriptor;
+            bool expand = descriptor.HoverEffect == PluginIconHoverEffect.Expand || descriptor.HoverEffect == PluginIconHoverEffect.HighlightAndExpand;
+            bool highlight = descriptor.HoverEffect == PluginIconHoverEffect.Highlight || descriptor.HoverEffect == PluginIconHoverEffect.HighlightAndExpand;
+            PluginTooltipOptions? tooltip = null;
+            if (hovered)
+            {
+                try
+                {
+                    tooltip = descriptor.TooltipProvider == null ? descriptor.Tooltip : descriptor.TooltipProvider() ?? descriptor.Tooltip;
+                }
+                catch (Exception exception)
+                {
+                    Trace.TraceError("Alacrity tooltip provider for icon interaction '" + descriptor.Id + "' failed for plugin '" + owner.Value + "': " + exception);
+                }
+            }
+
+            return new PluginIconInteractionState(true, hovered, hovered && expand ? descriptor.HoverScale : 1f, hovered && highlight ? descriptor.HoverColor : descriptor.NormalColor, tooltip);
+        }
+    }
+
+    /// <summary>Consumes one host-confirmed click and invokes only the matching scoped icon action.</summary>
+    public bool TryActivateIconInteraction(PluginId owner, string id)
+    {
+        OwnedIconInteraction? entry;
+        lock (gate) entry = iconInteractions.FirstOrDefault(candidate => candidate.Owner == owner && string.Equals(candidate.Descriptor.Id, id, StringComparison.Ordinal));
+        if (entry == null) return false;
+        try
+        {
+            entry.Activate();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Trace.TraceError("Alacrity icon interaction '" + entry.Descriptor.Id + "' failed for plugin '" + owner.Value + "': " + exception);
+            return false;
+        }
     }
 
     /// <summary>Returns active keybind rows in deterministic plugin and registration order for the Terraria controls adapter.</summary>
@@ -159,16 +217,26 @@ public sealed class PluginExtensionHost
             handlers = eventHandlers.TryGetValue(typeof(TEvent), out var current) ? current.ToArray() : Array.Empty<EventHandlerRegistration>();
         foreach (var handler in handlers)
         {
-            handler.Invoke(snapshot);
-            if (handler.Once) handler.Dispose();
+            try
+            {
+                handler.Invoke(snapshot);
+            }
+            catch (Exception exception)
+            {
+                ReportEventFailure(handler, exception);
+            }
+            finally
+            {
+                if (handler.Once) handler.Dispose();
+            }
         }
     }
 
-    private IPluginRegistration Subscribe<TEvent>(PluginId owner, IPluginResourceScope resources, Action<TEvent> handler, PluginEventOptions? options)
+    private IPluginRegistration Subscribe<TEvent>(PluginId owner, IPluginResourceScope resources, Action<TEvent> handler, PluginEventOptions? options, IPluginLogger? logger)
     {
         EnsureOwner(owner);
         if (handler == null) throw new ArgumentNullException(nameof(handler));
-        var registration = new EventHandlerRegistration(owner, typeof(TEvent), value => handler((TEvent)value!), options?.Once == true, RemoveEvent);
+        var registration = new EventHandlerRegistration(owner, typeof(TEvent), value => handler((TEvent)value!), options?.Once == true, RemoveEvent, logger);
         lock (gate)
         {
             if (!eventHandlers.TryGetValue(typeof(TEvent), out var handlers))
@@ -186,8 +254,14 @@ public sealed class PluginExtensionHost
         EnsureOwner(owner);
         if (contribution == null) throw new ArgumentNullException(nameof(contribution));
         var entry = new OwnedUiContribution(owner, contribution);
+        lock (gate)
+        {
+            List<OwnedUiContribution> target = overlay ? overlays : settingsPages;
+            if (target.Any(candidate => candidate.Owner == owner && string.Equals(candidate.Contribution.Id, contribution.Id, StringComparison.Ordinal)))
+                throw new InvalidOperationException("The plugin already registered " + (overlay ? "overlay" : "settings page") + " '" + contribution.Id + "'.");
+            target.Add(entry);
+        }
         var registration = new CallbackRegistration("ui:" + contribution.Id, () => { lock (gate) (overlay ? overlays : settingsPages).Remove(entry); });
-        lock (gate) (overlay ? overlays : settingsPages).Add(entry);
         return Own(resources, registration, PluginResourceKind.UserInterface);
     }
 
@@ -195,10 +269,42 @@ public sealed class PluginExtensionHost
     {
         EnsureOwner(owner);
         if (control == null) throw new ArgumentNullException(nameof(control));
-        var entry = new OwnedSettingControl(owner, control);
+        string pageId = control.PageId ?? ResolveLegacySettingsPage(owner);
+        var entry = new OwnedSettingControl(owner, pageId, control);
+        lock (gate)
+        {
+            if (settingsControls.Any(candidate => candidate.Owner == owner && string.Equals(candidate.Control.Id, control.Id, StringComparison.Ordinal)))
+                throw new InvalidOperationException("The plugin already registered settings control '" + control.Id + "'.");
+            settingsControls.Add(entry);
+        }
         var registration = new CallbackRegistration("setting:" + control.Id, () => { lock (gate) settingsControls.Remove(entry); });
-        lock (gate) settingsControls.Add(entry);
         return Own(resources, registration, PluginResourceKind.UserInterface);
+    }
+
+    private IPluginRegistration RegisterIconInteraction(PluginId owner, IPluginResourceScope resources, PluginIconInteractionDescriptor descriptor, Action activate)
+    {
+        EnsureOwner(owner);
+        if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
+        if (activate == null) throw new ArgumentNullException(nameof(activate));
+        var entry = new OwnedIconInteraction(owner, descriptor, activate);
+        lock (gate)
+        {
+            if (iconInteractions.Any(candidate => candidate.Owner == owner && string.Equals(candidate.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
+                throw new InvalidOperationException("The plugin already registered icon interaction '" + descriptor.Id + "'.");
+            iconInteractions.Add(entry);
+        }
+        var registration = new CallbackRegistration("icon:" + descriptor.Id, () => { lock (gate) iconInteractions.Remove(entry); });
+        return Own(resources, registration, PluginResourceKind.UserInterface);
+    }
+
+    private string ResolveLegacySettingsPage(PluginId owner)
+    {
+        lock (gate)
+        {
+            OwnedUiContribution[] pages = settingsPages.Where(page => page.Owner == owner).ToArray();
+            if (pages.Length > 0) return pages[0].Contribution.Id;
+            return "legacy";
+        }
     }
 
     private IPluginRegistration RegisterKeybind(PluginId owner, string heading, IPluginResourceScope resources, PluginKeybindDescriptor descriptor, Action? handler, Action<bool>? stateHandler)
@@ -242,6 +348,21 @@ public sealed class PluginExtensionHost
             if (eventHandlers.TryGetValue(registration.EventType, out var handlers)) handlers.Remove(registration);
     }
 
+    private void ReportEventFailure(EventHandlerRegistration registration, Exception exception)
+    {
+        string key = registration.Owner.Value + ":" + registration.EventType.FullName;
+        lock (gate)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (eventFailureTimes.TryGetValue(key, out DateTime previous) && now - previous < TimeSpan.FromSeconds(10)) return;
+            eventFailureTimes[key] = now;
+        }
+        if (registration.Logger != null)
+            registration.Logger.Error("Event '" + registration.EventType.FullName + "' failed for plugin '" + registration.Owner.Value + "'.", exception);
+        else
+            Trace.TraceError("Alacrity event '" + registration.EventType.FullName + "' failed for plugin '" + registration.Owner.Value + "': " + exception);
+    }
+
     private static IPluginRegistration Own(IPluginResourceScope resources, IPluginRegistration registration, PluginResourceKind kind)
     {
         resources.Own(registration.Name, kind, registration);
@@ -265,9 +386,9 @@ public sealed class PluginExtensionHost
 
     private sealed class EventService : IPluginEventService
     {
-        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources;
-        public EventService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources) { this.host = host; this.owner = owner; this.resources = resources; }
-        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null) => host.Subscribe(owner, resources, handler, options);
+        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly IPluginLogger? logger;
+        public EventService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources, IPluginLogger? logger) { this.host = host; this.owner = owner; this.resources = resources; this.logger = logger; }
+        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null) => host.Subscribe(owner, resources, handler, options, logger);
     }
     private sealed class UiService : IPluginUiService
     {
@@ -282,6 +403,7 @@ public sealed class PluginExtensionHost
             return host.RegisterUi(owner, resources, contribution, false);
         }
         public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) { EnsureUiAccess(); return host.RegisterSettingControl(owner, resources, control); }
+        public IPluginRegistration RegisterIconInteraction(PluginIconInteractionDescriptor descriptor, Action activate) { EnsureUiAccess(); return host.RegisterIconInteraction(owner, resources, descriptor, activate); }
         public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) { EnsureUiAccess(); return host.RegisterUi(owner, resources, contribution, true); }
         private void EnsureUiAccess()
         {
@@ -310,8 +432,8 @@ public sealed class PluginExtensionHost
     private sealed class EventHandlerRegistration : CallbackRegistration
     {
         private readonly Action<object?> handler;
-        public EventHandlerRegistration(PluginId owner, Type eventType, Action<object?> handler, bool once, Action<EventHandlerRegistration> remove) : base("event:" + owner.Value + ":" + eventType.FullName, () => { }) { Owner = owner; EventType = eventType; this.handler = handler; Once = once; Remove = remove; }
-        public PluginId Owner { get; } public Type EventType { get; } public bool Once { get; } private Action<EventHandlerRegistration> Remove { get; }
+        public EventHandlerRegistration(PluginId owner, Type eventType, Action<object?> handler, bool once, Action<EventHandlerRegistration> remove, IPluginLogger? logger) : base("event:" + owner.Value + ":" + eventType.FullName, () => { }) { Owner = owner; EventType = eventType; this.handler = handler; Once = once; Remove = remove; Logger = logger; }
+        public PluginId Owner { get; } public Type EventType { get; } public bool Once { get; } public IPluginLogger? Logger { get; } private Action<EventHandlerRegistration> Remove { get; }
         public void Invoke(object? value) => handler(value);
         public override void Dispose() { if (IsReleased) return; base.Dispose(); Remove(this); }
     }
@@ -331,9 +453,15 @@ public sealed class PluginExtensionHost
     }
     private sealed class OwnedSettingControl
     {
-        public OwnedSettingControl(PluginId owner, PluginSettingControl control) { Owner = owner; Control = control; }
+        public OwnedSettingControl(PluginId owner, string pageId, PluginSettingControl control) { Owner = owner; PageId = pageId; Control = control; }
         public PluginId Owner { get; }
+        public string PageId { get; }
         public PluginSettingControl Control { get; }
+    }
+    private sealed class OwnedIconInteraction
+    {
+        public OwnedIconInteraction(PluginId owner, PluginIconInteractionDescriptor descriptor, Action activate) { Owner = owner; Descriptor = descriptor; Activate = activate; }
+        public PluginId Owner { get; } public PluginIconInteractionDescriptor Descriptor { get; } public Action Activate { get; }
     }
     private sealed class OwnedKeybind
     {

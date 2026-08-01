@@ -80,6 +80,9 @@ internal static class Program
             ScopedServicesRespectDependenciesAndCleanup();
             ExtensionRegistrationsAreScopeOwned();
             ExtensionServicesRequireOwnersAndIsolateScopes();
+            IconInteractionsAreOwnedAndResolvedByHost();
+            UiRegistrationsRejectDuplicateOwnerLocalIds();
+            SettingsControlsAreParentedAndLegacyControlsRemainCompatible();
             KeybindsAreOwnedQualifiedAndScopeReleased();
             KeybindDescriptorsValidateActivationAndSnapshotsRemainOwned();
             OwnerQualifiedHostServiceLookupRejectsWrongPublisher();
@@ -87,12 +90,14 @@ internal static class Program
             ChatOwnershipCompositionAndPermissionEnforcement();
             UserInteractionServicesRequirePermissionsAndValidateLinks();
             PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue();
+            TypedSettingsNormalizeAndReleaseSubscriptions();
             BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
             BetterChatCachesDefaultsWithoutRewritingSettings();
             BetterChatMigratesLegacyVisibilityToToggle();
             DustGoreTogglePublishesScopedPolicyAndManagesExceptions();
             HitboxesPublishesScopedPresentationPolicy();
             PlayerListPublishesPresentationSettingsAndDefaults();
+            HudWidgetsAreOwnedAndIsolated();
             OverlayDispatchIsOrderedIsolatedAndScopeOwned();
             PluginDataAndSettingsStayIsolated();
             EnablePlannerAutoEnablesDependencies();
@@ -1163,6 +1168,60 @@ internal static class Program
         secondScope.Dispose();
     }
 
+    private static void IconInteractionsAreOwnedAndResolvedByHost()
+    {
+        var host = new PluginExtensionHost();
+        var firstManifest = new PluginManifest(new PluginId("first.icons"), "First", new Version(1, 0), "Tests", "First icon owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        var secondManifest = new PluginManifest(new PluginId("second.icons"), "Second", new Version(1, 0), "Tests", "Second icon owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        using var firstScope = new PluginResourceScope();
+        using var secondScope = new PluginResourceScope();
+        var firstCalls = 0;
+        var secondCalls = 0;
+        host.CreateServices(firstManifest, firstScope).Ui.RegisterIconInteraction(
+            new PluginIconInteractionDescriptor("action", PluginIconHoverEffect.HighlightAndExpand, 1.2f, new PluginColor(100, 100, 100), new PluginColor(255, 255, 255), new PluginTooltipOptions("First action", PluginTooltipPlacement.Right, new PluginColor(10, 20, 30), 1.1f)),
+            () => firstCalls++);
+        var tooltipProviderCalls = 0;
+        host.CreateServices(secondManifest, secondScope).Ui.RegisterIconInteraction(
+            new PluginIconInteractionDescriptor("action", PluginIconHoverEffect.None, 1.15f, null, null, new PluginTooltipOptions("Second action"), () =>
+            {
+                tooltipProviderCalls++;
+                return new PluginTooltipOptions("Second action resolved");
+            }),
+            () => secondCalls++);
+
+        PluginIconInteractionState hovered = host.EvaluateIconInteraction(firstManifest.Id, "action", new PluginUiRect(10f, 20f, 30f, 40f), 15f, 25f);
+        Assert(hovered.IsRegistered && hovered.IsHovered && hovered.Scale == 1.2f && hovered.Color.HasValue && hovered.Color.Value.Equals(new PluginColor(255, 255, 255)), "Hovered icon interactions must resolve their declared visual response.");
+        Assert(hovered.Tooltip != null && hovered.Tooltip.Placement == PluginTooltipPlacement.Right && hovered.Tooltip.Color.HasValue && hovered.Tooltip.Color.Value.Equals(new PluginColor(10, 20, 30)), "Hovered icon interactions must retain their tooltip presentation metadata.");
+        PluginIconInteractionState outside = host.EvaluateIconInteraction(firstManifest.Id, "action", new PluginUiRect(10f, 20f, 30f, 40f), 0f, 0f);
+        Assert(outside.IsRegistered && !outside.IsHovered && outside.Scale == 1f && outside.Color.HasValue && outside.Color.Value.Equals(new PluginColor(100, 100, 100)) && outside.Tooltip == null, "Unhovered icon interactions must retain normal visual state without a tooltip.");
+        PluginIconInteractionState dynamicTooltip = host.EvaluateIconInteraction(secondManifest.Id, "action", new PluginUiRect(0f, 0f, 10f, 10f), 5f, 5f);
+        Assert(tooltipProviderCalls == 1 && dynamicTooltip.Tooltip != null && dynamicTooltip.Tooltip.Text == "Second action resolved", "Hovered icon interactions must support state-aware tooltip resolution without evaluating it outside hover.");
+        Assert(host.TryActivateIconInteraction(firstManifest.Id, "action") && firstCalls == 1 && secondCalls == 0, "Icon actions must dispatch only to their verified owner-local registration.");
+        AssertThrows<InvalidOperationException>(() => host.CreateServices(firstManifest, firstScope).Ui.RegisterIconInteraction(new PluginIconInteractionDescriptor("action"), () => { }));
+
+        firstScope.ReleaseAll();
+        Assert(!host.EvaluateIconInteraction(firstManifest.Id, "action", new PluginUiRect(0f, 0f, 1f, 1f), 0f, 0f).IsRegistered && !host.TryActivateIconInteraction(firstManifest.Id, "action"), "Releasing a plugin scope must remove only its icon interactions.");
+        Assert(host.TryActivateIconInteraction(secondManifest.Id, "action") && secondCalls == 1, "Other plugins' icon interactions must survive unrelated cleanup.");
+    }
+
+    private static void HudWidgetsAreOwnedAndIsolated()
+    {
+        var host = new PluginHudHost();
+        var first = new PluginManifest(new PluginId("first.hud"), "First HUD", new Version(1, 0), "Tests", "First HUD", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        var second = new PluginManifest(new PluginId("second.hud"), "Second HUD", new Version(1, 0), "Tests", "Second HUD", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        using var firstScope = new PluginResourceScope();
+        using var secondScope = new PluginResourceScope();
+        var order = new List<string>();
+        host.CreateService(first, firstScope).Register(new PluginHudWidgetDescriptor("first", 10), (_, __) => order.Add("first"));
+        host.CreateService(second, secondScope).Register(new PluginHudWidgetDescriptor("second", 5), (_, __) => order.Add("second"));
+        host.Dispatch(new TestHudRenderer(), new PluginHudFrame(800, 600, 1f, TimeSpan.Zero, 1));
+        Assert(order.SequenceEqual(new[] { "second", "first" }), "HUD widgets must dispatch in deterministic descriptor order.");
+        firstScope.ReleaseAll();
+        order.Clear();
+        host.Dispatch(new TestHudRenderer(), new PluginHudFrame(800, 600, 1f, TimeSpan.Zero, 2));
+        Assert(order.SequenceEqual(new[] { "second" }), "Releasing one plugin scope must remove only its HUD widgets.");
+    }
+
     private static void KeybindsAreOwnedQualifiedAndScopeReleased()
     {
         var host = new PluginExtensionHost();
@@ -1257,11 +1316,11 @@ internal static class Program
         second.RegisterInputEditor(new ChatInputEditorDescriptor("second-editor"), new TestInputEditor());
         Assert(host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Chat editor ownership must remain attributable to the registered plugin.");
         first.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("first-decoration", priority: 1), new TestDecorator("first"));
-        second.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("second-decoration", priority: 2), new TestDecorator("second"));
-        Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "first", "Chat decorators must use deterministic first-handler-wins behavior instead of discarding earlier output.");
+        second.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("second-decoration", priority: 2), new AppendingDecorator("-second"));
+        Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "first-second", "Later chat decorators must receive the current decorated output in deterministic priority order.");
         firstScope.ReleaseAll();
         Assert(!host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Disabling one scope must remove only its chat editor.");
-        Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "second", "The next deterministic decorator must remain active after the first owner is removed.");
+        Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "original-second", "The next deterministic decorator must remain active after the first owner is removed.");
 
         var isolatedHost = new PluginChatHost();
         using var isolatedScope = new PluginResourceScope();
@@ -1359,20 +1418,28 @@ internal static class Program
     private static void PlayerListPublishesPresentationSettingsAndDefaults()
     {
         var manifest = new PluginManifest(new PluginId("alacrity.player-list"), "Player List", new Version(1, 0), "Tests", "Displays the currently online players", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation, permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer);
-        using var scope = new PluginResourceScope();
-        var context = new TestContext(manifest, scope);
-        var plugin = new PlayerListPlugin();
-        plugin.Initialize(context);
-        Assert(plugin.PlayersPerColumn == 14 && plugin.RowWidth == 260 && Math.Abs(plugin.TextScale - 1.2f) < 0.001f && plugin.ShowPlayerHeads && plugin.ShowPing, "Player List must retain its documented default presentation settings.");
-        Assert(context.Services.TryGet<IPlayerListService>(out var service) && ReferenceEquals(plugin, service), "Player List must publish its stable provider contract for dependent plugins.");
-        plugin.ToggleVisibility();
-        Assert(plugin.IsVisible, "The Display Player List binding must toggle local presentation visibility.");
-        plugin.CycleSortMode();
-        Assert(plugin.SortMode == PlayerListSortMode.Team, "The sort cycle must advance deterministically from alphabetical to team order.");
-        plugin.ToggleBotFiltering();
-        Assert(plugin.HideBots, "The player-list bot control must update the provider state used by the renderer.");
-        plugin.Disable();
-        Assert(!plugin.IsVisible, "Disabling Player List must immediately remove its visible presentation state.");
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-player-list-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var extensions = new PluginExtensionHost();
+            var services = new PluginServiceHub();
+            PluginHostContext context = new PluginHostContextFactory(root, services, extensions, new PluginCommandHost()).Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            var plugin = new PlayerListPlugin();
+            plugin.Initialize(context);
+            Assert(plugin.PlayersPerColumn == 14 && plugin.RowWidth == 260 && Math.Abs(plugin.TextScale - 1.2f) < 0.001f && plugin.ShowPlayerHeads && plugin.ShowPing, "Player List must retain its documented default presentation settings.");
+            Assert(services.TryGetHostService<IPlayerListService>(manifest.Id, out var service) && ReferenceEquals(plugin, service), "Player List must publish its stable provider contract for dependent plugins.");
+            plugin.ToggleVisibility();
+            Assert(plugin.IsVisible, "The Display Player List binding must toggle local presentation visibility.");
+            Assert(extensions.TryActivateIconInteraction(manifest.Id, "sort") && plugin.SortMode == PlayerListSortMode.Team, "The registered sort icon must dispatch to the Player List plugin through the host.");
+            Assert(extensions.TryActivateIconInteraction(manifest.Id, "bot-filter") && plugin.HideBots, "The registered bot-filter icon must dispatch to the Player List plugin through the host.");
+            plugin.Disable();
+            Assert(!plugin.IsVisible, "Disabling Player List must immediately remove its visible presentation state.");
+            context.Resources.Dispose();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     private static void DustGoreTogglePublishesScopedPolicyAndManagesExceptions()
@@ -1383,21 +1450,20 @@ internal static class Program
             var manifest = new PluginManifest(new PluginId("alacrity.dust-gore-toggle"), "Dust & Gore Toggle", new Version(1, 0), "Tests", "Visual effects test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead, permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState);
             var services = new PluginServiceHub();
             var commands = new PluginCommandHost();
-            var context = new PluginHostContextFactory(root, services, new PluginExtensionHost(), commands).Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            var visualEffects = new PluginVisualEffectsHost();
+            var context = new PluginHostContextFactory(root, services, new PluginExtensionHost(), commands, visualEffects: visualEffects).Create(manifest, new TestLogger(), new TestMultiplayerSession());
             var plugin = new DustGoreTogglePlugin();
             plugin.Initialize(context);
 
-            Assert(services.TryGetHostService<IVisualEffectsPolicyService>(manifest.Id, out var policyService, out _), "Dust & Gore Toggle must publish a host-owned visual-effects policy.");
-            if (policyService == null) throw new InvalidOperationException("Dust & Gore Toggle policy service was not available after registration.");
-            Assert(policyService.GetVisualEffectsPolicy().DustEffectsEnabled && policyService.GetVisualEffectsPolicy().GoreEffectsEnabled, "Dust & Gore Toggle must default to enabled visual effects.");
+            Assert(visualEffects.GetEffectivePolicy().DustEnabled && visualEffects.GetEffectivePolicy().GoreEnabled, "Dust & Gore Toggle must register the default host-owned visual-effects policy.");
 
             var replies = new List<string>();
             Assert(commands.TryInvoke("de", new[] { "42" }, replies.Add), "The /de command must be registered while the plugin is active.");
-            VisualEffectsPolicySnapshot policy = policyService.GetVisualEffectsPolicy();
+            PluginVisualEffectsPolicy policy = visualEffects.GetEffectivePolicy();
             Assert(policy.DustExceptionIds.Count == 1 && policy.DustExceptionIds[0] == 42 && replies.Single().Contains("added", StringComparison.Ordinal), "The /de command must add a bounded Dust ID exception.");
 
             context.Resources.Dispose();
-            Assert(!services.TryGetHostService<IVisualEffectsPolicyService>(manifest.Id, out _, out _), "Disposing Dust & Gore Toggle's scope must remove only its policy service.");
+            Assert(visualEffects.GetEffectivePolicy().DustEnabled && visualEffects.GetEffectivePolicy().DustExceptionIds.Count == 0, "Disposing Dust & Gore Toggle's scope must restore the vanilla visual-effects policy.");
         }
         finally
         {
@@ -1478,6 +1544,65 @@ internal static class Program
         Assert(diagnostics.ActiveWarnings.Count == 0, "Warnings must disappear when the dependent plugin is disabled.");
     }
 
+    private static void UiRegistrationsRejectDuplicateOwnerLocalIds()
+    {
+        var manifest = new PluginManifest(new PluginId("ui.duplicate"), "UI Duplicate", new Version(1, 0), "Tests", "UI duplicate test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        using var scope = new PluginResourceScope();
+        var extensions = new PluginExtensionHost();
+        PluginExtensionHost.PluginExtensionServices services = extensions.CreateServices(manifest, scope);
+        services.Ui.RegisterSettingsPage(new PluginUiContribution("settings", "Settings"));
+        AssertThrows<InvalidOperationException>(() => services.Ui.RegisterSettingsPage(new PluginUiContribution("settings", "Duplicate Settings")));
+        services.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("visible", "Visible", () => true, _ => { }));
+        AssertThrows<InvalidOperationException>(() => services.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("visible", "Duplicate Visible", () => true, _ => { })));
+        Assert(extensions.GetSettingsPages(manifest.Id).Count == 1 && extensions.GetSettingsControls(manifest.Id).Count == 1, "Duplicate UI registration rejection must preserve the original registrations.");
+    }
+
+    private static void SettingsControlsAreParentedAndLegacyControlsRemainCompatible()
+    {
+        var manifest = new PluginManifest(new PluginId("ui.pages"), "UI Pages", new Version(1, 0), "Tests", "UI page hierarchy test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        using var scope = new PluginResourceScope();
+        var extensions = new PluginExtensionHost();
+        PluginExtensionHost.PluginExtensionServices services = extensions.CreateServices(manifest, scope);
+        services.Ui.RegisterSettingsPage(new PluginUiContribution("first", "First"));
+        services.Ui.RegisterSettingsPage(new PluginUiContribution("second", "Second"));
+        services.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("first-control", "First Control", () => true, _ => { }).InPage("first"));
+        Assert(extensions.GetSettingsControls(manifest.Id, "first").Count == 1, "A typed setting control must remain associated with its declared page.");
+        Assert(extensions.GetSettingsControls(manifest.Id, "second").Count == 0, "Controls must not leak into another page owned by the same plugin.");
+        services.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("unparented", "Unparented", () => true, _ => { }));
+        Assert(extensions.GetSettingsControls(manifest.Id, "first").Count == 2, "Legacy unqualified controls must stay available through a deterministic first-page compatibility attachment.");
+
+        using var legacyScope = new PluginResourceScope();
+        var legacyServices = extensions.CreateServices(new PluginManifest(new PluginId("ui.legacy"), "Legacy UI", new Version(1, 0), "Tests", "Legacy UI test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface), legacyScope);
+        legacyServices.Ui.RegisterSettingsPage(new PluginUiContribution("only-page", "Only Page"));
+        legacyServices.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("legacy-control", "Legacy Control", () => true, _ => { }));
+        Assert(extensions.GetSettingsControls(new PluginId("ui.legacy"), "only-page").Count == 1, "Single-page legacy controls must be attached to their only page without breaking existing plugins.");
+    }
+
+    private static void TypedSettingsNormalizeAndReleaseSubscriptions()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-typed-settings-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            PluginManifest manifest = CreateManifest();
+            PluginHostContext context = new PluginHostContextFactory(root, new PluginServiceHub(), new PluginExtensionHost(), new PluginCommandHost())
+                .Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            IPluginSetting<int> setting = context.Settings.Register(new PluginSettingDefinition<int>("bounded", 4, value => Math.Max(0, Math.Min(10, value))));
+            int notifications = 0;
+            setting.Subscribe(value => notifications += value);
+
+            setting.Value = 18;
+            Assert(setting.Value == 10 && notifications == 10, "Typed settings must normalize before persistence and notify subscribed plugin code.");
+
+            context.Resources.Dispose();
+            setting.Value = 3;
+            Assert(notifications == 10, "Releasing a plugin scope must remove its typed-setting subscriptions.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static void NotificationsExpireWithoutPersistence()
     {
         var notifications = new PluginNotificationCenter();
@@ -1486,9 +1611,13 @@ internal static class Program
         Assert(notifications.GetActive(DateTimeOffset.UtcNow.AddSeconds(3)).Count == 0, "Expired notifications must be removed instead of accumulating.");
 
         PluginManifest manifest = CreateManifest();
-        notifications.CreateService(manifest).Show("Ready", new PluginNotificationOptions(PluginNotificationTarget.PluginManager, new PluginColor(10, 20, 30), TimeSpan.FromSeconds(30)));
-        PluginNotification owned = notifications.GetActive(DateTimeOffset.UtcNow).Single();
-        Assert(owned.Message == manifest.Id.Value + ": Ready" && owned.Options.Target == PluginNotificationTarget.PluginManager && owned.Options.Color.HasValue && owned.Options.Color.Value.Equals(new PluginColor(10, 20, 30)) && owned.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(16), "Plugin notifications must be owner-attributed, targetable, colored, and lifetime-bounded.");
+        using (var notificationScope = new PluginResourceScope())
+        {
+            notifications.CreateService(manifest, notificationScope).Show("Ready", new PluginNotificationOptions(PluginNotificationTarget.PluginManager, new PluginColor(10, 20, 30), TimeSpan.FromSeconds(30)));
+            PluginNotification owned = notifications.GetActive(DateTimeOffset.UtcNow).Single();
+            Assert(owned.Owner == manifest.Id && owned.Message == "Ready" && owned.Options.Target == PluginNotificationTarget.PluginManager && owned.Options.Color.HasValue && owned.Options.Color.Value.Equals(new PluginColor(10, 20, 30)) && owned.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(16), "Plugin notifications must be owner-attributed, targetable, colored, and lifetime-bounded.");
+        }
+        Assert(notifications.GetActive(DateTimeOffset.UtcNow).Count == 0, "Releasing a plugin scope must remove that plugin's pending notifications.");
     }
 
     private static void PackageCatalogReadsManifestWithoutAssemblyLoad()
@@ -1547,8 +1676,16 @@ internal static class Program
         host.CreateService(firstManifest, firstScope).Register(new PluginOverlayDescriptor("foreground", PluginOverlayLayer.Foreground), (_, _) => order.Add("first"));
         host.CreateService(secondManifest, secondScope).Register(new PluginOverlayDescriptor("background", PluginOverlayLayer.Background), (_, _) => order.Add("second"));
         host.CreateService(secondManifest, secondScope).Register(new PluginOverlayDescriptor("failure", PluginOverlayLayer.WorldMarkers), (_, _) => throw new InvalidOperationException("expected overlay failure"));
+        host.CreateService(firstManifest, firstScope).Register(new PluginOverlayDescriptor("hud", PluginOverlayLayer.Foreground, 0, PluginOverlaySpace.Hud), (_, _) => order.Add("hud"));
+        host.CreateService(firstManifest, firstScope).Register(new PluginOverlayDescriptor("menu", PluginOverlayLayer.Foreground, 0, PluginOverlaySpace.Menu), (_, _) => order.Add("menu"));
         host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, false, TimeSpan.Zero), new TestLogger());
         Assert(order.SequenceEqual(new[] { "second", "first" }), "Overlays must dispatch in deterministic layer order and isolate a failing callback.");
+        order.Clear();
+        host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, false, TimeSpan.Zero), PluginOverlaySpace.Hud);
+        Assert(order.SequenceEqual(new[] { "hud" }), "World and HUD overlays must dispatch only through their declared coordinate-space phase.");
+        order.Clear();
+        host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, true, TimeSpan.Zero), PluginOverlaySpace.Menu);
+        Assert(order.SequenceEqual(new[] { "menu" }), "Menu overlays must remain isolated from world and HUD registrations.");
         firstScope.ReleaseAll();
         order.Clear();
         host.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1920, 1080, 1f, false, TimeSpan.Zero));
@@ -1737,6 +1874,7 @@ internal static class Program
             Manifest = manifest;
             Resources = resources;
             Logger = new TestLogger();
+            Dispatcher = new PluginDispatcherHost().CreateService(manifest, resources);
             Notifications = new PluginNotificationCenter().CreateService(manifest);
             Services = new PluginServiceHub().CreateRegistry(manifest, resources);
             Settings = new TestSettings();
@@ -1746,6 +1884,7 @@ internal static class Program
             Keybinds = new TestKeybinds();
             Ui = new TestUi();
             Overlays = new TestOverlays();
+            Hud = new TestHud();
             UserInteraction = new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(manifest);
             Terraria = new TestTerrariaServices();
             Multiplayer = new TestMultiplayerSession();
@@ -1754,6 +1893,7 @@ internal static class Program
         public PluginManifest Manifest { get; }
         public IPluginResourceScope Resources { get; }
         public IPluginLogger Logger { get; }
+        public IPluginDispatcher Dispatcher { get; }
         public IPluginNotificationService Notifications { get; }
         public IPluginServiceRegistry Services { get; }
         public IPluginSettings Settings { get; }
@@ -1763,6 +1903,7 @@ internal static class Program
         public IPluginKeybindService Keybinds { get; }
         public IPluginUiService Ui { get; }
         public IPluginOverlayService Overlays { get; }
+        public IPluginHudService Hud { get; }
         public IPluginUserInteractionService UserInteraction { get; }
         public ITerrariaServices Terraria { get; }
         public IMultiplayerSession Multiplayer { get; }
@@ -1869,10 +2010,27 @@ internal static class Program
     {
         private readonly Dictionary<string, object?> values = new Dictionary<string, object?>();
         public event EventHandler<PluginSettingChangedEventArgs>? Changed;
+        public IPluginSetting<T> Register<T>(PluginSettingDefinition<T> definition)
+        {
+            if (definition == null) throw new ArgumentNullException(nameof(definition));
+            return new TestSetting<T>(this, definition);
+        }
         public T Get<T>(string key, T defaultValue) => values.TryGetValue(key, out var value) && value is T typed ? typed : defaultValue;
         public void Set<T>(string key, T value) { values.TryGetValue(key, out var oldValue); values[key] = value; Changed?.Invoke(this, new PluginSettingChangedEventArgs(key, oldValue, value)); }
         public bool Remove(string key) { if (!values.TryGetValue(key, out var value)) return false; values.Remove(key); Changed?.Invoke(this, new PluginSettingChangedEventArgs(key, value, null)); return true; }
         public void ResetToDefaults() => values.Clear();
+
+        private sealed class TestSetting<T> : IPluginSetting<T>
+        {
+            private readonly TestSettings settings;
+            private readonly PluginSettingDefinition<T> definition;
+            public TestSetting(TestSettings settings, PluginSettingDefinition<T> definition) { this.settings = settings; this.definition = definition; }
+            public string Key => definition.Key;
+            public T DefaultValue => definition.DefaultValue;
+            public T Value { get => settings.Get(definition.Key, definition.DefaultValue); set => settings.Set(definition.Key, definition.Normalize == null ? value : definition.Normalize(value)); }
+            public void Reset() => Value = definition.DefaultValue;
+            public IPluginRegistration Subscribe(Action<T> handler) => new TestRegistration("setting-subscription");
+        }
     }
 
     private sealed class TestStorage : IPluginStorage
@@ -1905,6 +2063,7 @@ internal static class Program
         public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) => new TestRegistration("page");
         public IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution) => new TestRegistration("control");
         public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) => new TestRegistration("control");
+        public IPluginRegistration RegisterIconInteraction(PluginIconInteractionDescriptor descriptor, Action activate) => new TestRegistration("icon");
         public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) => new TestRegistration("overlay");
     }
 
@@ -1918,10 +2077,41 @@ internal static class Program
         }
     }
 
+    private sealed class TestHud : IPluginHudService
+    {
+        public IPluginRegistration Register(PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw) => new TestRegistration("hud:" + descriptor.Id);
+    }
+
+    private sealed class TestHudRenderer : IPluginHudRenderer
+    {
+        private static readonly IPluginHudCanvas Canvas = new TestHudCanvas();
+        public void Render(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, PluginHudFrame frame) => draw(Canvas, frame);
+    }
+
+    private sealed class TestHudCanvas : IPluginHudCanvas
+    {
+        public void DrawPanel(PluginUiRect bounds, PluginOverlayColor color) { }
+        public void DrawText(string text, float x, float y, PluginOverlayColor color, float scale = 1f, float originX = 0f, float originY = 0f) { }
+        public void DrawAsset(string approvedAssetId, PluginUiRect bounds, PluginOverlayColor? tint = null) { }
+        public void DrawPlayerAvatar(int playerId, float x, float y, float scale = 1f) { }
+        public void DrawNpcHead(int npcType, float x, float y, float scale = 1f, PluginOverlayColor? tint = null) { }
+        public void DrawInteractiveAsset(string interactionId, string approvedAssetId, PluginUiRect bounds) { }
+        public void DrawInteractiveNpcHead(string interactionId, int npcType, PluginUiRect bounds) { }
+        public bool CapturePointer(PluginUiRect bounds) => false;
+    }
+
     private sealed class TestTerrariaServices : ITerrariaServices
     {
         public IPluginChatService Chat { get; } = new TestChatService();
         public IPluginEntitySnapshotService Entities { get; } = new TestEntitySnapshots();
+        public IPluginPlayerService Players { get; } = new TestPlayers();
+        public IPluginVisualEffectsService VisualEffects { get; } = new TestVisualEffects();
+        public IPluginSessionPresentationService Session { get; } = new TestSessionPresentation();
+    }
+
+    private sealed class TestSessionPresentation : IPluginSessionPresentationService
+    {
+        public PluginSessionPresentationSnapshot GetCurrent() => new PluginSessionPresentationSnapshot("Tests", 255, null);
     }
 
     private sealed class TestChatService : IPluginChatService
@@ -1936,6 +2126,19 @@ internal static class Program
     {
         public void CopyActiveEntities(ICollection<PluginEntitySnapshot> destination) { }
         public void CopyMeleeHitboxes(ICollection<PluginEntitySnapshot> destination) { }
+    }
+
+    private sealed class TestVisualEffects : IPluginVisualEffectsService
+    {
+        public IPluginRegistration RegisterPolicy(PluginVisualEffectsPolicy policy) => new TestRegistration("visual-effects");
+    }
+
+    private sealed class TestPlayers : IPluginPlayerService
+    {
+        public bool TryGet(int playerId, out PluginPlayerSnapshot player) { player = default; return false; }
+        public string? GetName(int playerId) => null;
+        public void CopyPlayers(ICollection<PluginPlayerSnapshot> destination) { }
+        public void CopyBuffs(int playerId, ICollection<PluginBuffSnapshot> destination) { }
     }
 
     private sealed class TestChatFilter : IChatMessageFilter
@@ -1955,6 +2158,13 @@ internal static class Program
         private readonly string text;
         public TestDecorator(string text) { this.text = text; }
         public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message) => new[] { new ChatTextSpan(text) };
+    }
+
+    private sealed class AppendingDecorator : IChatMessageDecorator
+    {
+        private readonly string suffix;
+        public AppendingDecorator(string suffix) { this.suffix = suffix; }
+        public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message) => new[] { new ChatTextSpan(message.Text + suffix) };
     }
 
     private sealed class ThrowingDecorator : IChatMessageDecorator

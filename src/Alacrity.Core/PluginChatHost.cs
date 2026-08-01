@@ -32,6 +32,15 @@ public sealed class PluginChatHost
         return false;
     }
 
+    /// <summary>Returns the first deterministic input-editor owner for host-mediated interaction operations.</summary>
+    public bool TryGetActiveEditorOwner(out PluginId owner)
+    {
+        EditorEntry[] current = Volatile.Read(ref editorSnapshot);
+        if (current.Length == 0) { owner = default; return false; }
+        owner = current[0].Owner;
+        return true;
+    }
+
     /// <summary>Fast-path state used by Terraria integration before parsing presentation spans.</summary>
     public bool HasMessageDecorators => Volatile.Read(ref decoratorSnapshot).Length != 0;
 
@@ -68,17 +77,24 @@ public sealed class PluginChatHost
     public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message)
     {
         DecoratorEntry[] current = Volatile.Read(ref decoratorSnapshot);
+        if (current.Length == 0)
+            return new[] { new ChatTextSpan(message.Text) };
+
+        IReadOnlyList<ChatTextSpan> spans = new[] { new ChatTextSpan(message.Text) };
         foreach (var entry in current)
         {
             try
             {
-                IReadOnlyList<ChatTextSpan>? result = entry.Decorator.Decorate(message);
-                if (result != null && !IsIdentityDecoration(result, message.Text))
-                    return result;
+                string currentText = Concatenate(spans);
+                IReadOnlyList<ChatTextSpan>? result = entry.Decorator is IChatSpanDecorator composable
+                    ? composable.Decorate(message, spans)
+                    : entry.Decorator.Decorate(new ChatMessageSnapshot(currentText));
+                if (result != null && !IsIdentityDecoration(result, currentText))
+                    spans = result;
             }
             catch (Exception exception) { ReportFailure(entry, "message decorator", exception); entry.Dispose(); }
         }
-        return new[] { new ChatTextSpan(message.Text) };
+        return spans;
     }
 
     public bool ShouldDisplay(ChatMessageOrigin origin)
@@ -169,6 +185,19 @@ public sealed class PluginChatHost
         return spans.Count == 1 && spans[0].LinkTarget == null && string.Equals(spans[0].Text, text, StringComparison.Ordinal);
     }
 
+    private static string Concatenate(IReadOnlyList<ChatTextSpan> spans)
+    {
+        if (spans.Count == 0)
+            return string.Empty;
+        if (spans.Count == 1)
+            return spans[0].Text;
+
+        var text = new System.Text.StringBuilder();
+        for (int index = 0; index < spans.Count; index++)
+            text.Append(spans[index].Text);
+        return text.ToString();
+    }
+
     private void RebuildEditorSnapshot() => Volatile.Write(ref editorSnapshot, editors.OrderBy(entry => entry.Descriptor.Priority).ToArray());
     private void RebuildDecoratorSnapshot() => Volatile.Write(ref decoratorSnapshot, decorators.OrderBy(entry => entry.Descriptor.Priority).ToArray());
     private void RebuildFilterSnapshot() => Volatile.Write(ref filterSnapshot, filters.OrderBy(entry => entry.Descriptor.Priority).ToArray());
@@ -207,16 +236,46 @@ public sealed class PluginChatHost
 /// <summary>Concrete Terraria service grouping assembled by the host.</summary>
 public sealed class PluginTerrariaServices : ITerrariaServices
 {
-    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null)
+    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null)
     {
         Chat = chat ?? throw new ArgumentNullException(nameof(chat));
         Entities = entities ?? EmptyPluginEntitySnapshotService.Instance;
+        VisualEffects = visualEffects ?? EmptyPluginVisualEffectsService.Instance;
+        Players = players ?? EmptyPluginPlayerService.Instance;
+        Session = session ?? EmptyPluginSessionPresentationService.Instance;
     }
     public IPluginChatService Chat { get; }
     public IPluginEntitySnapshotService Entities { get; }
+    public IPluginVisualEffectsService VisualEffects { get; }
+    public IPluginPlayerService Players { get; }
+    public IPluginSessionPresentationService Session { get; }
 }
 
-internal sealed class EmptyPluginEntitySnapshotService : IPluginEntitySnapshotService
+internal sealed class EmptyPluginSessionPresentationService : IPluginSessionPresentationService
+{
+    internal static readonly EmptyPluginSessionPresentationService Instance = new EmptyPluginSessionPresentationService();
+    private EmptyPluginSessionPresentationService() { }
+    public PluginSessionPresentationSnapshot GetCurrent() => default;
+}
+
+internal sealed class EmptyPluginPlayerService : IPluginPlayerService
+{
+    internal static readonly EmptyPluginPlayerService Instance = new EmptyPluginPlayerService();
+    private EmptyPluginPlayerService() { }
+    public bool TryGet(int playerId, out PluginPlayerSnapshot player) { player = default; return false; }
+    public string? GetName(int playerId) => null;
+    public void CopyPlayers(System.Collections.Generic.ICollection<PluginPlayerSnapshot> destination) { if (destination == null) throw new ArgumentNullException(nameof(destination)); }
+    public void CopyBuffs(int playerId, System.Collections.Generic.ICollection<PluginBuffSnapshot> destination) { if (destination == null) throw new ArgumentNullException(nameof(destination)); }
+}
+
+internal sealed class EmptyPluginVisualEffectsService : IPluginVisualEffectsService
+{
+    internal static readonly EmptyPluginVisualEffectsService Instance = new EmptyPluginVisualEffectsService();
+    private EmptyPluginVisualEffectsService() { }
+    public IPluginRegistration RegisterPolicy(PluginVisualEffectsPolicy policy) => throw new NotSupportedException("Visual-effects policies are unavailable in this host.");
+}
+
+internal sealed class EmptyPluginEntitySnapshotService : IPluginEntitySnapshotService, IPluginMeleeCollisionSnapshotService
 {
     internal static readonly EmptyPluginEntitySnapshotService Instance = new EmptyPluginEntitySnapshotService();
     private EmptyPluginEntitySnapshotService() { }
@@ -228,4 +287,5 @@ internal sealed class EmptyPluginEntitySnapshotService : IPluginEntitySnapshotSe
     {
         if (destination == null) throw new ArgumentNullException(nameof(destination));
     }
+    public IPluginRegistration RequestMeleeCollisionSnapshots() => throw new NotSupportedException("Melee collision snapshots are unavailable in this host.");
 }

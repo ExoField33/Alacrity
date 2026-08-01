@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -19,13 +20,17 @@ namespace AlacrityTerraria
         private static readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
         private static FieldInfo _versionNumber;
         private static Assembly _bridgeAssembly;
+        private static Type _bridgeType;
+        private static Action _bootstrapPluginRuntime;
+        private static Action _shutdownPluginRuntime;
         private static Action _open;
         private static Action _openIngamePluginSettings;
         private static Action<SpriteBatch> _drawIngamePluginSettings;
         private static Action<SpriteBatch> _drawNotifications;
-        private static Action<SpriteBatch> _drawPlayerList;
-        private static Action<SpriteBatch> _drawHitboxes;
-        private static Action<Player, bool, Rectangle> _captureSwingHitbox;
+        private static Action<SpriteBatch> _drawHudWidgets;
+        private static Action<SpriteBatch> _drawWorldOverlays;
+        private static Action<SpriteBatch> _drawMenuOverlays;
+        private static Action<Player, bool, Rectangle> _captureMeleeCollisionBounds;
         private static Action _updatePluginKeybinds;
         private static Action _ensurePluginKeybindStateShape;
         private static Action<UIManageControls> _appendPluginKeybindControls;
@@ -36,9 +41,9 @@ namespace AlacrityTerraria
         private static Func<bool> _shouldRunGoreSystem;
         private static Func<string, bool> _tryHandlePluginChatCommand;
         private static Func<bool> _handlePluginMenuInput;
-        private static Func<bool> _isBetterChatActive;
-        private static Func<string, bool, string> _processPlayerChatInput;
-        private static Func<string, string> _formatPlayerChatText;
+        private static Func<bool> _hasChatInputEditors;
+        private static Func<string, bool, string> _processChatInput;
+        private static Func<string, string> _formatChatInputForDraw;
         private static Func<object, Color, string, object> _decorateChatMessage;
         private static Func<byte, bool> _shouldDisplayNetworkChatMessage;
         private static Func<bool> _shouldDisplayLocalChatMessage;
@@ -50,11 +55,25 @@ namespace AlacrityTerraria
         private static Action<Color, float> _drawVersionNumber;
         private static bool _versionRendererResolved;
         private static bool _bridgeLoadAttempted;
+        private static bool _runtimeCapabilitiesResolved;
+        private static bool _pluginManagerCapabilitiesResolved;
+        private static bool _notificationCapabilitiesResolved;
+        private static readonly object CapabilityDiagnosticGate = new object();
+        private static readonly Dictionary<string, string> CapabilityDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal);
         private static string _lastDiagnostic;
         private static bool _shutdownHooked;
 
         /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
         public static string LastBridgeDiagnostic { get { return _lastDiagnostic ?? string.Empty; } }
+
+        /// <summary>Returns the cached diagnostic for one independently resolved bridge capability.</summary>
+        public static string GetBridgeCapabilityDiagnostic(string capability)
+        {
+            if (string.IsNullOrWhiteSpace(capability))
+                throw new ArgumentException("A bridge capability name is required.", nameof(capability));
+            lock (CapabilityDiagnosticGate)
+                return CapabilityDiagnostics.TryGetValue(capability, out var diagnostic) ? diagnostic : string.Empty;
+        }
 
         public static bool HandleInput()
         {
@@ -81,16 +100,13 @@ namespace AlacrityTerraria
         {
             try
             {
-                if (!EnsureBridge()) return;
+                if (!EnsureRuntimeCapabilities()) return;
                 if (!_shutdownHooked)
                 {
                     AppDomain.CurrentDomain.ProcessExit += (_, __) => ShutdownPluginRuntime();
                     _shutdownHooked = true;
                 }
-                var bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
-                if (bridgeType == null) return;
-                var bootstrap = bridgeType.GetMethod("BootstrapPluginRuntime", BindingFlags.Public | BindingFlags.Static);
-                bootstrap?.Invoke(null, null);
+                _bootstrapPluginRuntime?.Invoke();
             }
             catch (Exception exception) { RecordFailure("Plugin runtime startup", exception); }
         }
@@ -99,8 +115,7 @@ namespace AlacrityTerraria
         {
             try
             {
-                var bridgeType = _bridgeAssembly?.GetType("AlacrityTerraria.PluginUiRuntime", false);
-                bridgeType?.GetMethod("ShutdownPluginRuntime", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+                _shutdownPluginRuntime?.Invoke();
             }
             catch (Exception exception) { RecordFailure("Plugin runtime shutdown", exception); }
         }
@@ -109,6 +124,7 @@ namespace AlacrityTerraria
         {
             try
             {
+                BootstrapPluginRuntime();
                 if (!EnsureBridge())
                     return;
 
@@ -133,6 +149,8 @@ namespace AlacrityTerraria
                 {
                     _versionNumber.SetValue(null, versionText);
                     _drawVersionNumber(color, verticalOffset);
+                    if (_runtimeCapabilitiesResolved)
+                        _drawMenuOverlays?.Invoke(Main.spriteBatch);
                 }
                 finally
                 {
@@ -195,12 +213,13 @@ namespace AlacrityTerraria
 
             try
             {
-                if (EnsureBridge())
+                if (EnsureRuntimeCapabilities())
                 {
                     if (!Main.gameMenu)
                     {
+                        EnsureNotificationCapability();
                         _drawNotifications?.Invoke(spriteBatch);
-                        _drawPlayerList?.Invoke(spriteBatch);
+                        _drawHudWidgets?.Invoke(spriteBatch);
                     }
                 }
             }
@@ -216,7 +235,7 @@ namespace AlacrityTerraria
             try
             {
                 BootstrapPluginRuntime();
-                if (EnsureBridge())
+                if (EnsureRuntimeCapabilities())
                     _updatePluginKeybinds?.Invoke();
             }
             catch (Exception exception)
@@ -225,38 +244,50 @@ namespace AlacrityTerraria
             }
         }
 
-        /// <summary>Forwards the verified world draw phase to the optional host-owned Hitboxes renderer.</summary>
+        /// <summary>Compatibility forward for the existing version-locked Hitboxes hook.</summary>
         public static void DrawHitboxes(SpriteBatch spriteBatch)
+        {
+            DrawWorldOverlays(spriteBatch);
+        }
+
+        /// <summary>Forwards the verified world draw phase to the generic host-owned overlay renderer.</summary>
+        public static void DrawWorldOverlays(SpriteBatch spriteBatch)
         {
             if (spriteBatch == null || Main.gameMenu)
                 return;
             try
             {
-                if (!EnsureBridge() || _drawHitboxes == null)
+                if (!EnsureRuntimeCapabilities() || _drawWorldOverlays == null)
                     return;
-                _drawHitboxes(spriteBatch);
+                _drawWorldOverlays(spriteBatch);
             }
             catch (Exception exception)
             {
-                RecordFailure("Draw hitboxes", exception);
+                RecordFailure("Draw world overlays", exception);
             }
         }
 
         /// <summary>Receives a vanilla-computed melee hitbox only when the optional diagnostics bridge is available.</summary>
         public static void CaptureSwingHitbox(Player player, bool dontAttack, Rectangle hitbox)
         {
+            CaptureMeleeCollisionBounds(player, dontAttack, hitbox);
+        }
+
+        /// <summary>Forwards host-computed melee collision bounds to generic presentation consumers.</summary>
+        public static void CaptureMeleeCollisionBounds(Player player, bool dontAttack, Rectangle hitbox)
+        {
             try
             {
                 // This is called from a combat-hot path. Once resolved, avoid even the bridge readiness check.
-                Action<Player, bool, Rectangle> capture = _captureSwingHitbox;
+                Action<Player, bool, Rectangle> capture = _captureMeleeCollisionBounds;
                 if (capture != null)
                     capture(player, dontAttack, hitbox);
-                else if (EnsureBridge())
-                    _captureSwingHitbox?.Invoke(player, dontAttack, hitbox);
+                else if (EnsureRuntimeCapabilities())
+                    _captureMeleeCollisionBounds?.Invoke(player, dontAttack, hitbox);
             }
             catch (Exception exception)
             {
-                RecordFailure("Capture swing hitbox", exception);
+                RecordFailure("Capture melee collision bounds", exception);
             }
         }
 
@@ -266,7 +297,7 @@ namespace AlacrityTerraria
             try
             {
                 BootstrapPluginRuntime();
-                if (EnsureBridge())
+                if (EnsureRuntimeCapabilities())
                     _ensurePluginKeybindStateShape?.Invoke();
             }
             catch (Exception exception)
@@ -276,15 +307,15 @@ namespace AlacrityTerraria
         }
 
         // These version-locked calls fail open: an unavailable plugin bridge must never suppress vanilla effects.
-        public static bool ShouldRunDustSystem() => EnsureBridge() && _shouldRunDustSystem != null ? _shouldRunDustSystem() : true;
-        public static bool ShouldCreateDust(int dustType) => EnsureBridge() && _shouldCreateDust != null ? _shouldCreateDust(dustType) : true;
-        public static bool ShouldUpdateDustInstance(Dust dust) => EnsureBridge() && _shouldUpdateDustInstance != null ? _shouldUpdateDustInstance(dust) : true;
-        public static bool ShouldDrawDustInstance(Dust dust) => EnsureBridge() && _shouldDrawDustInstance != null ? _shouldDrawDustInstance(dust) : true;
-        public static bool ShouldRunGoreSystem() => EnsureBridge() && _shouldRunGoreSystem != null ? _shouldRunGoreSystem() : true;
+        public static bool ShouldRunDustSystem() => EnsureRuntimeCapabilities() && _shouldRunDustSystem != null ? _shouldRunDustSystem() : true;
+        public static bool ShouldCreateDust(int dustType) => EnsureRuntimeCapabilities() && _shouldCreateDust != null ? _shouldCreateDust(dustType) : true;
+        public static bool ShouldUpdateDustInstance(Dust dust) => EnsureRuntimeCapabilities() && _shouldUpdateDustInstance != null ? _shouldUpdateDustInstance(dust) : true;
+        public static bool ShouldDrawDustInstance(Dust dust) => EnsureRuntimeCapabilities() && _shouldDrawDustInstance != null ? _shouldDrawDustInstance(dust) : true;
+        public static bool ShouldRunGoreSystem() => EnsureRuntimeCapabilities() && _shouldRunGoreSystem != null ? _shouldRunGoreSystem() : true;
 
         public static bool TryHandlePluginChatCommand(string text)
         {
-            return EnsureBridge() && _tryHandlePluginChatCommand != null && _tryHandlePluginChatCommand(text);
+            return EnsureRuntimeCapabilities() && _tryHandlePluginChatCommand != null && _tryHandlePluginChatCommand(text);
         }
 
         /// <summary>Version-locked controls-menu entry point. It remains a no-op when the optional bridge is unavailable.</summary>
@@ -296,7 +327,7 @@ namespace AlacrityTerraria
             try
             {
                 BootstrapPluginRuntime();
-                if (EnsureBridge())
+                if (EnsureRuntimeCapabilities())
                     _appendPluginKeybindControls?.Invoke(controls);
             }
             catch (Exception exception)
@@ -306,21 +337,36 @@ namespace AlacrityTerraria
         }
 
         // These methods are called only from version-locked chat IL patches. They remain no-ops
-        // when the optional Core bridge or BetterChat package is unavailable.
+        // when no generic chat extension is registered or the optional Core bridge is unavailable.
         public static bool IsBetterChatActive()
         {
-            return EnsureChatBridge() && _isBetterChatActive != null && _isBetterChatActive();
+            return HasChatInputEditors();
+        }
+
+        public static bool HasChatInputEditors()
+        {
+            return EnsureChatBridge() && _hasChatInputEditors != null && _hasChatInputEditors();
         }
 
         public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
         {
-            return EnsureChatBridge() && _processPlayerChatInput != null ? _processPlayerChatInput(text, allowMultiLine) : text;
+            return ProcessChatInput(text, allowMultiLine);
+        }
+
+        public static string ProcessChatInput(string text, bool allowMultiLine)
+        {
+            return EnsureChatBridge() && _processChatInput != null ? _processChatInput(text, allowMultiLine) : text;
         }
 
         public static string FormatPlayerChatText(string text)
         {
-            if (EnsureChatBridge() && _formatPlayerChatText != null)
-                return _formatPlayerChatText(text);
+            return FormatChatInputForDraw(text);
+        }
+
+        public static string FormatChatInputForDraw(string text)
+        {
+            if (EnsureChatBridge() && _formatChatInputForDraw != null)
+                return _formatChatInputForDraw(text);
             return Main.instance != null && Main.instance.textBlinkerState == 1 ? (text ?? string.Empty) + "|" : text;
         }
 
@@ -389,7 +435,56 @@ namespace AlacrityTerraria
 
         private static bool EnsureBridge()
         {
-            if (_open != null)
+            if (_pluginManagerCapabilitiesResolved)
+                return _open != null;
+
+            if (!EnsureBridgeAssembly())
+                return false;
+
+            _pluginManagerCapabilitiesResolved = true;
+            try
+            {
+                Type bridgeType = _bridgeType;
+                string diagnostic;
+                MethodInfo open;
+                MethodInfo openIngame;
+                MethodInfo drawIngame;
+                MethodInfo handleInput;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "Open", typeof(void), Type.EmptyTypes, out open, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "OpenIngamePluginSettings", typeof(void), Type.EmptyTypes, out openIngame, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "DrawIngamePluginSettings", typeof(void), new[] { typeof(SpriteBatch) }, out drawIngame, out diagnostic) ||
+                    !Reflection.TryResolveStaticMethod(bridgeType, "HandlePluginMenuInput", typeof(bool), Type.EmptyTypes, out handleInput, out diagnostic))
+                {
+                    SetCapabilityDiagnostic("plugin-manager", diagnostic);
+                    RecordUnavailable(diagnostic);
+                    ClearPluginManagerDelegates();
+                    return false;
+                }
+
+                Delegate callback = null;
+                if (!Reflection.TryCreateDelegate(open, typeof(Action), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                _open = (Action)callback;
+                if (!Reflection.TryCreateDelegate(openIngame, typeof(Action), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                _openIngamePluginSettings = (Action)callback;
+                if (!Reflection.TryCreateDelegate(drawIngame, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                _drawIngamePluginSettings = (Action<SpriteBatch>)callback;
+                if (!Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                _handlePluginMenuInput = (Func<bool>)callback;
+                SetCapabilityDiagnostic("plugin-manager", string.Empty);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                ClearPluginManagerDelegates();
+                SetCapabilityDiagnostic("plugin-manager", exception.GetType().Name + ": " + exception.Message);
+                RecordFailure("Resolve plugin-manager bridge", exception);
+                return false;
+            }
+        }
+
+        private static bool EnsureBridgeAssembly()
+        {
+            if (_bridgeType != null)
                 return true;
             if (_bridgeLoadAttempted)
                 return false;
@@ -405,108 +500,129 @@ namespace AlacrityTerraria
             try
             {
                 _bridgeAssembly = Assembly.LoadFrom(path);
-                Type bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
-                if (bridgeType == null)
+                _bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                if (_bridgeType == null)
                 {
                     RecordUnavailable("Unavailable: the UI bridge does not contain AlacrityTerraria.PluginUiRuntime.");
                     return false;
                 }
 
-                string diagnostic;
-                MethodInfo open;
-                MethodInfo openIngame;
-                MethodInfo drawIngame;
-                MethodInfo drawNotifications;
-                MethodInfo handleInput;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "Open", typeof(void), Type.EmptyTypes, out open, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "OpenIngamePluginSettings", typeof(void), Type.EmptyTypes, out openIngame, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "DrawIngamePluginSettings", typeof(void), new[] { typeof(SpriteBatch) }, out drawIngame, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "DrawNotifications", typeof(void), new[] { typeof(SpriteBatch) }, out drawNotifications, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "HandlePluginMenuInput", typeof(bool), Type.EmptyTypes, out handleInput, out diagnostic))
-                {
-                    RecordUnavailable(diagnostic);
-                    ClearBridgeDelegates();
-                    return false;
-                }
-
-                Delegate callback;
-                if (!Reflection.TryCreateDelegate(open, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
-                _open = (Action)callback;
-                if (!Reflection.TryCreateDelegate(openIngame, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
-                _openIngamePluginSettings = (Action)callback;
-                if (!Reflection.TryCreateDelegate(drawIngame, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
-                _drawIngamePluginSettings = (Action<SpriteBatch>)callback;
-                if (!Reflection.TryCreateDelegate(drawNotifications, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
-                _drawNotifications = (Action<SpriteBatch>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "DrawPlayerList", typeof(void), new[] { typeof(SpriteBatch) }, out var drawPlayerList, out _) &&
-                    Reflection.TryCreateDelegate(drawPlayerList, typeof(Action<SpriteBatch>), out callback, out _))
-                    _drawPlayerList = (Action<SpriteBatch>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "DrawHitboxes", typeof(void), new[] { typeof(SpriteBatch) }, out var drawHitboxes, out _) &&
-                    Reflection.TryCreateDelegate(drawHitboxes, typeof(Action<SpriteBatch>), out callback, out _))
-                    _drawHitboxes = (Action<SpriteBatch>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "CaptureSwingHitbox", typeof(void), new[] { typeof(Player), typeof(bool), typeof(Rectangle) }, out var captureSwingHitbox, out _) &&
-                    Reflection.TryCreateDelegate(captureSwingHitbox, typeof(Action<Player, bool, Rectangle>), out callback, out _))
-                    _captureSwingHitbox = (Action<Player, bool, Rectangle>)callback;
-                if (!Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearBridgeDelegates(); return false; }
-                _handlePluginMenuInput = (Func<bool>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "UpdatePluginKeybinds", typeof(void), Type.EmptyTypes, out var updatePluginKeybinds, out _) &&
-                    Reflection.TryCreateDelegate(updatePluginKeybinds, typeof(Action), out callback, out _))
-                    _updatePluginKeybinds = (Action)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "EnsurePluginKeybindStateShape", typeof(void), Type.EmptyTypes, out var ensurePluginKeybindStateShape, out _) &&
-                    Reflection.TryCreateDelegate(ensurePluginKeybindStateShape, typeof(Action), out callback, out _))
-                    _ensurePluginKeybindStateShape = (Action)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "AppendPluginKeybindControls", typeof(void), new[] { typeof(UIManageControls) }, out var appendPluginKeybindControls, out _) &&
-                    Reflection.TryCreateDelegate(appendPluginKeybindControls, typeof(Action<UIManageControls>), out callback, out _))
-                    _appendPluginKeybindControls = (Action<UIManageControls>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldRunDustSystem", typeof(bool), Type.EmptyTypes, out var shouldRunDustSystem, out _) &&
-                    Reflection.TryCreateDelegate(shouldRunDustSystem, typeof(Func<bool>), out callback, out _))
-                    _shouldRunDustSystem = (Func<bool>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldCreateDust", typeof(bool), new[] { typeof(int) }, out var shouldCreateDust, out _) &&
-                    Reflection.TryCreateDelegate(shouldCreateDust, typeof(Func<int, bool>), out callback, out _))
-                    _shouldCreateDust = (Func<int, bool>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldUpdateDustInstance", typeof(bool), new[] { typeof(Dust) }, out var shouldUpdateDustInstance, out _) &&
-                    Reflection.TryCreateDelegate(shouldUpdateDustInstance, typeof(Func<Dust, bool>), out callback, out _))
-                    _shouldUpdateDustInstance = (Func<Dust, bool>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldDrawDustInstance", typeof(bool), new[] { typeof(Dust) }, out var shouldDrawDustInstance, out _) &&
-                    Reflection.TryCreateDelegate(shouldDrawDustInstance, typeof(Func<Dust, bool>), out callback, out _))
-                    _shouldDrawDustInstance = (Func<Dust, bool>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "ShouldRunGoreSystem", typeof(bool), Type.EmptyTypes, out var shouldRunGoreSystem, out _) &&
-                    Reflection.TryCreateDelegate(shouldRunGoreSystem, typeof(Func<bool>), out callback, out _))
-                    _shouldRunGoreSystem = (Func<bool>)callback;
-                if (Reflection.TryResolveStaticMethod(bridgeType, "TryHandlePluginChatCommand", typeof(bool), new[] { typeof(string) }, out var tryHandlePluginChatCommand, out _) &&
-                    Reflection.TryCreateDelegate(tryHandlePluginChatCommand, typeof(Func<string, bool>), out callback, out _))
-                    _tryHandlePluginChatCommand = (Func<string, bool>)callback;
                 return true;
             }
             catch (Exception exception)
             {
-                ClearBridgeDelegates();
                 _bridgeAssembly = null;
-                RecordFailure("Load UI bridge", exception);
+                _bridgeType = null;
+                RecordFailure("Load plugin bridge assembly", exception);
                 return false;
             }
+        }
+
+        private static bool EnsureRuntimeCapabilities()
+        {
+            if (_runtimeCapabilitiesResolved)
+                return _bootstrapPluginRuntime != null;
+            if (!EnsureBridgeAssembly())
+                return false;
+
+            _runtimeCapabilitiesResolved = true;
+            try
+            {
+                string diagnostic;
+                Delegate callback = null;
+                MethodInfo bootstrap;
+                MethodInfo shutdown;
+                if (!Reflection.TryResolveStaticMethod(_bridgeType, "BootstrapPluginRuntime", typeof(void), Type.EmptyTypes, out bootstrap, out diagnostic) ||
+                    !Reflection.TryCreateDelegate(bootstrap, typeof(Action), out callback, out diagnostic))
+                {
+                    RecordUnavailable(diagnostic);
+                    return false;
+                }
+                _bootstrapPluginRuntime = (Action)callback;
+                if (Reflection.TryResolveStaticMethod(_bridgeType, "ShutdownPluginRuntime", typeof(void), Type.EmptyTypes, out shutdown, out _) &&
+                    Reflection.TryCreateDelegate(shutdown, typeof(Action), out callback, out _))
+                    _shutdownPluginRuntime = (Action)callback;
+                ResolveOptionalCapabilities(_bridgeType);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Resolve runtime bridge capabilities", exception);
+                return false;
+            }
+        }
+
+        private static void ResolveOptionalCapabilities(Type bridgeType)
+        {
+            if (TryResolveOptionalCapability(bridgeType, "hud-widgets", "DrawHudWidgets", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out var callback)) _drawHudWidgets = (Action<SpriteBatch>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "world-overlays", "DrawWorldOverlays", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out callback)) _drawWorldOverlays = (Action<SpriteBatch>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "menu-overlays", "DrawMenuOverlays", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out callback)) _drawMenuOverlays = (Action<SpriteBatch>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "combat-collision-capture", "CaptureMeleeCollisionBounds", typeof(Action<Player, bool, Rectangle>), typeof(void), new[] { typeof(Player), typeof(bool), typeof(Rectangle) }, out callback)) _captureMeleeCollisionBounds = (Action<Player, bool, Rectangle>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "keybind-update", "UpdatePluginKeybinds", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) _updatePluginKeybinds = (Action)callback;
+            if (TryResolveOptionalCapability(bridgeType, "keybind-state", "EnsurePluginKeybindStateShape", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) _ensurePluginKeybindStateShape = (Action)callback;
+            if (TryResolveOptionalCapability(bridgeType, "keybind-controls", "AppendPluginKeybindControls", typeof(Action<UIManageControls>), typeof(void), new[] { typeof(UIManageControls) }, out callback)) _appendPluginKeybindControls = (Action<UIManageControls>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-system", "ShouldRunDustSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) _shouldRunDustSystem = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-create", "ShouldCreateDust", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) _shouldCreateDust = (Func<int, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-update", "ShouldUpdateDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) _shouldUpdateDustInstance = (Func<Dust, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-draw", "ShouldDrawDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) _shouldDrawDustInstance = (Func<Dust, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "gore-system", "ShouldRunGoreSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) _shouldRunGoreSystem = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) _tryHandlePluginChatCommand = (Func<string, bool>)callback;
+        }
+
+        private static bool EnsureNotificationCapability()
+        {
+            if (_notificationCapabilitiesResolved)
+                return _drawNotifications != null;
+            _notificationCapabilitiesResolved = true;
+            if (!EnsureBridgeAssembly())
+                return false;
+            if (!TryResolveOptionalCapability(_bridgeType, "notifications", "DrawNotifications", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out var callback))
+                return false;
+            _drawNotifications = (Action<SpriteBatch>)callback;
+            return true;
+        }
+
+        private static bool TryResolveOptionalCapability(Type bridgeType, string capability, string methodName, Type delegateType, Type returnType, Type[] parameterTypes, out Delegate callback)
+        {
+            callback = null;
+            string diagnostic;
+            MethodInfo method;
+            if (!Reflection.TryResolveStaticMethod(bridgeType, methodName, returnType, parameterTypes, out method, out diagnostic) ||
+                !Reflection.TryCreateDelegate(method, delegateType, out callback, out diagnostic))
+            {
+                SetCapabilityDiagnostic(capability, diagnostic);
+                return false;
+            }
+            SetCapabilityDiagnostic(capability, string.Empty);
+            return true;
+        }
+
+        private static void SetCapabilityDiagnostic(string capability, string diagnostic)
+        {
+            lock (CapabilityDiagnosticGate)
+                CapabilityDiagnostics[capability] = diagnostic ?? string.Empty;
         }
 
         private static bool EnsureChatBridge()
         {
             if (_chatBridgeResolved)
-                return _isBetterChatActive != null;
+                return _hasChatInputEditors != null;
             _chatBridgeResolved = true;
-            if (!EnsureBridge())
+            if (!EnsureBridgeAssembly())
                 return false;
 
             try
             {
-                Type bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                Type bridgeType = _bridgeType;
                 string diagnostic;
                 MethodInfo method;
                 Delegate callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "IsBetterChatActive", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); return false; }
-                _isBetterChatActive = (Func<bool>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "ProcessPlayerChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _processPlayerChatInput = (Func<string, bool, string>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "FormatPlayerChatText", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _formatPlayerChatText = (Func<string, string>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "HasChatInputEditors", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); return false; }
+                _hasChatInputEditors = (Func<bool>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "ProcessChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _processChatInput = (Func<string, bool, string>)callback;
+                if (!Reflection.TryResolveStaticMethod(bridgeType, "FormatChatInputForDraw", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                _formatChatInputForDraw = (Func<string, string>)callback;
                 if (!Reflection.TryResolveStaticMethod(bridgeType, "DecorateChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 _decorateChatMessage = (Func<object, Color, string, object>)callback;
                 if (!Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayNetworkChatMessage", typeof(bool), new[] { typeof(byte) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<byte, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
@@ -525,7 +641,7 @@ namespace AlacrityTerraria
             }
             catch (Exception exception)
             {
-                RecordFailure("Resolve BetterChat bridge", exception);
+                RecordFailure("Resolve chat extension bridge", exception);
                 ClearChatDelegates();
                 return false;
             }
@@ -533,13 +649,11 @@ namespace AlacrityTerraria
 
         private static void ClearBridgeDelegates()
         {
-            _open = null;
-            _openIngamePluginSettings = null;
-            _drawIngamePluginSettings = null;
-            _drawNotifications = null;
-            _drawPlayerList = null;
-            _drawHitboxes = null;
-            _captureSwingHitbox = null;
+            ClearPluginManagerDelegates();
+            _drawHudWidgets = null;
+            _drawWorldOverlays = null;
+            _drawMenuOverlays = null;
+            _captureMeleeCollisionBounds = null;
             _updatePluginKeybinds = null;
             _ensurePluginKeybindStateShape = null;
             _appendPluginKeybindControls = null;
@@ -549,15 +663,26 @@ namespace AlacrityTerraria
             _shouldDrawDustInstance = null;
             _shouldRunGoreSystem = null;
             _tryHandlePluginChatCommand = null;
+            _bootstrapPluginRuntime = null;
+            _shutdownPluginRuntime = null;
+            _runtimeCapabilitiesResolved = false;
+            _notificationCapabilitiesResolved = false;
+        }
+
+        private static void ClearPluginManagerDelegates()
+        {
+            _open = null;
+            _openIngamePluginSettings = null;
+            _drawIngamePluginSettings = null;
+            _drawNotifications = null;
             _handlePluginMenuInput = null;
-            ClearChatDelegates();
         }
 
         private static void ClearChatDelegates()
         {
-            _isBetterChatActive = null;
-            _processPlayerChatInput = null;
-            _formatPlayerChatText = null;
+            _hasChatInputEditors = null;
+            _processChatInput = null;
+            _formatChatInputForDraw = null;
             _decorateChatMessage = null;
             _shouldDisplayNetworkChatMessage = null;
             _shouldDisplayLocalChatMessage = null;

@@ -36,6 +36,9 @@ public interface IAsyncAlacrityPlugin
 /// <summary>Plugin-scoped typed settings boundary. Persistence and recovery are host-owned.</summary>
 public interface IPluginSettings
 {
+    /// <summary>Registers a typed setting whose persistence is owned by the host.</summary>
+    IPluginSetting<T> Register<T>(PluginSettingDefinition<T> definition);
+
     /// <summary>Gets a stored value or the supplied default.</summary>
     T Get<T>(string key, T defaultValue);
 
@@ -50,6 +53,40 @@ public interface IPluginSettings
 
     /// <summary>Raised after a setting changes.</summary>
     event EventHandler<PluginSettingChangedEventArgs> Changed;
+}
+
+/// <summary>Immutable declaration for one plugin-owned typed setting.</summary>
+public sealed class PluginSettingDefinition<T>
+{
+    /// <summary>Creates a typed setting declaration with an optional normalizer.</summary>
+    public PluginSettingDefinition(string key, T defaultValue, Func<T, T>? normalize = null)
+    {
+        Key = string.IsNullOrWhiteSpace(key) ? throw new ArgumentException("A setting key is required.", nameof(key)) : key;
+        DefaultValue = defaultValue;
+        Normalize = normalize;
+    }
+
+    /// <summary>Stable persisted key within the plugin namespace.</summary>
+    public string Key { get; }
+    /// <summary>Value returned when no valid persisted value exists.</summary>
+    public T DefaultValue { get; }
+    /// <summary>Optional host-applied normalization before values are exposed or persisted.</summary>
+    public Func<T, T>? Normalize { get; }
+}
+
+/// <summary>Host-owned typed setting handle. Subscriptions are released with the owning plugin scope.</summary>
+public interface IPluginSetting<T>
+{
+    /// <summary>Stable persisted key within the owning plugin namespace.</summary>
+    string Key { get; }
+    /// <summary>Declared default value.</summary>
+    T DefaultValue { get; }
+    /// <summary>Current normalized persisted value.</summary>
+    T Value { get; set; }
+    /// <summary>Restores the declared default value.</summary>
+    void Reset();
+    /// <summary>Subscribes to value changes with host-managed lifetime ownership.</summary>
+    IPluginRegistration Subscribe(Action<T> handler);
 }
 
 /// <summary>Describes one plugin setting change.</summary>
@@ -111,6 +148,17 @@ public interface IPluginCommandService
 {
     /// <summary>Registers a command owned by the current plugin.</summary>
     IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler);
+}
+
+/// <summary>Explicit result of host command dispatch. A failed registered command is still consumed locally.</summary>
+public enum PluginCommandDispatchResult
+{
+    /// <summary>No plugin owns the requested command.</summary>
+    NotFound,
+    /// <summary>A plugin command handled the invocation successfully.</summary>
+    Handled,
+    /// <summary>A plugin command was found and consumed but its callback failed.</summary>
+    HandledWithFailure
 }
 
 /// <summary>Immutable command declaration.</summary>
@@ -267,8 +315,128 @@ public interface IPluginUiService
     /// <summary>Registers a typed host-rendered setting control owned by the current plugin.</summary>
     IPluginRegistration RegisterSettingsControl(PluginSettingControl control);
 
+    /// <summary>Registers a host-evaluated icon interaction for use by a retained or immediate-mode Terraria surface.</summary>
+    IPluginRegistration RegisterIconInteraction(PluginIconInteractionDescriptor descriptor, Action activate);
+
     /// <summary>Registers an overlay contribution.</summary>
     IPluginRegistration RegisterOverlay(PluginUiContribution contribution);
+}
+
+/// <summary>Host-neutral rectangle used for pointer hit testing.</summary>
+public readonly struct PluginUiRect
+{
+    /// <summary>Creates a host-neutral rectangle in the coordinate space of the rendering surface.</summary>
+    public PluginUiRect(float x, float y, float width, float height) { X = x; Y = y; Width = width; Height = height; }
+    /// <summary>Gets the left coordinate.</summary>
+    public float X { get; }
+    /// <summary>Gets the top coordinate.</summary>
+    public float Y { get; }
+    /// <summary>Gets the rectangle width.</summary>
+    public float Width { get; }
+    /// <summary>Gets the rectangle height.</summary>
+    public float Height { get; }
+    /// <summary>Determines whether a point is inside a non-empty rectangle.</summary>
+    public bool Contains(float x, float y) => hasArea && x >= X && x <= X + Width && y >= Y && y <= Y + Height;
+    private bool hasArea => Width > 0f && Height > 0f;
+}
+
+/// <summary>Supported visual response when the player hovers a registered icon.</summary>
+public enum PluginIconHoverEffect
+{
+    /// <summary>Leaves the icon visually unchanged.</summary>
+    None,
+    /// <summary>Applies the configured hover color.</summary>
+    Highlight,
+    /// <summary>Applies the configured hover scale.</summary>
+    Expand,
+    /// <summary>Applies both the configured hover color and scale.</summary>
+    HighlightAndExpand
+}
+
+/// <summary>Host-selected placement for a registered icon tooltip.</summary>
+public enum PluginTooltipPlacement
+{
+    /// <summary>Places the tooltip beside the pointer.</summary>
+    Mouse,
+    /// <summary>Places the tooltip to the left of the pointer.</summary>
+    Left,
+    /// <summary>Places the tooltip to the right of the pointer.</summary>
+    Right,
+    /// <summary>Places the tooltip above the pointer.</summary>
+    Above,
+    /// <summary>Places the tooltip below the pointer.</summary>
+    Below
+}
+
+/// <summary>Immutable host-rendered tooltip options for an interactive icon.</summary>
+public sealed class PluginTooltipOptions
+{
+    /// <summary>Creates immutable presentation options for an icon tooltip.</summary>
+    public PluginTooltipOptions(string text, PluginTooltipPlacement placement = PluginTooltipPlacement.Mouse, PluginColor? color = null, float scale = 1f)
+    {
+        Text = string.IsNullOrWhiteSpace(text) ? throw new ArgumentException("Tooltip text is required.", nameof(text)) : text;
+        if (!Enum.IsDefined(typeof(PluginTooltipPlacement), placement)) throw new ArgumentOutOfRangeException(nameof(placement));
+        if (float.IsNaN(scale) || float.IsInfinity(scale) || scale <= 0f) throw new ArgumentOutOfRangeException(nameof(scale));
+        Placement = placement; Color = color; Scale = scale;
+    }
+    /// <summary>Gets the displayed text.</summary>
+    public string Text { get; }
+    /// <summary>Gets the requested pointer-relative placement.</summary>
+    public PluginTooltipPlacement Placement { get; }
+    /// <summary>Gets the optional text color.</summary>
+    public PluginColor? Color { get; }
+    /// <summary>Gets the host-relative text scale.</summary>
+    public float Scale { get; }
+}
+
+/// <summary>Immutable declaration for one owner-local icon interaction.</summary>
+public sealed class PluginIconInteractionDescriptor
+{
+    /// <summary>Creates an immutable owner-local icon interaction declaration.</summary>
+    public PluginIconInteractionDescriptor(string id, PluginIconHoverEffect hoverEffect = PluginIconHoverEffect.Highlight, float hoverScale = 1.15f, PluginColor? normalColor = null, PluginColor? hoverColor = null, PluginTooltipOptions? tooltip = null)
+        : this(id, hoverEffect, hoverScale, normalColor, hoverColor, tooltip, null)
+    {
+    }
+
+    /// <summary>Creates an immutable owner-local icon interaction declaration.</summary>
+    public PluginIconInteractionDescriptor(string id, PluginIconHoverEffect hoverEffect, float hoverScale, PluginColor? normalColor, PluginColor? hoverColor, PluginTooltipOptions? tooltip, Func<PluginTooltipOptions?>? tooltipProvider)
+    {
+        Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("An icon interaction ID is required.", nameof(id)) : id;
+        if (!Enum.IsDefined(typeof(PluginIconHoverEffect), hoverEffect)) throw new ArgumentOutOfRangeException(nameof(hoverEffect));
+        if (float.IsNaN(hoverScale) || float.IsInfinity(hoverScale) || hoverScale < 1f || hoverScale > 2f) throw new ArgumentOutOfRangeException(nameof(hoverScale));
+        HoverEffect = hoverEffect; HoverScale = hoverScale; NormalColor = normalColor; HoverColor = hoverColor; Tooltip = tooltip; TooltipProvider = tooltipProvider;
+    }
+    /// <summary>Gets the owner-local stable interaction identifier.</summary>
+    public string Id { get; }
+    /// <summary>Gets the requested hover visual effect.</summary>
+    public PluginIconHoverEffect HoverEffect { get; }
+    /// <summary>Gets the scale applied for expanding hover effects.</summary>
+    public float HoverScale { get; }
+    /// <summary>Gets the optional normal icon color.</summary>
+    public PluginColor? NormalColor { get; }
+    /// <summary>Gets the optional highlighted icon color.</summary>
+    public PluginColor? HoverColor { get; }
+    /// <summary>Gets the optional tooltip declaration.</summary>
+    public PluginTooltipOptions? Tooltip { get; }
+    /// <summary>Gets an optional hover-time tooltip resolver for state-dependent labels.</summary>
+    public Func<PluginTooltipOptions?>? TooltipProvider { get; }
+}
+
+/// <summary>Resolved visual and activation state returned by the host for the current pointer position.</summary>
+public readonly struct PluginIconInteractionState
+{
+    /// <summary>Creates the state resolved by the host for the current pointer position.</summary>
+    public PluginIconInteractionState(bool isRegistered, bool isHovered, float scale, PluginColor? color, PluginTooltipOptions? tooltip) { IsRegistered = isRegistered; IsHovered = isHovered; Scale = scale; Color = color; Tooltip = tooltip; }
+    /// <summary>Gets whether the requested owner-local interaction remains active.</summary>
+    public bool IsRegistered { get; }
+    /// <summary>Gets whether the current pointer is within the supplied bounds.</summary>
+    public bool IsHovered { get; }
+    /// <summary>Gets the host-resolved icon scale.</summary>
+    public float Scale { get; }
+    /// <summary>Gets the host-resolved icon color.</summary>
+    public PluginColor? Color { get; }
+    /// <summary>Gets the tooltip to render while hovered.</summary>
+    public PluginTooltipOptions? Tooltip { get; }
 }
 
 /// <summary>Host-rendered UI contribution metadata.</summary>
@@ -366,6 +534,8 @@ public sealed class PluginSettingControl
     public string DisplayName { get; }
     /// <summary>How the host renders and edits this control.</summary>
     public PluginSettingControlKind Kind { get; }
+    /// <summary>Owning settings page ID when the plugin registered this control through the retained page model.</summary>
+    public string? PageId { get; private set; }
     /// <summary>Reads the current toggle value.</summary>
     public Func<bool>? GetToggle { get; private set; }
     /// <summary>Writes a toggle value.</summary>
@@ -400,11 +570,25 @@ public sealed class PluginSettingControl
         return control;
     }
 
+    /// <summary>Creates a toggle directly bound to a host-owned typed setting.</summary>
+    public static PluginSettingControl Toggle(string id, string displayName, IPluginSetting<bool> setting)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Toggle(id, displayName, () => setting.Value, value => setting.Value = value);
+    }
+
     /// <summary>Creates a Terraria-style cycling setting.</summary>
     public static PluginSettingControl Cycle(string id, string displayName, IReadOnlyList<string> values, Func<string> getValue, Action<string> setValue)
     {
         if (values == null || values.Count < 2 || values.Any(string.IsNullOrWhiteSpace)) throw new ArgumentException("A cycle needs at least two non-empty values.", nameof(values));
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Cycle) { CycleValues = values.ToArray(), GetCycle = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetCycle = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
+    }
+
+    /// <summary>Creates a cycle directly bound to a host-owned string setting.</summary>
+    public static PluginSettingControl Cycle(string id, string displayName, IReadOnlyList<string> values, IPluginSetting<string> setting)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Cycle(id, displayName, values, () => setting.Value, value => setting.Value = value);
     }
 
     /// <summary>Creates a bounded Terraria-style numeric slider.</summary>
@@ -414,10 +598,47 @@ public sealed class PluginSettingControl
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Slider) { Minimum = minimum, Maximum = maximum, Step = step, GetSlider = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetSlider = setValue ?? throw new ArgumentNullException(nameof(setValue)), FormatSlider = formatter };
     }
 
+    /// <summary>Creates a slider directly bound to a host-owned float setting.</summary>
+    public static PluginSettingControl Slider(string id, string displayName, float minimum, float maximum, float step, IPluginSetting<float> setting, Func<float, string>? formatter = null)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Slider(id, displayName, minimum, maximum, step, () => setting.Value, value => setting.Value = value, formatter);
+    }
+
+    /// <summary>Creates a discrete slider directly bound to a host-owned integer setting.</summary>
+    public static PluginSettingControl Slider(string id, string displayName, float minimum, float maximum, float step, IPluginSetting<int> setting, Func<float, string>? formatter = null)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Slider(id, displayName, minimum, maximum, step, () => setting.Value, value => setting.Value = (int)Math.Round(value), formatter);
+    }
+
     /// <summary>Creates a three-channel Terraria-style color picker with host-owned hexadecimal copy and paste.</summary>
     public static PluginSettingControl Color(string id, string displayName, Func<PluginColor> getValue, Action<PluginColor> setValue)
     {
         return new PluginSettingControl(id, displayName, PluginSettingControlKind.Color) { GetColor = getValue ?? throw new ArgumentNullException(nameof(getValue)), SetColor = setValue ?? throw new ArgumentNullException(nameof(setValue)) };
+    }
+
+    /// <summary>Creates a color control directly bound to a host-owned color setting.</summary>
+    public static PluginSettingControl Color(string id, string displayName, IPluginSetting<PluginColor> setting)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Color(id, displayName, () => setting.Value, value => setting.Value = value);
+    }
+
+    /// <summary>Creates a color control bound to a legacy hexadecimal string setting without changing its persisted format.</summary>
+    public static PluginSettingControl Color(string id, string displayName, IPluginSetting<string> setting, PluginColor defaultValue)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Color(id, displayName, () => PluginColor.TryParseHex(setting.Value, out PluginColor value) ? value : defaultValue, value => setting.Value = value.ToHex());
+    }
+
+    /// <summary>Associates this retained control with one owner-local settings page.</summary>
+    public PluginSettingControl InPage(string pageId)
+    {
+        if (string.IsNullOrWhiteSpace(pageId)) throw new ArgumentException("A settings page ID is required.", nameof(pageId));
+        if (PageId != null && !string.Equals(PageId, pageId, StringComparison.Ordinal)) throw new InvalidOperationException("A setting control cannot be assigned to more than one page.");
+        PageId = pageId;
+        return this;
     }
 
 }

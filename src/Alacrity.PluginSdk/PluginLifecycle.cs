@@ -131,6 +131,8 @@ public interface IPluginContext
     IPluginResourceScope Resources { get; }
     /// <summary>Host logger.</summary>
     IPluginLogger Logger { get; }
+    /// <summary>Scope-owned dispatch onto the host main thread.</summary>
+    IPluginDispatcher Dispatcher { get; }
     /// <summary>Scoped host-rendered transient notifications.</summary>
     IPluginNotificationService Notifications { get; }
     /// <summary>Dependency-aware cross-plugin services scoped to this plugin.</summary>
@@ -149,6 +151,8 @@ public interface IPluginContext
     IPluginUiService Ui { get; }
     /// <summary>Bounded host-owned overlay registrations with no raw rendering access.</summary>
     IPluginOverlayService Overlays { get; }
+    /// <summary>Retained gameplay HUD widgets rendered through host-owned presentation capabilities.</summary>
+    IPluginHudService Hud { get; }
     /// <summary>Permission-gated clipboard and external-link operations owned by the host.</summary>
     IPluginUserInteractionService UserInteraction { get; }
     /// <summary>Host-provided Terraria services with no raw Terraria objects exposed.</summary>

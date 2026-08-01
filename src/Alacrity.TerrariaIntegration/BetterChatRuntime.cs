@@ -14,7 +14,8 @@ using Terraria.UI.Chat;
 namespace AlacrityTerraria
 {
     // This is deliberately an integration-side adapter: plugins only see immutable chat snapshots.
-    internal static class BetterChatRuntime
+    /// <summary>Terraria-specific adapter for generic chat extension registrations.</summary>
+    internal static class TerrariaChatRuntime
     {
         private static int _caret;
         private static int _selectionAnchor = -1;

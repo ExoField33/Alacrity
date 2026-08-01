@@ -35,6 +35,24 @@ public sealed class PluginServiceHub
         }
     }
 
+    /// <summary>Returns owner metadata with a host service so generic integrations can enforce manifest policy.</summary>
+    public bool TryGetHostService<TService>(out TService? service, out PluginManifest? publisher) where TService : class
+    {
+        lock (gate)
+        {
+            if (!services.TryGetValue(typeof(TService), out var published))
+            {
+                service = null;
+                publisher = null;
+                return false;
+            }
+
+            service = (TService)published.Service;
+            publisher = published.Manifest;
+            return true;
+        }
+    }
+
     /// <summary>Returns a host service only when it is published by the expected verified package.</summary>
     public bool TryGetHostService<TService>(PluginId expectedOwner, out TService? service) where TService : class
     {

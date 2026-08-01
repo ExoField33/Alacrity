@@ -40,22 +40,23 @@ namespace AlacrityTerraria
         private static PluginServiceHub _serviceHub;
         private static PluginCommandHost _commands;
         private static PluginOverlayHost _overlays;
+        private static PluginHudHost _hud;
+        private static TerrariaHudAdapter _hudAdapter;
+        private static PluginDispatcherHost _dispatcher;
+        private static TerrariaEntitySnapshotCache _entitySnapshots;
         private static PluginChatHost _chat;
         private static PluginUserInteractionHost _userInteraction;
-        private static IPluginUserInteractionService _betterChatUserInteraction;
+        private static readonly Dictionary<PluginId, IPluginUserInteractionService> ChatUserInteractions = new Dictionary<PluginId, IPluginUserInteractionService>();
         private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
         private static readonly Color ResourcePackBorder = new Color(13, 20, 44) * 0.8f;
         private static readonly Color ResourcePackHoverBackground = new Color(46, 60, 119);
         private static readonly Color ResourcePackHoverBorder = new Color(20, 30, 56);
+        private static readonly TerrariaOverlayAdapter OverlayAdapter = new TerrariaOverlayAdapter();
         private static MethodInfo _assetRequest;
         private static MethodInfo _assetFrame;
         private static PropertyInfo _assetValue;
         private static FieldInfo _mainAssetsField;
-        private static bool _pingLookupAttempted;
-        private static PropertyInfo _currentPingProperty;
-        private static DateTime _nextPingSampleUtc;
-        private static int? _cachedPing;
         private static readonly HashSet<string> ReportedOptionalUiFailures = new HashSet<string>(StringComparer.Ordinal);
         private static Texture2D _ingameBlankTexture;
         private static bool _pluginMenuOpen;
@@ -68,11 +69,9 @@ namespace AlacrityTerraria
         private static string _ingameHoveredSettingId;
         private static bool _enabledStateRestored;
         private static readonly object RuntimeGate = new object();
-        private static readonly PluginId BetterChatPluginId = new PluginId("alacrity.better-chat");
-        private static readonly PluginId PlayerListPluginId = new PluginId("alacrity.player-list");
-        private static readonly PluginId DustGoreTogglePluginId = new PluginId("alacrity.dust-gore-toggle");
+        private static PluginVisualEffectsHost _visualEffects;
         private static VisualEffectsRuntimePolicy _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
-        private static VisualEffectsPolicySnapshot _lastVisualEffectsSnapshot;
+        private static PluginVisualEffectsPolicy _lastVisualEffectsSnapshot;
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
         private static readonly Dictionary<string, bool> KeybindDownState = new Dictionary<string, bool>(StringComparer.Ordinal);
@@ -90,6 +89,10 @@ namespace AlacrityTerraria
         private static bool _pluginKeybindsLoaded;
         private static int _pluginKeybindSaveQueued;
         private static bool _pluginKeybindsDirty;
+        private static uint _iconInteractionInputTick = uint.MaxValue;
+        private static bool _iconInteractionWasDown;
+        private static bool _iconInteractionPressed;
+        private static bool _iconInteractionConsumed;
 
         /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
         public static void BootstrapPluginRuntime()
@@ -116,34 +119,42 @@ namespace AlacrityTerraria
                 if (Volatile.Read(ref _runtimeShuttingDown))
                     return;
                 Volatile.Write(ref _runtimeShuttingDown, true);
-                if (_runtime == null)
-                    return;
-                using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-                foreach (var record in GetShutdownOrder())
+                if (_runtime != null)
                 {
-                    try
+                    using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                    foreach (var record in GetShutdownOrder())
                     {
-                        if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
-                            record.Controller.DisposeAsync(cancellation.Token).GetAwaiter().GetResult();
-                        else
-                            record.Controller?.Dispose();
+                        try
+                        {
+                            if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
+                                record.Controller.DisposeAsync(cancellation.Token).GetAwaiter().GetResult();
+                            else
+                                record.Controller?.Dispose();
+                        }
+                        catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
                     }
-                    catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
                 }
+                OverlayAdapter.Dispose();
             }
         }
 
         /// <summary>Returns whether an enabled plugin owns a chat editor. The injected hook calls this only while player chat is focused.</summary>
         public static bool IsBetterChatActive()
         {
+            return HasChatInputEditors();
+        }
+
+        /// <summary>Registration-driven chat-editor availability for all chat plugins.</summary>
+        public static bool HasChatInputEditors()
+        {
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditor(BetterChatPluginId);
+                return _chat != null && _chat.HasInputEditors;
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("BetterChat activation", exception);
+                ReportOptionalUiFailure("Chat extension activation", exception);
                 return false;
             }
         }
@@ -151,14 +162,20 @@ namespace AlacrityTerraria
         /// <summary>Processes player-chat input through the enabled scoped chat editor registrations.</summary>
         public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
         {
+            return ProcessChatInput(text, allowMultiLine);
+        }
+
+        /// <summary>Processes player chat through the active generic editor pipeline.</summary>
+        public static string ProcessChatInput(string text, bool allowMultiLine)
+        {
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasInputEditor(BetterChatPluginId) ? BetterChatRuntime.Process(_chat, GetBetterChatUserInteraction(), text, allowMultiLine) : text;
+                return _chat != null && _chat.HasInputEditors ? TerrariaChatRuntime.Process(_chat, GetActiveChatUserInteraction(), text, allowMultiLine) : text;
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("BetterChat input", exception);
+                ReportOptionalUiFailure("Chat extension input", exception);
                 return text;
             }
         }
@@ -179,7 +196,7 @@ namespace AlacrityTerraria
                 var arguments = new string[Math.Max(0, parts.Length - 1)];
                 if (arguments.Length > 0)
                     Array.Copy(parts, 1, arguments, 0, arguments.Length);
-                return _commands.TryInvoke(parts[0], arguments, ShowPluginCommandReply);
+                return _commands.Dispatch(parts[0], arguments, ShowPluginCommandReply) != PluginCommandDispatchResult.NotFound;
             }
             catch (Exception exception)
             {
@@ -197,8 +214,14 @@ namespace AlacrityTerraria
         /// <summary>Creates draw-only chat markup. It never modifies Main.chatText or outgoing packet text.</summary>
         public static string FormatPlayerChatText(string text)
         {
-            try { return BetterChatRuntime.FormatForDraw(IsBetterChatActive(), text); }
-            catch (Exception exception) { ReportOptionalUiFailure("BetterChat draw text", exception); return text; }
+            return FormatChatInputForDraw(text);
+        }
+
+        /// <summary>Formats focused player-chat input through the generic chat extension runtime.</summary>
+        public static string FormatChatInputForDraw(string text)
+        {
+            try { return TerrariaChatRuntime.FormatForDraw(HasChatInputEditors(), text); }
+            catch (Exception exception) { ReportOptionalUiFailure("Chat extension draw text", exception); return text; }
         }
 
         /// <summary>Decorates parsed normal chat snippets outside the draw loop.</summary>
@@ -207,11 +230,11 @@ namespace AlacrityTerraria
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasMessageDecorators ? BetterChatRuntime.Decorate(_chat, snippets, baseColor, originalMessage) : snippets;
+                return _chat != null && _chat.HasMessageDecorators ? TerrariaChatRuntime.Decorate(_chat, snippets, baseColor, originalMessage) : snippets;
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("BetterChat message decoration", exception);
+                ReportOptionalUiFailure("Chat extension message decoration", exception);
                 return snippets;
             }
         }
@@ -227,7 +250,7 @@ namespace AlacrityTerraria
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("BetterChat network visibility", exception);
+                ReportOptionalUiFailure("Chat extension network visibility", exception);
                 return true;
             }
         }
@@ -242,7 +265,7 @@ namespace AlacrityTerraria
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("BetterChat local visibility", exception);
+                ReportOptionalUiFailure("Chat extension local visibility", exception);
                 return true;
             }
         }
@@ -250,8 +273,8 @@ namespace AlacrityTerraria
         /// <summary>Shows bounded vanilla-style hover feedback and handles copy-on-right-click.</summary>
         public static void HandleChatSnippetHover(object snippet)
         {
-            try { if (IsBetterChatActive()) BetterChatRuntime.Hover(snippet, GetBetterChatUserInteraction()); }
-            catch (Exception exception) { ReportOptionalUiFailure("BetterChat hover", exception); }
+            try { if (HasChatInputEditors()) TerrariaChatRuntime.Hover(snippet, GetActiveChatUserInteraction()); }
+            catch (Exception exception) { ReportOptionalUiFailure("Chat extension hover", exception); }
         }
 
         /// <summary>Activates only validated http or https links registered by an enabled plugin.</summary>
@@ -260,11 +283,11 @@ namespace AlacrityTerraria
             try
             {
                 EnsureChatRuntime();
-                return _chat != null && _chat.HasLinkHandlers && BetterChatRuntime.Click(_chat, snippet);
+                return _chat != null && _chat.HasLinkHandlers && TerrariaChatRuntime.Click(_chat, snippet);
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("BetterChat link activation", exception);
+                ReportOptionalUiFailure("Chat extension link activation", exception);
                 return false;
             }
         }
@@ -272,15 +295,15 @@ namespace AlacrityTerraria
         /// <summary>Applies the current hover highlight without mutating the original snippet color.</summary>
         public static Color GetChatSnippetVisibleColor(object snippet, Color color)
         {
-            try { return BetterChatRuntime.VisibleColor(snippet, color); }
-            catch (Exception exception) { ReportOptionalUiFailure("BetterChat hover color", exception); return color; }
+            try { return TerrariaChatRuntime.VisibleColor(snippet, color); }
+            catch (Exception exception) { ReportOptionalUiFailure("Chat extension hover color", exception); return color; }
         }
 
         /// <summary>Transfers parse-time line ownership when Terraria clones a snippet during layout.</summary>
         public static void CopyChatSnippetContext(object source, object copy)
         {
-            try { BetterChatRuntime.CopyContext(source, copy); }
-            catch (Exception exception) { ReportOptionalUiFailure("BetterChat snippet copy", exception); }
+            try { TerrariaChatRuntime.CopyContext(source, copy); }
+            catch (Exception exception) { ReportOptionalUiFailure("Chat extension snippet copy", exception); }
         }
 
         public static void Open()
@@ -356,6 +379,7 @@ namespace AlacrityTerraria
                 Utils.DrawBorderString(spriteBatch, notification.Message, new Vector2(Main.screenWidth - 18, y), new Color(color.Red, color.Green, color.Blue), 0.72f, 1f, 0f, -1);
                 y += 24;
             }
+            DrawHudOverlays(spriteBatch);
         }
 
         /// <summary>Draws host-validated diagnostics overlays without exposing mutable Terraria state to plugins.</summary>
@@ -367,11 +391,12 @@ namespace AlacrityTerraria
         /// <summary>Dispatches framework-neutral plugin world overlays at Terraria's verified world UI phase.</summary>
         public static void DrawWorldOverlays(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _overlays == null || Main.gameMenu)
+            if (spriteBatch == null || _overlays == null || Main.gameMenu || !_overlays.HasRegistrations(PluginOverlaySpace.World))
                 return;
             try
             {
-                _overlays.Dispatch(new TerrariaOverlayCanvas(spriteBatch), new PluginOverlayFrame(Main.screenWidth, Main.screenHeight, 1f, Main.gameMenu, TimeSpan.FromTicks(Main.GameUpdateCount)));
+                _entitySnapshots?.RefreshLocalPlayerPresentation();
+                OverlayAdapter.Dispatch(spriteBatch, _overlays, PluginOverlaySpace.World);
             }
             catch (Exception exception)
             {
@@ -379,59 +404,66 @@ namespace AlacrityTerraria
             }
         }
 
+        /// <summary>Dispatches screen-space gameplay HUD overlays through Terraria's established UI SpriteBatch.</summary>
+        public static void DrawHudOverlays(SpriteBatch spriteBatch)
+        {
+            if (spriteBatch == null || _overlays == null || Main.gameMenu)
+                return;
+            try
+            {
+                OverlayAdapter.Dispatch(spriteBatch, _overlays, PluginOverlaySpace.Hud);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin HUD overlays", exception);
+            }
+        }
+
+        /// <summary>Dispatches menu-space overlays from Terraria's menu SpriteBatch after version text is drawn.</summary>
+        public static void DrawMenuOverlays(SpriteBatch spriteBatch)
+        {
+            if (spriteBatch == null || _overlays == null || !Main.gameMenu)
+                return;
+            try
+            {
+                OverlayAdapter.Dispatch(spriteBatch, _overlays, PluginOverlaySpace.Menu);
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin menu overlays", exception);
+            }
+        }
+
         /// <summary>Captures Terraria's already-computed melee collision rectangle for presentation on the next draw.</summary>
         public static void CaptureSwingHitbox(Player player, bool dontAttack, Rectangle hitbox)
+        {
+            CaptureMeleeCollisionBounds(player, dontAttack, hitbox);
+        }
+
+        /// <summary>Captures host-computed melee collision bounds for active generic presentation consumers.</summary>
+        public static void CaptureMeleeCollisionBounds(Player player, bool dontAttack, Rectangle hitbox)
         {
             CombatPresentationRuntime.CaptureSwingHitbox(player, dontAttack, hitbox);
         }
 
-        /// <summary>Draws the Player List only while its owning plugin has published an active presentation service.</summary>
+        /// <summary>Compatibility entry point retained for the existing version-locked HUD patch.</summary>
         public static void DrawPlayerList(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _serviceHub == null ||
-                !_serviceHub.TryGetHostService<IPlayerListService>(PlayerListPluginId, out var playerList, out var publisher) ||
-                !CanRenderPlayerList(publisher) || !TryCreatePlayerListSnapshot(playerList, out var snapshot))
-            {
-                PlayerListRuntime.Reset();
+            DrawHudWidgets(spriteBatch);
+        }
+
+        /// <summary>Dispatches generic retained HUD widgets without knowing which plugin provided them.</summary>
+        public static void DrawHudWidgets(SpriteBatch spriteBatch)
+        {
+            if (spriteBatch == null || _hud == null || _hudAdapter == null || Main.gameMenu)
                 return;
-            }
-
             try
             {
-                PlayerListRuntime.Draw(spriteBatch, snapshot);
+                _hudAdapter.Draw(spriteBatch);
             }
             catch (Exception exception)
             {
-                ReportOptionalUiFailure("Player List draw", exception);
-            }
-        }
-
-        private static bool CanRenderPlayerList(PluginManifest publisher)
-        {
-            const PluginCapability capabilities = PluginCapability.UserInterface | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation;
-            const PluginPermission permissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer;
-            return publisher != null && (publisher.Capabilities & capabilities) == capabilities && (publisher.Permissions & permissions) == permissions;
-        }
-
-        private static bool TryCreatePlayerListSnapshot(IPlayerListService service, out PlayerListRuntime.PlayerListRenderSnapshot snapshot)
-        {
-            snapshot = null;
-            try
-            {
-                int playersPerColumn = Math.Max(8, Math.Min(20, service.PlayersPerColumn));
-                int rowWidth = Math.Max(180, Math.Min(420, service.RowWidth));
-                float textScale = service.TextScale;
-                if (float.IsNaN(textScale) || float.IsInfinity(textScale))
-                    return false;
-                textScale = Math.Max(0.8f, Math.Min(1.6f, textScale));
-                PlayerListSortMode sortMode = Enum.IsDefined(typeof(PlayerListSortMode), service.SortMode) ? service.SortMode : PlayerListSortMode.Alphabetical;
-                snapshot = new PlayerListRuntime.PlayerListRenderSnapshot(service.IsVisible, playersPerColumn, rowWidth, textScale, service.ShowPlayerHeads, service.ShowPing, service.HideBots, sortMode, service.CycleSortMode, service.ToggleBotFiltering);
-                return true;
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Player List service snapshot", exception);
-                return false;
+                ReportOptionalUiFailure("Plugin HUD draw", exception);
             }
         }
 
@@ -669,6 +701,9 @@ namespace AlacrityTerraria
                 return;
             try
             {
+                _entitySnapshots?.CaptureForCurrentTick();
+                UpdateIconInteractionInput();
+                _dispatcher?.Drain(exception => ReportOptionalUiFailure("Plugin dispatcher callback", exception));
                 RefreshVisualEffectsPolicy();
                 if (Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
                     return;
@@ -795,7 +830,7 @@ namespace AlacrityTerraria
 
         private static void RefreshVisualEffectsPolicy()
         {
-            if (_serviceHub == null || !_serviceHub.TryGetHostService<IVisualEffectsPolicyService>(DustGoreTogglePluginId, out var service, out var publisher) || !CanUseVisualEffectsPolicy(publisher))
+            if (_visualEffects == null)
             {
                 _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
                 _lastVisualEffectsSnapshot = null;
@@ -804,7 +839,7 @@ namespace AlacrityTerraria
 
             try
             {
-                VisualEffectsPolicySnapshot snapshot = service.GetVisualEffectsPolicy();
+                PluginVisualEffectsPolicy snapshot = _visualEffects.GetEffectivePolicy();
                 if (ReferenceEquals(snapshot, _lastVisualEffectsSnapshot))
                     return;
                 _visualEffectsPolicy = VisualEffectsRuntimePolicy.Create(snapshot);
@@ -816,15 +851,6 @@ namespace AlacrityTerraria
                 _visualEffectsPolicy = VisualEffectsRuntimePolicy.Vanilla;
                 _lastVisualEffectsSnapshot = null;
             }
-        }
-
-        private static bool CanUseVisualEffectsPolicy(PluginManifest publisher)
-        {
-            if (publisher == null)
-                return false;
-            const PluginCapability requiredCapabilities = PluginCapability.UserInterface | PluginCapability.Rendering | PluginCapability.GameStateRead;
-            const PluginPermission requiredPermissions = PluginPermission.DrawUserInterface | PluginPermission.ReadGameState;
-            return (publisher.Capabilities & requiredCapabilities) == requiredCapabilities && (publisher.Permissions & requiredPermissions) == requiredPermissions;
         }
 
         private static void RemoveStaleKeybindState(IReadOnlyList<PluginKeybindRegistration> keybinds, long version)
@@ -1261,30 +1287,64 @@ namespace AlacrityTerraria
 
         internal static Texture2D RequestApprovedTexture(string path) => RequestTextureValue(path);
 
-        internal static int? GetCurrentPing()
+        /// <summary>Resolves a scoped icon interaction for a Terraria-owned immediate-mode surface.</summary>
+        internal static PluginIconInteractionState EvaluateIconInteraction(PluginId owner, string id, PluginUiRect bounds)
         {
-            DateTime now = DateTime.UtcNow;
-            if (now < _nextPingSampleUtc)
-                return _cachedPing;
-            _nextPingSampleUtc = now.AddMilliseconds(250);
-            try
-            {
-                if (!_pingLookupAttempted)
-                {
-                    _pingLookupAttempted = true;
-                    Type pingType = Type.GetType("Terraria.Net.Ping, Terraria", throwOnError: false);
-                    _currentPingProperty = pingType?.GetProperty("CurrentPing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                }
+            PluginExtensionHost extensions = _extensions;
+            return extensions == null ? default(PluginIconInteractionState) : extensions.EvaluateIconInteraction(owner, id, bounds, Main.mouseX, Main.mouseY);
+        }
 
-                object value = _currentPingProperty?.GetValue(null, null);
-                _cachedPing = value is int ping ? ping : (int?)null;
-                return _cachedPing;
-            }
-            catch
+        /// <summary>Invokes one hovered scoped icon action for the current primary-pointer press.</summary>
+        internal static bool TryActivateIconInteraction(PluginId owner, string id, PluginUiRect bounds)
+        {
+            PluginExtensionHost extensions = _extensions;
+            if (extensions == null || _iconInteractionConsumed || !_iconInteractionPressed || !bounds.Contains(Main.mouseX, Main.mouseY))
+                return false;
+            bool activated = extensions.TryActivateIconInteraction(owner, id);
+            if (activated)
             {
-                _cachedPing = null;
-                return null;
+                _iconInteractionConsumed = true;
+                Main.mouseLeftRelease = false;
             }
+            return activated;
+        }
+
+        private static void UpdateIconInteractionInput()
+        {
+            uint tick = Main.GameUpdateCount;
+            if (tick == _iconInteractionInputTick)
+                return;
+            bool down = Main.mouseLeft;
+            _iconInteractionPressed = down && !_iconInteractionWasDown;
+            _iconInteractionWasDown = down;
+            _iconInteractionConsumed = false;
+            _iconInteractionInputTick = tick;
+        }
+
+        /// <summary>Draws a host-owned tooltip without exposing Terraria rendering types through the SDK.</summary>
+        internal static void DrawIconTooltip(SpriteBatch spriteBatch, PluginIconInteractionState state)
+        {
+            if (spriteBatch == null || !state.IsHovered || state.Tooltip == null)
+                return;
+            PluginTooltipOptions tooltip = state.Tooltip;
+            Vector2 position = new Vector2(Main.mouseX, Main.mouseY);
+            float originX = 0f;
+            float originY = 0f;
+            switch (tooltip.Placement)
+            {
+                case PluginTooltipPlacement.Left:
+                    position.X -= 16f; originX = 1f; originY = 0.5f; break;
+                case PluginTooltipPlacement.Right:
+                    position.X += 16f; originY = 0.5f; break;
+                case PluginTooltipPlacement.Above:
+                    position.Y -= 16f; originX = 0.5f; originY = 1f; break;
+                case PluginTooltipPlacement.Below:
+                    position.Y += 16f; originX = 0.5f; break;
+                default:
+                    position.X += 16f; position.Y += 16f; break;
+            }
+            PluginColor color = tooltip.Color ?? new PluginColor(255, 255, 255);
+            Utils.DrawBorderString(spriteBatch, tooltip.Text, position, new Color(color.Red, color.Green, color.Blue), tooltip.Scale, originX, originY, -1);
         }
 
         private static object GetMainAssets()
@@ -1410,24 +1470,30 @@ namespace AlacrityTerraria
             _chat = new PluginChatHost();
             _commands = new PluginCommandHost();
             _overlays = new PluginOverlayHost();
+            _hud = new PluginHudHost();
+            _hudAdapter = new TerrariaHudAdapter(_hud);
+            _visualEffects = new PluginVisualEffectsHost();
+            _dispatcher = new PluginDispatcherHost();
+            _entitySnapshots = new TerrariaEntitySnapshotCache();
             _userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
+            var sessionPresentation = new TerrariaSessionPresentationService();
             var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, _commands, _overlays, _chat, _userInteraction, _notifications,
-                (manifest, resources, chatService) => new PluginTerrariaServices(chatService, new TerrariaEntitySnapshotService()));
+                (manifest, resources, chatService) => new PluginTerrariaServices(chatService, _entitySnapshots.CreateService(manifest, resources), _visualEffects.CreateService(manifest, resources), _entitySnapshots.CreatePlayerService(manifest, resources), sessionPresentation), _dispatcher, null, _hud);
             var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
             var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
             _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
             _menu = new PluginManagementMenu(_runtime);
         }
 
-        private static IPluginUserInteractionService GetBetterChatUserInteraction()
+        private static IPluginUserInteractionService GetActiveChatUserInteraction()
         {
-            if (_betterChatUserInteraction != null)
-                return _betterChatUserInteraction;
-
-            var record = _runtime == null ? null : _runtime.Registry.Records.FirstOrDefault(candidate => candidate.Manifest.Id == BetterChatPluginId);
+            if (_chat == null || !_chat.TryGetActiveEditorOwner(out PluginId owner))
+                return new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(new PluginManifest(new PluginId("alacrity.unavailable"), "Unavailable", new Version(1, 0), "Alacrity", "Unavailable", new[] { "1.4.5.6" }));
+            if (ChatUserInteractions.TryGetValue(owner, out IPluginUserInteractionService service)) return service;
+            var record = _runtime == null ? null : _runtime.Registry.Records.FirstOrDefault(candidate => candidate.Manifest.Id == owner);
             return record == null || _userInteraction == null
                 ? new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(new PluginManifest(new PluginId("alacrity.unavailable"), "Unavailable", new Version(1, 0), "Alacrity", "Unavailable", new[] { "1.4.5.6" }))
-                : (_betterChatUserInteraction = _userInteraction.CreateService(record.Manifest));
+                : (ChatUserInteractions[owner] = _userInteraction.CreateService(record.Manifest));
         }
 
         private static void RefreshPluginCatalog()
@@ -1619,7 +1685,7 @@ namespace AlacrityTerraria
             internal bool GoreEffectsEnabled { get; }
             internal bool HasExceptions => dustExceptions != null && dustExceptions.Length > 0;
 
-            internal static VisualEffectsRuntimePolicy Create(VisualEffectsPolicySnapshot snapshot)
+            internal static VisualEffectsRuntimePolicy Create(PluginVisualEffectsPolicy snapshot)
             {
                 if (snapshot == null)
                     return Vanilla;
@@ -1628,7 +1694,7 @@ namespace AlacrityTerraria
                     if (snapshot.DustExceptionIds[index] >= 0 && snapshot.DustExceptionIds[index] <= 999)
                         maximum = Math.Max(maximum, snapshot.DustExceptionIds[index]);
                 if (maximum < 0)
-                    return new VisualEffectsRuntimePolicy(snapshot.DustEffectsEnabled, snapshot.GoreEffectsEnabled, Array.Empty<bool>());
+                    return new VisualEffectsRuntimePolicy(snapshot.DustEnabled, snapshot.GoreEnabled, Array.Empty<bool>());
                 var exceptions = new bool[maximum + 1];
                 for (int index = 0; index < snapshot.DustExceptionIds.Count; index++)
                 {
@@ -1636,7 +1702,7 @@ namespace AlacrityTerraria
                     if (dustType >= 0 && dustType < exceptions.Length)
                         exceptions[dustType] = true;
                 }
-                return new VisualEffectsRuntimePolicy(snapshot.DustEffectsEnabled, snapshot.GoreEffectsEnabled, exceptions);
+                return new VisualEffectsRuntimePolicy(snapshot.DustEnabled, snapshot.GoreEnabled, exceptions);
             }
 
             internal bool ContainsDustException(int dustType) => dustType >= 0 && dustExceptions != null && dustType < dustExceptions.Length && dustExceptions[dustType];

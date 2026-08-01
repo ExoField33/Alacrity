@@ -13,6 +13,12 @@ public interface ITerrariaServices
 
     /// <summary>Read-only, allocation-conscious entity snapshots supplied by the active Terraria integration.</summary>
     IPluginEntitySnapshotService Entities { get; }
+    /// <summary>Read-only player names, status, and buffs from the shared integration snapshot cache.</summary>
+    IPluginPlayerService Players { get; }
+    /// <summary>Scoped policy registrations for optional client-side visual effects.</summary>
+    IPluginVisualEffectsService VisualEffects { get; }
+    /// <summary>Read-only world/server presentation data such as the display name and sampled ping.</summary>
+    IPluginSessionPresentationService Session { get; }
 }
 
 /// <summary>Registers bounded player-chat extensions. The host owns Terraria hooks and rendering internals.</summary>
@@ -112,6 +118,16 @@ public sealed class ChatMessageDecoratorDescriptor
 }
 
 public interface IChatMessageDecorator { IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message); }
+
+/// <summary>
+/// Optional composable chat decorator. Implement this interface when a decorator needs to preserve
+/// spans produced by earlier registrations, including their host-validated link targets.
+/// </summary>
+public interface IChatSpanDecorator : IChatMessageDecorator
+{
+    /// <summary>Transforms the current ordered spans without exposing Terraria chat objects.</summary>
+    IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot originalMessage, IReadOnlyList<ChatTextSpan> currentSpans);
+}
 
 /// <summary>Origin assigned by the host before chat is converted to display text.</summary>
 public enum ChatMessageOrigin

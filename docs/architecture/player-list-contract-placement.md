@@ -2,8 +2,9 @@
 
 `IPlayerListService` remains in `Alacrity.PluginSdk` for the current migration because the
 Player List package is already loaded independently and future inspection packages need a
-stable compile-time contract. The contract describes presentation state and local controls;
-it does not expose Terraria entities or mutable game state.
+stable compile-time contract. It now combines `IPlayerListPresentationState` with
+`IPlayerListController`; consumers can request only the read-only state when they do not need
+to change local list controls. None of these contracts expose Terraria entities or mutable game state.
 
 When the first independently distributed bundled plugin consumes this contract, move the
 interface and its value types into a small `Alacrity.BundledPluginContracts` assembly shared
