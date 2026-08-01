@@ -85,13 +85,14 @@ public sealed class PluginHostContextFactory
         manifest.Validate();
         var resources = new PluginResourceScope();
         var extensionServices = extensions.CreateServices(manifest, resources, logger);
-        IPluginChatService chatService = chat.CreateService(manifest, resources);
+        IPluginUserInteractionService scopedUserInteraction = userInteraction.CreateService(manifest, resources);
+        IPluginChatService chatService = chat.CreateService(manifest, resources, scopedUserInteraction);
         ITerrariaServices terraria = terrariaServicesFactory == null
             ? new PluginTerrariaServices(chatService, null, visualEffects.CreateService(manifest, resources))
             : terrariaServicesFactory(manifest, resources, chatService) ?? throw new InvalidOperationException("The Terraria service factory returned null.");
-        return new PluginHostContext(manifest, logger, resources, dispatcher.CreateService(manifest, resources), notifications.CreateService(manifest, resources),
-            new PluginSettingsStore(alacrityRoot, manifest.Id, resources), new PluginDataStore(alacrityRoot, manifest.Id),
+        return new PluginHostContext(manifest, logger, resources, dispatcher.CreateService(manifest, resources, logger), notifications.CreateService(manifest, resources),
+            new PluginSettingsStore(alacrityRoot, manifest.Id, resources), new PluginDataStore(alacrityRoot, manifest.Id, resources),
             extensionServices.Events, commands.CreateService(resources), extensionServices.Keybinds,
-            extensionServices.Ui, overlays.CreateService(manifest, resources, logger), hud.CreateService(manifest, resources), userInteraction.CreateService(manifest), terraria, services.CreateRegistry(manifest, resources), multiplayer);
+            extensionServices.Ui, overlays.CreateService(manifest, resources, logger), hud.CreateService(manifest, resources, logger), scopedUserInteraction, terraria, services.CreateRegistry(manifest, resources), multiplayer);
     }
 }

@@ -14,7 +14,10 @@ public sealed class PluginCommandHost
     public IPluginCommandService CreateService(IPluginResourceScope resources)
     {
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new ScopedService(this, resources);
+        var guard = new ScopeGuard();
+        try { resources.Own("commands", PluginResourceKind.Command, guard); }
+        catch { guard.Dispose(); throw; }
+        return new ScopedService(this, resources, guard);
     }
 
     /// <summary>Dispatches a parsed command invocation with explicit consumed/failure semantics.</summary>
@@ -66,9 +69,13 @@ public sealed class PluginCommandHost
 
     private sealed class ScopedService : IPluginCommandService
     {
-        private readonly PluginCommandHost host; private readonly IPluginResourceScope resources;
-        public ScopedService(PluginCommandHost host, IPluginResourceScope resources) { this.host = host; this.resources = resources; }
-        public IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler) => host.Register(resources, descriptor, handler);
+        private readonly PluginCommandHost host; private readonly IPluginResourceScope resources; private readonly ScopeGuard guard;
+        public ScopedService(PluginCommandHost host, IPluginResourceScope resources, ScopeGuard guard) { this.host = host; this.resources = resources; this.guard = guard; }
+        public IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler)
+        {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginCommandService", "The owning plugin scope has been released.");
+            return host.Register(resources, descriptor, handler);
+        }
     }
     private sealed class CommandRegistration : IPluginRegistration
     {
@@ -79,4 +86,5 @@ public sealed class PluginCommandHost
         public void Invoke(PluginCommandInvocation invocation) => Handler(invocation);
         public void Dispose() { if (released) return; released = true; remove(this); }
     }
+    private sealed class ScopeGuard : IDisposable { private int released; internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0; public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); } }
 }

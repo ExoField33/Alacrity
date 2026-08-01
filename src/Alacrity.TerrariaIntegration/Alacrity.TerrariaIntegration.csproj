@@ -8,8 +8,6 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <!-- Override this in a local build property when XNA is installed outside the standard Windows assembly cache. -->
-    <AlacrityXnaReferenceDirectory Condition="'$(AlacrityXnaReferenceDirectory)' == ''">$(WINDIR)\Microsoft.NET\assembly\GAC_32</AlacrityXnaReferenceDirectory>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,11 +15,11 @@
     <ProjectReference Include="..\Alacrity.Core\Alacrity.Core.csproj" />
     <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
     <Reference Include="Terraria">
-      <HintPath>..\..\Terraria.exe</HintPath>
+      <HintPath>$(AlacrityTerrariaAssemblyPath)</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="ReLogic">
-      <HintPath>..\..\dependencies\ReLogic.dll</HintPath>
+      <HintPath>$(AlacrityReLogicAssemblyPath)</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Microsoft.Xna.Framework">
@@ -49,6 +47,9 @@
     <Compile Include="TerrariaHudAdapter.cs" />
     <Compile Include="TerrariaSessionPresentationService.cs" />
     <Compile Include="TerrariaOverlayCanvas.cs" />
+    <Compile Include="TerrariaWorldProjection.cs" />
+    <Compile Include="TerrariaPluginRuntimeFactory.cs" />
+    <Compile Include="TerrariaPluginDrawAdapter.cs" />
     <Compile Include="TileStorage.cs" />
     <Compile Include="TileDataCompatibility.cs" />
   </ItemGroup>

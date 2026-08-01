@@ -39,20 +39,17 @@ namespace AlacrityTerraria
         private static PluginExtensionHost _extensions;
         private static PluginServiceHub _serviceHub;
         private static PluginCommandHost _commands;
-        private static PluginOverlayHost _overlays;
-        private static PluginHudHost _hud;
-        private static TerrariaHudAdapter _hudAdapter;
+        private static TerrariaPluginDrawAdapter _drawAdapter;
         private static PluginDispatcherHost _dispatcher;
         private static TerrariaEntitySnapshotCache _entitySnapshots;
+        private static TerrariaSessionPresentationService _sessionPresentation;
         private static PluginChatHost _chat;
         private static PluginUserInteractionHost _userInteraction;
-        private static readonly Dictionary<PluginId, IPluginUserInteractionService> ChatUserInteractions = new Dictionary<PluginId, IPluginUserInteractionService>();
         private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
         private static readonly Color ResourcePackBorder = new Color(13, 20, 44) * 0.8f;
         private static readonly Color ResourcePackHoverBackground = new Color(46, 60, 119);
         private static readonly Color ResourcePackHoverBorder = new Color(20, 30, 56);
-        private static readonly TerrariaOverlayAdapter OverlayAdapter = new TerrariaOverlayAdapter();
         private static MethodInfo _assetRequest;
         private static MethodInfo _assetFrame;
         private static PropertyInfo _assetValue;
@@ -134,7 +131,7 @@ namespace AlacrityTerraria
                         catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
                     }
                 }
-                OverlayAdapter.Dispose();
+                _drawAdapter?.Dispose();
             }
         }
 
@@ -367,19 +364,7 @@ namespace AlacrityTerraria
         /// <summary>Renders active host notifications through Terraria's established gameplay UI SpriteBatch.</summary>
         public static void DrawNotifications(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _notifications == null)
-                return;
-
-            int y = 96;
-            foreach (var notification in _notifications.GetActive(DateTimeOffset.UtcNow))
-            {
-                if ((notification.Options.Target & PluginNotificationTarget.InGame) == 0)
-                    continue;
-                PluginColor color = notification.Options.Color ?? new PluginColor(Color.LightGoldenrodYellow.R, Color.LightGoldenrodYellow.G, Color.LightGoldenrodYellow.B);
-                Utils.DrawBorderString(spriteBatch, notification.Message, new Vector2(Main.screenWidth - 18, y), new Color(color.Red, color.Green, color.Blue), 0.72f, 1f, 0f, -1);
-                y += 24;
-            }
-            DrawHudOverlays(spriteBatch);
+            _drawAdapter?.DrawNotifications(spriteBatch);
         }
 
         /// <summary>Draws host-validated diagnostics overlays without exposing mutable Terraria state to plugins.</summary>
@@ -391,47 +376,19 @@ namespace AlacrityTerraria
         /// <summary>Dispatches framework-neutral plugin world overlays at Terraria's verified world UI phase.</summary>
         public static void DrawWorldOverlays(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _overlays == null || Main.gameMenu || !_overlays.HasRegistrations(PluginOverlaySpace.World))
-                return;
-            try
-            {
-                _entitySnapshots?.RefreshLocalPlayerPresentation();
-                OverlayAdapter.Dispatch(spriteBatch, _overlays, PluginOverlaySpace.World);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Plugin world overlays", exception);
-            }
+            _drawAdapter?.DrawWorldOverlays(spriteBatch);
         }
 
         /// <summary>Dispatches screen-space gameplay HUD overlays through Terraria's established UI SpriteBatch.</summary>
         public static void DrawHudOverlays(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _overlays == null || Main.gameMenu)
-                return;
-            try
-            {
-                OverlayAdapter.Dispatch(spriteBatch, _overlays, PluginOverlaySpace.Hud);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Plugin HUD overlays", exception);
-            }
+            _drawAdapter?.DrawHudOverlays(spriteBatch);
         }
 
         /// <summary>Dispatches menu-space overlays from Terraria's menu SpriteBatch after version text is drawn.</summary>
         public static void DrawMenuOverlays(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _overlays == null || !Main.gameMenu)
-                return;
-            try
-            {
-                OverlayAdapter.Dispatch(spriteBatch, _overlays, PluginOverlaySpace.Menu);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Plugin menu overlays", exception);
-            }
+            _drawAdapter?.DrawMenuOverlays(spriteBatch);
         }
 
         /// <summary>Captures Terraria's already-computed melee collision rectangle for presentation on the next draw.</summary>
@@ -455,16 +412,7 @@ namespace AlacrityTerraria
         /// <summary>Dispatches generic retained HUD widgets without knowing which plugin provided them.</summary>
         public static void DrawHudWidgets(SpriteBatch spriteBatch)
         {
-            if (spriteBatch == null || _hud == null || _hudAdapter == null || Main.gameMenu)
-                return;
-            try
-            {
-                _hudAdapter.Draw(spriteBatch);
-            }
-            catch (Exception exception)
-            {
-                ReportOptionalUiFailure("Plugin HUD draw", exception);
-            }
+            _drawAdapter?.DrawHudWidgets(spriteBatch);
         }
 
         /// <summary>
@@ -702,6 +650,7 @@ namespace AlacrityTerraria
             try
             {
                 _entitySnapshots?.CaptureForCurrentTick();
+                _sessionPresentation?.CaptureForCurrentTick();
                 UpdateIconInteractionInput();
                 _dispatcher?.Drain(exception => ReportOptionalUiFailure("Plugin dispatcher callback", exception));
                 RefreshVisualEffectsPolicy();
@@ -1460,40 +1409,28 @@ namespace AlacrityTerraria
                 return;
 
             string root = AppDomain.CurrentDomain.BaseDirectory;
-            _notifications = new PluginNotificationCenter();
-            _diagnostics = new PluginDependencyDiagnostics();
-            string patchDirectory = Path.Combine(root, "data", "patches");
-            Directory.CreateDirectory(patchDirectory);
-            var patchHost = PatchHost.CreateManaged(root, Path.Combine(patchDirectory, "journal.json"));
-            _extensions = new PluginExtensionHost();
-            _serviceHub = new PluginServiceHub();
-            _chat = new PluginChatHost();
-            _commands = new PluginCommandHost();
-            _overlays = new PluginOverlayHost();
-            _hud = new PluginHudHost();
-            _hudAdapter = new TerrariaHudAdapter(_hud);
-            _visualEffects = new PluginVisualEffectsHost();
-            _dispatcher = new PluginDispatcherHost();
-            _entitySnapshots = new TerrariaEntitySnapshotCache();
-            _userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
-            var sessionPresentation = new TerrariaSessionPresentationService();
-            var contexts = new PluginHostContextFactory(root, _serviceHub, _extensions, _commands, _overlays, _chat, _userInteraction, _notifications,
-                (manifest, resources, chatService) => new PluginTerrariaServices(chatService, _entitySnapshots.CreateService(manifest, resources), _visualEffects.CreateService(manifest, resources), _entitySnapshots.CreatePlayerService(manifest, resources), sessionPresentation), _dispatcher, null, _hud);
-            var runtimeHost = new PluginRuntimeHost(new PluginPackageCatalog(new PluginPackageManifestReader()), new PluginAssemblyLoader(), contexts);
-            var activation = new PluginActivationCoordinator(patchHost, new PluginEnablePlanner(), new PluginEnableExecutor(_notifications), new PluginActivationGate(_diagnostics));
-            _runtime = new PluginManagerRuntime(runtimeHost, new PluginPackageLifecycleRegistry(), activation);
-            _menu = new PluginManagementMenu(_runtime);
+            TerrariaPluginRuntimeServices services = TerrariaPluginRuntimeServices.Create(root);
+            _runtime = services.Runtime;
+            _menu = services.Menu;
+            _notifications = services.Notifications;
+            _diagnostics = services.Diagnostics;
+            _extensions = services.Extensions;
+            _serviceHub = services.ServiceHub;
+            _commands = services.Commands;
+            _drawAdapter = new TerrariaPluginDrawAdapter(services.Notifications, services.Overlays, services.Hud, services.HudAdapter, services.EntitySnapshots, ReportOptionalUiFailure);
+            _dispatcher = services.Dispatcher;
+            _entitySnapshots = services.EntitySnapshots;
+            _sessionPresentation = services.SessionPresentation;
+            _chat = services.Chat;
+            _userInteraction = services.UserInteraction;
+            _visualEffects = services.VisualEffects;
         }
 
         private static IPluginUserInteractionService GetActiveChatUserInteraction()
         {
-            if (_chat == null || !_chat.TryGetActiveEditorOwner(out PluginId owner))
+            if (_chat == null || !_chat.TryGetActiveEditorInteraction(out IPluginUserInteractionService service) || service == null)
                 return new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(new PluginManifest(new PluginId("alacrity.unavailable"), "Unavailable", new Version(1, 0), "Alacrity", "Unavailable", new[] { "1.4.5.6" }));
-            if (ChatUserInteractions.TryGetValue(owner, out IPluginUserInteractionService service)) return service;
-            var record = _runtime == null ? null : _runtime.Registry.Records.FirstOrDefault(candidate => candidate.Manifest.Id == owner);
-            return record == null || _userInteraction == null
-                ? new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(new PluginManifest(new PluginId("alacrity.unavailable"), "Unavailable", new Version(1, 0), "Alacrity", "Unavailable", new[] { "1.4.5.6" }))
-                : (ChatUserInteractions[owner] = _userInteraction.CreateService(record.Manifest));
+            return service;
         }
 
         private static void RefreshPluginCatalog()

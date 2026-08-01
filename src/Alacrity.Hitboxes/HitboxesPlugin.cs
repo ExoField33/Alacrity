@@ -8,6 +8,8 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
 {
     private IPluginContext? context;
     private IPluginEntitySnapshotService? entities;
+    private IPluginMeleeCollisionSnapshotService? meleeSnapshots;
+    private IPluginRegistration? meleeCaptureDemand;
     private IPluginSetting<bool>? showPlayersSetting;
     private IPluginSetting<bool>? showNpcsSetting;
     private IPluginSetting<bool>? showProjectilesSetting;
@@ -37,8 +39,7 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     {
         this.context = context ?? throw new ArgumentNullException(nameof(context));
         entities = context.Terraria.Entities;
-        if (entities is IPluginMeleeCollisionSnapshotService meleeSnapshots)
-            meleeSnapshots.RequestMeleeCollisionSnapshots();
+        meleeSnapshots = entities as IPluginMeleeCollisionSnapshotService;
         showPlayersSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showPlayerHitboxes", false));
         showNpcsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showNpcHitboxes", false));
         showProjectilesSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showProjectileHitboxes", false));
@@ -52,10 +53,11 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
         swingColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("swingHitboxColor", swingColor.ToHex()));
         showPlayers = showPlayersSetting.Value; showNpcs = showNpcsSetting.Value; showProjectiles = showProjectilesSetting.Value;
         showFriendlyProjectiles = showFriendlyProjectilesSetting.Value; showHostileProjectiles = showHostileProjectilesSetting.Value; showSwings = showSwingsSetting.Value;
+        UpdateMeleeCaptureDemand();
         playerColor = ReadColor(playerColorSetting.Value, playerColor); npcColor = ReadColor(npcColorSetting.Value, npcColor);
         friendlyProjectileColor = ReadColor(friendlyProjectileColorSetting.Value, friendlyProjectileColor); hostileProjectileColor = ReadColor(hostileProjectileColorSetting.Value, hostileProjectileColor); swingColor = ReadColor(swingColorSetting.Value, swingColor);
         showPlayersSetting.Subscribe(value => showPlayers = value); showNpcsSetting.Subscribe(value => showNpcs = value); showProjectilesSetting.Subscribe(value => showProjectiles = value);
-        showFriendlyProjectilesSetting.Subscribe(value => showFriendlyProjectiles = value); showHostileProjectilesSetting.Subscribe(value => showHostileProjectiles = value); showSwingsSetting.Subscribe(value => showSwings = value);
+        showFriendlyProjectilesSetting.Subscribe(value => showFriendlyProjectiles = value); showHostileProjectilesSetting.Subscribe(value => showHostileProjectiles = value); showSwingsSetting.Subscribe(value => { showSwings = value; UpdateMeleeCaptureDemand(); });
         playerColorSetting.Subscribe(value => playerColor = ReadColor(value, playerColor)); npcColorSetting.Subscribe(value => npcColor = ReadColor(value, npcColor));
         friendlyProjectileColorSetting.Subscribe(value => friendlyProjectileColor = ReadColor(value, friendlyProjectileColor)); hostileProjectileColorSetting.Subscribe(value => hostileProjectileColor = ReadColor(value, hostileProjectileColor)); swingColorSetting.Subscribe(value => swingColor = ReadColor(value, swingColor));
 
@@ -80,6 +82,9 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     {
         entityBuffer.Clear();
         swingBuffer.Clear();
+        meleeCaptureDemand?.Dispose();
+        meleeCaptureDemand = null;
+        meleeSnapshots = null;
         entities = null;
         showPlayersSetting = null; showNpcsSetting = null; showProjectilesSetting = null; showFriendlyProjectilesSetting = null; showHostileProjectilesSetting = null; showSwingsSetting = null;
         playerColorSetting = null; npcColorSetting = null; friendlyProjectileColorSetting = null; hostileProjectileColorSetting = null; swingColorSetting = null;
@@ -87,6 +92,20 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     }
 
     private static PluginColor ReadColor(string value, PluginColor fallback) => PluginColor.TryParseHex(value, out PluginColor parsed) ? parsed : fallback;
+
+    private void UpdateMeleeCaptureDemand()
+    {
+        if (showSwings)
+        {
+            if (meleeCaptureDemand == null && meleeSnapshots != null)
+                meleeCaptureDemand = meleeSnapshots.RequestMeleeCollisionSnapshots();
+        }
+        else
+        {
+            meleeCaptureDemand?.Dispose();
+            meleeCaptureDemand = null;
+        }
+    }
 
     private void DrawOverlay(IPluginOverlayCanvas canvas, PluginOverlayFrame frame)
     {

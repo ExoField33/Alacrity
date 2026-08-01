@@ -318,7 +318,8 @@ public interface IPluginUiService
     /// <summary>Registers a host-evaluated icon interaction for use by a retained or immediate-mode Terraria surface.</summary>
     IPluginRegistration RegisterIconInteraction(PluginIconInteractionDescriptor descriptor, Action activate);
 
-    /// <summary>Registers an overlay contribution.</summary>
+    /// <summary>Registers legacy overlay metadata. Use <see cref="IPluginContext.Overlays"/> for drawing callbacks.</summary>
+    [Obsolete("Use IPluginContext.Overlays for draw callbacks. This retained UI metadata API is compatibility-only.")]
     IPluginRegistration RegisterOverlay(PluginUiContribution contribution);
 }
 

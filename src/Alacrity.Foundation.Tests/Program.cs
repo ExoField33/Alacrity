@@ -13,6 +13,8 @@ using Alacrity.Core;
 using Alacrity.PluginSdk;
 using AlacrityTerraria;
 
+#pragma warning disable CS0618 // Compatibility-only API coverage remains intentional in this test assembly.
+
 public sealed class LoaderSyncTestPlugin : IAlacrityPlugin
 {
     public void Initialize(IPluginContext context) { }
@@ -67,6 +69,7 @@ internal static class Program
             PluginStorageCreatesNonDestructivePackageLayout();
             PluginMenuPlacesPluginsBeforeWorkshopAndToggles();
             LifecycleCleansResourcesInReverseOrder();
+            LifecycleReactivationCreatesFreshScopedContext();
             LifecycleFailureFaultsAndCleansResources();
             LifecyclePreservesCallbackFailureAndRecordsCleanupFailure();
             LifecycleUninstallReachesTerminalStateAfterFailures();
@@ -90,6 +93,7 @@ internal static class Program
             ChatOwnershipCompositionAndPermissionEnforcement();
             UserInteractionServicesRequirePermissionsAndValidateLinks();
             PluginSettingsAvoidNoOpPersistenceAndExposeTypedOldValue();
+            TypedSettingsResetRestoresRegisteredDefaults();
             TypedSettingsNormalizeAndReleaseSubscriptions();
             BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
             BetterChatCachesDefaultsWithoutRewritingSettings();
@@ -103,6 +107,8 @@ internal static class Program
             EnablePlannerAutoEnablesDependencies();
             DependencyWarningsClearWhenResolved();
             NotificationsExpireWithoutPersistence();
+            NotificationServicesRejectReleasedScopesAndRateLimit();
+            DispatcherHonorsFrameBudget();
             PackageCatalogReadsManifestWithoutAssemblyLoad();
             IncompatibleGameVersionNeverLoadsAssembly();
             PackageRegistryRetainsHostLoadFailure();
@@ -554,6 +560,25 @@ internal static class Program
 
         Assert(order.Count == 4, "Both initialization cycles should release their resources.");
         Assert(order[0] == "second" && order[1] == "first" && order[2] == "second" && order[3] == "first", "Resources must be released in reverse registration order.");
+    }
+
+    private static void LifecycleReactivationCreatesFreshScopedContext()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-reactivation-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var manifest = new PluginManifest(new PluginId("reactivation.plugin"), "Reactivation", new Version(1, 0), "Tests", "Fresh context test", new[] { "1.4.5.6" }, capabilities: PluginCapability.Input | PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+            var factory = new PluginHostContextFactory(root, new PluginServiceHub(), new PluginExtensionHost(), new PluginCommandHost());
+            var plugin = new ContextRecordingPlugin();
+            var controller = new PluginLifecycleController(plugin, factory.Create(manifest, new TestLogger(), new TestMultiplayerSession()), () => factory.Create(manifest, new TestLogger(), new TestMultiplayerSession()));
+            controller.Validate(); controller.Initialize(); controller.Enable(); controller.Disable();
+            IPluginContext first = plugin.LastContext!;
+            controller.Initialize(); controller.Enable();
+            Assert(plugin.InitializeCount == 2 && !ReferenceEquals(first, plugin.LastContext), "Re-enabling a runtime-managed plugin must use a fresh host context.");
+            AssertThrows<ObjectDisposedException>(() => first.Hud.Register(new PluginHudWidgetDescriptor("stale"), (_, _) => { }));
+            controller.Disable(); controller.Dispose();
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
     private static void PatchAppliesAndRollsBackWithMockFiles()
@@ -1310,16 +1335,21 @@ internal static class Program
         var secondManifest = new PluginManifest(new PluginId("second.chat-owner"), "Second", new Version(1, 0), "Tests", "Second chat owner", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface | PluginPermission.OpenExternalLinks);
         using var firstScope = new PluginResourceScope();
         using var secondScope = new PluginResourceScope();
-        var first = host.CreateService(firstManifest, firstScope);
-        var second = host.CreateService(secondManifest, secondScope);
+        var interactionHost = new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance);
+        IPluginUserInteractionService firstInteraction = interactionHost.CreateService(firstManifest, firstScope);
+        IPluginUserInteractionService secondInteraction = interactionHost.CreateService(secondManifest, secondScope);
+        var first = host.CreateService(firstManifest, firstScope, firstInteraction);
+        var second = host.CreateService(secondManifest, secondScope, secondInteraction);
         first.RegisterInputEditor(new ChatInputEditorDescriptor("first-editor"), new TestInputEditor());
         second.RegisterInputEditor(new ChatInputEditorDescriptor("second-editor"), new TestInputEditor());
         Assert(host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Chat editor ownership must remain attributable to the registered plugin.");
+        Assert(host.TryGetActiveEditorInteraction(out IPluginUserInteractionService? activeInteraction) && ReferenceEquals(firstInteraction, activeInteraction), "The active editor must expose its owning activation-scoped interaction capability.");
         first.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("first-decoration", priority: 1), new TestDecorator("first"));
         second.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("second-decoration", priority: 2), new AppendingDecorator("-second"));
         Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "first-second", "Later chat decorators must receive the current decorated output in deterministic priority order.");
         firstScope.ReleaseAll();
         Assert(!host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Disabling one scope must remove only its chat editor.");
+        Assert(host.TryGetActiveEditorInteraction(out activeInteraction) && ReferenceEquals(secondInteraction, activeInteraction), "After owner cleanup, interaction dispatch must follow the remaining active editor rather than a stale owner cache.");
         Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "original-second", "The next deterministic decorator must remain active after the first owner is removed.");
 
         var isolatedHost = new PluginChatHost();
@@ -1361,6 +1391,27 @@ internal static class Program
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    private static void TypedSettingsResetRestoresRegisteredDefaults()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-settings-reset-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = new PluginSettingsStore(root, new PluginId("settings.reset"), 3, null);
+            IPluginSetting<int> volume = settings.Register(new PluginSettingDefinition<int>("volume", 42, value => Math.Max(0, Math.Min(100, value))));
+            IPluginSetting<bool> enabled = settings.Register(new PluginSettingDefinition<bool>("enabled", true));
+            int changes = 0;
+            volume.Subscribe(_ => changes++);
+            enabled.Subscribe(_ => changes++);
+            volume.Value = 7; enabled.Value = false;
+            settings.ResetToDefaults();
+            Assert(volume.Value == 42 && enabled.Value && settings.SchemaVersion == 3, "ResetToDefaults must restore active typed settings while preserving schema metadata.");
+            Assert(changes == 4, "ResetToDefaults must notify only settings whose persisted values actually changed.");
+            settings.ResetToDefaults();
+            Assert(changes == 4, "Resetting values already at their defaults must not duplicate notifications.");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
     private static void BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation()
@@ -1594,8 +1645,8 @@ internal static class Program
             Assert(setting.Value == 10 && notifications == 10, "Typed settings must normalize before persistence and notify subscribed plugin code.");
 
             context.Resources.Dispose();
-            setting.Value = 3;
-            Assert(notifications == 10, "Releasing a plugin scope must remove its typed-setting subscriptions.");
+            AssertThrows<ObjectDisposedException>(() => setting.Value = 3);
+            Assert(notifications == 10, "Releasing a plugin scope must remove typed-setting subscriptions and reject stale setting handles.");
         }
         finally
         {
@@ -1618,6 +1669,34 @@ internal static class Program
             Assert(owned.Owner == manifest.Id && owned.Message == "Ready" && owned.Options.Target == PluginNotificationTarget.PluginManager && owned.Options.Color.HasValue && owned.Options.Color.Value.Equals(new PluginColor(10, 20, 30)) && owned.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(16), "Plugin notifications must be owner-attributed, targetable, colored, and lifetime-bounded.");
         }
         Assert(notifications.GetActive(DateTimeOffset.UtcNow).Count == 0, "Releasing a plugin scope must remove that plugin's pending notifications.");
+    }
+
+    private static void NotificationServicesRejectReleasedScopesAndRateLimit()
+    {
+        var center = new PluginNotificationCenter();
+        PluginManifest manifest = CreateManifest();
+        var scope = new PluginResourceScope();
+        IPluginNotificationService service = center.CreateService(manifest, scope);
+        for (int index = 0; index < 20; index++) service.Show("message-" + index);
+        Assert(center.GetActive(DateTimeOffset.UtcNow).Count <= 3, "Per-plugin notification limits and publication throttling must bound active notifications.");
+        scope.ReleaseAll();
+        AssertThrows<ObjectDisposedException>(() => service.Show("stale"));
+        scope.Dispose();
+    }
+
+    private static void DispatcherHonorsFrameBudget()
+    {
+        var dispatcher = new PluginDispatcherHost(1, TimeSpan.FromSeconds(1));
+        var scope = new PluginResourceScope();
+        PluginManifest manifest = CreateManifest();
+        IPluginDispatcher service = dispatcher.CreateService(manifest, scope);
+        int calls = 0;
+        service.Post(() => calls++); service.Post(() => calls++);
+        dispatcher.Drain();
+        Assert(calls == 1, "Dispatcher must retain excess work for the next update after its callback budget is consumed.");
+        dispatcher.Drain();
+        Assert(calls == 2, "Dispatcher must drain retained work on a later update.");
+        scope.Dispose();
     }
 
     private static void PackageCatalogReadsManifestWithoutAssemblyLoad()
@@ -1996,6 +2075,21 @@ internal static class Program
         public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class ContextRecordingPlugin : IAlacrityPlugin
+    {
+        public int InitializeCount { get; private set; }
+        public IPluginContext? LastContext { get; private set; }
+        public void Initialize(IPluginContext context)
+        {
+            LastContext = context;
+            InitializeCount++;
+            context.Keybinds.Register(new PluginKeybindDescriptor("reactivate", "T", "Reactivate"), () => { });
+        }
+        public void Enable() { }
+        public void Disable() { }
+        public void Shutdown() { }
     }
 
     private sealed class FailingAsyncUninstallPlugin : IAsyncAlacrityPlugin

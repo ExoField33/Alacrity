@@ -15,7 +15,10 @@ public sealed class PluginVisualEffectsHost
     {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new Service(this, manifest, resources);
+        var guard = new ScopeGuard();
+        try { resources.Own("visual-effects", PluginResourceKind.RenderingHandler, guard); }
+        catch { guard.Dispose(); throw; }
+        return new Service(this, manifest, resources, guard);
     }
 
     public PluginVisualEffectsPolicy GetEffectivePolicy() { lock (gate) return effective; }
@@ -29,7 +32,8 @@ public sealed class PluginVisualEffectsHost
         var entry = new Entry(policy);
         lock (gate) { entries.Add(entry); Rebuild(); }
         var registration = new Registration(() => { lock (gate) { entries.Remove(entry); Rebuild(); } });
-        resources.Own("visual-effects-policy", PluginResourceKind.RenderingHandler, registration);
+        try { resources.Own("visual-effects-policy", PluginResourceKind.RenderingHandler, registration); }
+        catch { registration.Dispose(); throw; }
         return registration;
     }
 
@@ -51,10 +55,15 @@ public sealed class PluginVisualEffectsHost
 
     private sealed class Service : IPluginVisualEffectsService
     {
-        private readonly PluginVisualEffectsHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources;
-        public Service(PluginVisualEffectsHost host, PluginManifest manifest, IPluginResourceScope resources) { this.host = host; this.manifest = manifest; this.resources = resources; }
-        public IPluginRegistration RegisterPolicy(PluginVisualEffectsPolicy policy) => host.Register(manifest, resources, policy);
+        private readonly PluginVisualEffectsHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources; private readonly ScopeGuard guard;
+        public Service(PluginVisualEffectsHost host, PluginManifest manifest, IPluginResourceScope resources, ScopeGuard guard) { this.host = host; this.manifest = manifest; this.resources = resources; this.guard = guard; }
+        public IPluginRegistration RegisterPolicy(PluginVisualEffectsPolicy policy)
+        {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginVisualEffectsService", "The owning plugin scope has been released.");
+            return host.Register(manifest, resources, policy);
+        }
     }
     private sealed class Entry { public Entry(PluginVisualEffectsPolicy policy) { Policy = policy; } public PluginVisualEffectsPolicy Policy { get; } }
     private sealed class Registration : IPluginRegistration { private readonly Action release; private bool released; public Registration(Action release) { this.release = release; } public string Name => "visual-effects-policy"; public bool IsReleased => released; public void Dispose() { if (released) return; released = true; release(); } }
+    private sealed class ScopeGuard : IDisposable { private int released; internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0; public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); } }
 }

@@ -13,6 +13,7 @@ public sealed class PluginOverlayHost
     private readonly List<Entry> entries = new List<Entry>();
     private readonly Dictionary<string, DateTime> lastFailure = new Dictionary<string, DateTime>(StringComparer.Ordinal);
     private readonly TimeSpan failureInterval;
+    private long nextSequence;
     // Each draw phase reads one immutable array. Rebuilding happens only on registration changes.
     private Entry[][] phaseSnapshots = CreateEmptyPhaseSnapshots();
 
@@ -26,7 +27,10 @@ public sealed class PluginOverlayHost
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (!manifest.Id.IsValid) throw new ArgumentException("A valid plugin owner is required.", nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new Service(this, manifest, resources, logger);
+        var guard = new ScopeGuard();
+        try { resources.Own("overlays", PluginResourceKind.RenderingHandler, guard); }
+        catch { guard.Dispose(); throw; }
+        return new Service(this, manifest, resources, logger, guard);
     }
 
     /// <summary>Dispatches in layer/order/registration order. The empty path allocates nothing.</summary>
@@ -46,11 +50,15 @@ public sealed class PluginOverlayHost
         foreach (Entry entry in snapshot)
         {
             if (entry.IsSuspended) continue;
-            try { entry.Draw(canvas, frame); }
+            try
+            {
+                entry.Draw(canvas, frame);
+                entry.RecordSuccess(DateTime.UtcNow, failureInterval);
+            }
             catch (Exception exception)
             {
                 bool report = ShouldReport(entry.Owner, entry.Descriptor.Id);
-                entry.RecordFailure();
+                entry.RecordFailure(DateTime.UtcNow, failureInterval);
                 if (report) (entry.Logger ?? diagnostics)?.Error("Overlay '" + entry.Descriptor.Id + "' in layer " + entry.Descriptor.Layer + " failed for plugin '" + entry.Owner.Value + "'.", exception);
             }
         }
@@ -79,12 +87,20 @@ public sealed class PluginOverlayHost
         {
             if (entries.Any(candidate => candidate.Owner == manifest.Id && string.Equals(candidate.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
                 throw new InvalidOperationException("The plugin already registered overlay '" + descriptor.Id + "'.");
-            entry = new Entry(manifest.Id, descriptor, draw, logger, entries.Count == 0 ? 0 : entries.Max(candidate => candidate.Sequence) + 1);
+            entry = new Entry(manifest.Id, descriptor, draw, logger, nextSequence++);
             entries.Add(entry);
             RebuildSnapshot();
         }
         var registration = new Registration("overlay:" + manifest.Id.Value + ":" + descriptor.Id, () => { lock (gate) { entries.Remove(entry); RebuildSnapshot(); } });
-        resources.Own(registration.Name, PluginResourceKind.RenderingHandler, registration);
+        try
+        {
+            resources.Own(registration.Name, PluginResourceKind.RenderingHandler, registration);
+        }
+        catch
+        {
+            registration.Dispose();
+            throw;
+        }
         return registration;
     }
 
@@ -130,22 +146,60 @@ public sealed class PluginOverlayHost
 
     private sealed class Service : IPluginOverlayService
     {
-        private readonly PluginOverlayHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources; private readonly IPluginLogger? logger;
-        public Service(PluginOverlayHost host, PluginManifest manifest, IPluginResourceScope resources, IPluginLogger? logger) { this.host = host; this.manifest = manifest; this.resources = resources; this.logger = logger; }
-        public IPluginRegistration Register(PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw) => host.Register(manifest, resources, descriptor, draw, logger);
+        private readonly PluginOverlayHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources; private readonly IPluginLogger? logger; private readonly ScopeGuard guard;
+        public Service(PluginOverlayHost host, PluginManifest manifest, IPluginResourceScope resources, IPluginLogger? logger, ScopeGuard guard) { this.host = host; this.manifest = manifest; this.resources = resources; this.logger = logger; this.guard = guard; }
+        public IPluginRegistration Register(PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw)
+        {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginOverlayService", "The owning plugin scope has been released.");
+            return host.Register(manifest, resources, descriptor, draw, logger);
+        }
     }
 
     private sealed class Entry
     {
+        private readonly object failureGate = new object();
         private int failureCount;
+        private DateTime failureWindowStartedUtc;
         public Entry(PluginId owner, PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw, IPluginLogger? logger, long sequence) { Owner = owner; Descriptor = descriptor; Draw = draw; Logger = logger; Sequence = sequence; }
         public PluginId Owner { get; }
         public PluginOverlayDescriptor Descriptor { get; }
         public Action<IPluginOverlayCanvas, PluginOverlayFrame> Draw { get; }
         public IPluginLogger? Logger { get; }
         public long Sequence { get; }
-        public bool IsSuspended => failureCount >= 3;
-        public void RecordFailure() { failureCount++; }
+        public bool IsSuspended { get { lock (failureGate) return failureCount >= 3; } }
+        public void RecordFailure(DateTime now, TimeSpan window)
+        {
+            lock (failureGate)
+            {
+                if (failureWindowStartedUtc == default(DateTime) || now - failureWindowStartedUtc > window)
+                {
+                    failureWindowStartedUtc = now;
+                    failureCount = 1;
+                }
+                else
+                {
+                    failureCount++;
+                }
+            }
+        }
+        public void RecordSuccess(DateTime now, TimeSpan window)
+        {
+            lock (failureGate)
+            {
+                if (failureWindowStartedUtc != default(DateTime) && now - failureWindowStartedUtc > window)
+                {
+                    failureWindowStartedUtc = default(DateTime);
+                    failureCount = 0;
+                }
+            }
+        }
+    }
+
+    private sealed class ScopeGuard : IDisposable
+    {
+        private int released;
+        internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+        public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); }
     }
 
     private sealed class Registration : IPluginRegistration

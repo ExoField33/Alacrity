@@ -29,7 +29,8 @@ public sealed class PluginExtensionHost
         manifest.Validate();
         EnsureOwner(manifest.Id);
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new PluginExtensionServices(new EventService(this, manifest.Id, resources, logger), new UiService(this, manifest, manifest.Id, resources), new KeybindService(this, manifest, manifest.Id, resources));
+        ScopeGuard guard = CreateScopeGuard(resources);
+        return new PluginExtensionServices(new EventService(this, manifest.Id, resources, logger, guard), new UiService(this, manifest, manifest.Id, resources, guard), new KeybindService(this, manifest, manifest.Id, resources, guard));
     }
 
     /// <summary>Creates scope-owned extension services for a validated plugin identity.</summary>
@@ -37,7 +38,8 @@ public sealed class PluginExtensionHost
     {
         EnsureOwner(owner);
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        return new PluginExtensionServices(new EventService(this, owner, resources, null), new UiService(this, null, owner, resources), new KeybindService(this, null, owner, resources));
+        ScopeGuard guard = CreateScopeGuard(resources);
+        return new PluginExtensionServices(new EventService(this, owner, resources, null, guard), new UiService(this, null, owner, resources, guard), new KeybindService(this, null, owner, resources, guard));
     }
 
     /// <summary>Returns settings-page contributions still owned by the specified active plugin.</summary>
@@ -73,29 +75,30 @@ public sealed class PluginExtensionHost
     public PluginIconInteractionState EvaluateIconInteraction(PluginId owner, string id, PluginUiRect bounds, float pointerX, float pointerY)
     {
         if (!owner.IsValid || string.IsNullOrWhiteSpace(id)) return default;
+        PluginIconInteractionDescriptor? descriptor;
+        bool hovered;
         lock (gate)
         {
             OwnedIconInteraction? entry = iconInteractions.FirstOrDefault(candidate => candidate.Owner == owner && string.Equals(candidate.Descriptor.Id, id, StringComparison.Ordinal));
             if (entry == null) return default;
-            bool hovered = bounds.Contains(pointerX, pointerY);
-            PluginIconInteractionDescriptor descriptor = entry.Descriptor;
-            bool expand = descriptor.HoverEffect == PluginIconHoverEffect.Expand || descriptor.HoverEffect == PluginIconHoverEffect.HighlightAndExpand;
-            bool highlight = descriptor.HoverEffect == PluginIconHoverEffect.Highlight || descriptor.HoverEffect == PluginIconHoverEffect.HighlightAndExpand;
-            PluginTooltipOptions? tooltip = null;
-            if (hovered)
-            {
-                try
-                {
-                    tooltip = descriptor.TooltipProvider == null ? descriptor.Tooltip : descriptor.TooltipProvider() ?? descriptor.Tooltip;
-                }
-                catch (Exception exception)
-                {
-                    Trace.TraceError("Alacrity tooltip provider for icon interaction '" + descriptor.Id + "' failed for plugin '" + owner.Value + "': " + exception);
-                }
-            }
-
-            return new PluginIconInteractionState(true, hovered, hovered && expand ? descriptor.HoverScale : 1f, hovered && highlight ? descriptor.HoverColor : descriptor.NormalColor, tooltip);
+            descriptor = entry.Descriptor;
+            hovered = bounds.Contains(pointerX, pointerY);
         }
+        bool expand = descriptor.HoverEffect == PluginIconHoverEffect.Expand || descriptor.HoverEffect == PluginIconHoverEffect.HighlightAndExpand;
+        bool highlight = descriptor.HoverEffect == PluginIconHoverEffect.Highlight || descriptor.HoverEffect == PluginIconHoverEffect.HighlightAndExpand;
+        PluginTooltipOptions? tooltip = null;
+        if (hovered)
+        {
+            try
+            {
+                tooltip = descriptor.TooltipProvider == null ? descriptor.Tooltip : descriptor.TooltipProvider() ?? descriptor.Tooltip;
+            }
+            catch (Exception exception)
+            {
+                Trace.TraceError("Alacrity tooltip provider for icon interaction '" + descriptor.Id + "' failed for plugin '" + owner.Value + "': " + exception);
+            }
+        }
+        return new PluginIconInteractionState(true, hovered, hovered && expand ? descriptor.HoverScale : 1f, hovered && highlight ? descriptor.HoverColor : descriptor.NormalColor, tooltip);
     }
 
     /// <summary>Consumes one host-confirmed click and invokes only the matching scoped icon action.</summary>
@@ -365,8 +368,17 @@ public sealed class PluginExtensionHost
 
     private static IPluginRegistration Own(IPluginResourceScope resources, IPluginRegistration registration, PluginResourceKind kind)
     {
-        resources.Own(registration.Name, kind, registration);
+        try { resources.Own(registration.Name, kind, registration); }
+        catch { registration.Dispose(); throw; }
         return registration;
+    }
+
+    private static ScopeGuard CreateScopeGuard(IPluginResourceScope resources)
+    {
+        var guard = new ScopeGuard();
+        try { resources.Own("extension-services", PluginResourceKind.UserInterface, guard); }
+        catch { guard.Dispose(); throw; }
+        return guard;
     }
 
     private static void EnsureOwner(PluginId owner)
@@ -386,14 +398,18 @@ public sealed class PluginExtensionHost
 
     private sealed class EventService : IPluginEventService
     {
-        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly IPluginLogger? logger;
-        public EventService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources, IPluginLogger? logger) { this.host = host; this.owner = owner; this.resources = resources; this.logger = logger; }
-        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null) => host.Subscribe(owner, resources, handler, options, logger);
+        private readonly PluginExtensionHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly IPluginLogger? logger; private readonly ScopeGuard guard;
+        public EventService(PluginExtensionHost host, PluginId owner, IPluginResourceScope resources, IPluginLogger? logger, ScopeGuard guard) { this.host = host; this.owner = owner; this.resources = resources; this.logger = logger; this.guard = guard; }
+        public IPluginRegistration Subscribe<TEvent>(Action<TEvent> handler, PluginEventOptions? options = null)
+        {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginEventService", "The owning plugin scope has been released.");
+            return host.Subscribe(owner, resources, handler, options, logger);
+        }
     }
     private sealed class UiService : IPluginUiService
     {
-        private readonly PluginExtensionHost host; private readonly PluginManifest? manifest; private readonly PluginId owner; private readonly IPluginResourceScope resources;
-        public UiService(PluginExtensionHost host, PluginManifest? manifest, PluginId owner, IPluginResourceScope resources) { this.host = host; this.manifest = manifest; this.owner = owner; this.resources = resources; }
+        private readonly PluginExtensionHost host; private readonly PluginManifest? manifest; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly ScopeGuard guard;
+        public UiService(PluginExtensionHost host, PluginManifest? manifest, PluginId owner, IPluginResourceScope resources, ScopeGuard guard) { this.host = host; this.manifest = manifest; this.owner = owner; this.resources = resources; this.guard = guard; }
         public IPluginRegistration RegisterSettingsPage(PluginUiContribution contribution) { EnsureUiAccess(); return host.RegisterUi(owner, resources, contribution, false); }
         public IPluginRegistration RegisterSettingsControl(PluginUiContribution contribution)
         {
@@ -404,19 +420,22 @@ public sealed class PluginExtensionHost
         }
         public IPluginRegistration RegisterSettingsControl(PluginSettingControl control) { EnsureUiAccess(); return host.RegisterSettingControl(owner, resources, control); }
         public IPluginRegistration RegisterIconInteraction(PluginIconInteractionDescriptor descriptor, Action activate) { EnsureUiAccess(); return host.RegisterIconInteraction(owner, resources, descriptor, activate); }
+        [Obsolete("Use IPluginContext.Overlays for draw callbacks. This retained UI metadata API is compatibility-only.")]
         public IPluginRegistration RegisterOverlay(PluginUiContribution contribution) { EnsureUiAccess(); return host.RegisterUi(owner, resources, contribution, true); }
         private void EnsureUiAccess()
         {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginUiService", "The owning plugin scope has been released.");
             if (manifest == null || (manifest.Capabilities & PluginCapability.UserInterface) == 0 || (manifest.Permissions & PluginPermission.DrawUserInterface) == 0)
                 throw new UnauthorizedAccessException("UI registrations require declared UserInterface capability and DrawUserInterface permission.");
         }
     }
     private sealed class KeybindService : IPluginKeybindService
     {
-        private readonly PluginExtensionHost host; private readonly PluginManifest? manifest; private readonly PluginId owner; private readonly IPluginResourceScope resources;
-        public KeybindService(PluginExtensionHost host, PluginManifest? manifest, PluginId owner, IPluginResourceScope resources) { this.host = host; this.manifest = manifest; this.owner = owner; this.resources = resources; }
+        private readonly PluginExtensionHost host; private readonly PluginManifest? manifest; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly ScopeGuard guard;
+        public KeybindService(PluginExtensionHost host, PluginManifest? manifest, PluginId owner, IPluginResourceScope resources, ScopeGuard guard) { this.host = host; this.manifest = manifest; this.owner = owner; this.resources = resources; this.guard = guard; }
         public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action handler)
         {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginKeybindService", "The owning plugin scope has been released.");
             if (manifest == null || (manifest.Capabilities & PluginCapability.Input) == 0)
                 throw new UnauthorizedAccessException("Keybind registrations require the Input capability.");
             return host.RegisterKeybind(owner, manifest.Name, resources, descriptor, handler, null);
@@ -424,6 +443,7 @@ public sealed class PluginExtensionHost
 
         public IPluginRegistration Register(PluginKeybindDescriptor descriptor, Action<bool> stateHandler)
         {
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginKeybindService", "The owning plugin scope has been released.");
             if (manifest == null || (manifest.Capabilities & PluginCapability.Input) == 0)
                 throw new UnauthorizedAccessException("Keybind registrations require the Input capability.");
             return host.RegisterKeybind(owner, manifest.Name, resources, descriptor, null, stateHandler);
@@ -443,6 +463,13 @@ public sealed class PluginExtensionHost
         public CallbackRegistration(string name, Action release) { Name = name; this.release = release; }
         public string Name { get; } public bool IsReleased => released;
         public virtual void Dispose() { if (released) return; released = true; release(); }
+    }
+
+    private sealed class ScopeGuard : IDisposable
+    {
+        private int released;
+        internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+        public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); }
     }
 
     private sealed class OwnedUiContribution

@@ -12,33 +12,48 @@ namespace Alacrity.Core;
 public sealed class PluginDataStore : IPluginStorage
 {
     private readonly string root;
+    private readonly StorageScopeGuard? scopeGuard;
 
     public PluginDataStore(string alacrityRoot, PluginId pluginId)
+        : this(alacrityRoot, pluginId, null)
+    {
+    }
+
+    internal PluginDataStore(string alacrityRoot, PluginId pluginId, IPluginResourceScope? resources)
     {
         if (string.IsNullOrWhiteSpace(alacrityRoot)) throw new ArgumentException("An Alacrity root is required.", nameof(alacrityRoot));
         if (!pluginId.IsValid) throw new ArgumentException("A valid plugin ID is required.", nameof(pluginId));
         root = Path.Combine(Path.GetFullPath(alacrityRoot), "data", "plugins", pluginId.Value, "user-data");
         Directory.CreateDirectory(root);
         EnsureNotReparsePoint(root);
+        if (resources != null)
+        {
+            scopeGuard = new StorageScopeGuard();
+            try { resources.Own("plugin-storage", PluginResourceKind.Asset, scopeGuard); }
+            catch { scopeGuard.Dispose(); throw; }
+        }
     }
 
     /// <summary>Absolute plugin-confined mutable data path.</summary>
     public string RootPath => root;
-    public Stream OpenRead(string relativePath) => new FileStream(Resolve(relativePath), FileMode.Open, FileAccess.Read, FileShare.Read);
+    public Stream OpenRead(string relativePath) { EnsureActive(); return new FileStream(Resolve(relativePath), FileMode.Open, FileAccess.Read, FileShare.Read); }
     public Stream Create(string relativePath)
     {
+        EnsureActive();
         var path = Resolve(relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         return new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
     }
-    public bool Exists(string relativePath) => File.Exists(Resolve(relativePath));
+    public bool Exists(string relativePath) { EnsureActive(); return File.Exists(Resolve(relativePath)); }
     public void Delete(string relativePath)
     {
+        EnsureActive();
         var path = Resolve(relativePath);
         if (File.Exists(path)) File.Delete(path);
     }
     public IReadOnlyList<string> Enumerate(string relativeDirectory)
     {
+        EnsureActive();
         var directory = ResolveDirectory(relativeDirectory);
         if (!Directory.Exists(directory)) return Array.Empty<string>();
         var results = new List<string>();
@@ -49,6 +64,7 @@ public sealed class PluginDataStore : IPluginStorage
     /// <summary>Writes a complete data file through a temporary file before replacing the destination.</summary>
     public void WriteAtomically(string relativePath, byte[] contents)
     {
+        EnsureActive();
         if (contents == null) throw new ArgumentNullException(nameof(contents));
         var destination = Resolve(relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -88,6 +104,16 @@ public sealed class PluginDataStore : IPluginStorage
     {
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new UnauthorizedAccessException("Reparse points are not allowed in plugin data.");
     }
+    private void EnsureActive()
+    {
+        if (scopeGuard != null && scopeGuard.IsReleased) throw new ObjectDisposedException("IPluginStorage", "The owning plugin scope has been released.");
+    }
+    private sealed class StorageScopeGuard : IDisposable
+    {
+        private int released;
+        internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+        public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); }
+    }
 }
 
 /// <summary>Schema-aware persistent settings backed by the plugin's separate mutable data root.</summary>
@@ -97,7 +123,9 @@ public sealed class PluginSettingsStore : IPluginSettings
     private readonly string path;
     private Dictionary<string, string> values;
     private readonly Dictionary<string, Func<object?, bool>> validators = new Dictionary<string, Func<object?, bool>>(StringComparer.Ordinal);
+    private readonly Dictionary<string, IRegisteredSettingDefinition> definitions = new Dictionary<string, IRegisteredSettingDefinition>(StringComparer.Ordinal);
     private readonly IPluginResourceScope? resources;
+    private readonly ScopeGuard? scopeGuard;
     private const string SchemaKey = "__alacrity.schema";
 
     public PluginSettingsStore(string alacrityRoot, PluginId pluginId)
@@ -123,6 +151,12 @@ public sealed class PluginSettingsStore : IPluginSettings
         path = Path.Combine(Path.GetFullPath(alacrityRoot), "data", "plugins", pluginId.Value, "settings.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         values = Load();
+        if (resources != null)
+        {
+            scopeGuard = new ScopeGuard();
+            try { resources.Own("settings", PluginResourceKind.Configuration, scopeGuard); }
+            catch { scopeGuard.Dispose(); throw; }
+        }
         var previousVersion = ReadSchemaVersion();
         if (previousVersion < schemaVersion)
         {
@@ -135,12 +169,27 @@ public sealed class PluginSettingsStore : IPluginSettings
     public event EventHandler<PluginSettingChangedEventArgs>? Changed;
     public IPluginSetting<T> Register<T>(PluginSettingDefinition<T> definition)
     {
+        EnsureScopeActive();
         if (definition == null) throw new ArgumentNullException(nameof(definition));
         ValidateKey(definition.Key);
+        var registeredDefinition = new RegisteredSettingDefinition<T>(definition);
+        lock (gate)
+        {
+            if (definitions.TryGetValue(definition.Key, out IRegisteredSettingDefinition existing))
+            {
+                if (!existing.IsCompatibleWith(registeredDefinition))
+                    throw new InvalidOperationException("The setting '" + definition.Key + "' was registered with an incompatible type or default value.");
+            }
+            else
+            {
+                definitions.Add(definition.Key, registeredDefinition);
+            }
+        }
         return new RegisteredSetting<T>(this, definition, resources);
     }
     public T Get<T>(string key, T defaultValue)
     {
+        EnsureScopeActive();
         ValidateKey(key);
         lock (gate)
         {
@@ -151,6 +200,7 @@ public sealed class PluginSettingsStore : IPluginSettings
     }
     public void Set<T>(string key, T value)
     {
+        EnsureScopeActive();
         ValidateKey(key);
         if (validators.TryGetValue(key, out var validator) && !validator(value)) throw new ArgumentException("The setting value failed registered validation.", nameof(value));
         string serialized = Serialize(value);
@@ -171,6 +221,7 @@ public sealed class PluginSettingsStore : IPluginSettings
     }
     public bool Remove(string key)
     {
+        EnsureScopeActive();
         ValidateKey(key);
         lock (gate)
         {
@@ -182,7 +233,8 @@ public sealed class PluginSettingsStore : IPluginSettings
     }
     public void ResetToDefaults()
     {
-        lock (gate) { values.Clear(); Persist(); }
+        EnsureScopeActive();
+        ResetRegisteredDefaults(null);
     }
 
     /// <summary>Current host-managed settings schema version.</summary>
@@ -190,6 +242,7 @@ public sealed class PluginSettingsStore : IPluginSettings
     /// <summary>Registers a default and optional validator for a settings key.</summary>
     public void Register<T>(string key, T defaultValue, Func<T, bool>? validator = null)
     {
+        EnsureScopeActive();
         ValidateKey(key);
         if (validator != null) validators[key] = value => value is T typed && validator(typed);
         if (!values.ContainsKey(key)) Set(key, defaultValue);
@@ -197,6 +250,7 @@ public sealed class PluginSettingsStore : IPluginSettings
     /// <summary>Creates an isolated key namespace for one internal plugin feature.</summary>
     public IPluginSettings CreateFeatureSettings(PluginFeatureId featureId)
     {
+        EnsureScopeActive();
         if (string.IsNullOrWhiteSpace(featureId.Value)) throw new ArgumentException("A feature ID is required.", nameof(featureId));
         return new PrefixedSettings(this, "feature." + featureId.Value + ".");
     }
@@ -224,11 +278,39 @@ public sealed class PluginSettingsStore : IPluginSettings
     }
     private void ResetPrefix(string prefix)
     {
+        EnsureScopeActive();
+        ResetRegisteredDefaults(prefix);
+    }
+
+    private void ResetRegisteredDefaults(string? prefix)
+    {
+        var changes = new List<PluginSettingChangedEventArgs>();
         lock (gate)
         {
-            foreach (var key in values.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToArray()) values.Remove(key);
-            Persist();
+            foreach (var pair in definitions)
+            {
+                if (prefix != null && !pair.Key.StartsWith(prefix, StringComparison.Ordinal))
+                    continue;
+
+                IRegisteredSettingDefinition definition = pair.Value;
+                string replacement = definition.SerializedDefault;
+                if (values.TryGetValue(pair.Key, out string existing) && string.Equals(existing, replacement, StringComparison.Ordinal))
+                    continue;
+
+                object? oldValue = null;
+                if (values.TryGetValue(pair.Key, out existing))
+                    oldValue = definition.TryDeserialize(existing);
+                values[pair.Key] = replacement;
+                changes.Add(new PluginSettingChangedEventArgs(pair.Key, oldValue, definition.DefaultValue));
+            }
+
+            if (changes.Count != 0)
+                Persist();
         }
+
+        // Subscribers are plugin code. They must never run while the persistent settings lock is held.
+        for (int index = 0; index < changes.Count; index++)
+            Changed?.Invoke(this, changes[index]);
     }
     private static string Serialize<T>(T value)
     {
@@ -239,6 +321,12 @@ public sealed class PluginSettingsStore : IPluginSettings
         using (var stream = new MemoryStream(Convert.FromBase64String(value))) return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(stream)!;
     }
     private static void ValidateKey(string key) { if (string.IsNullOrWhiteSpace(key) || key.IndexOfAny(new[] { '/', '\\' }) >= 0) throw new ArgumentException("A plugin setting key is required and cannot contain a path separator.", nameof(key)); }
+
+    private void EnsureScopeActive()
+    {
+        if (scopeGuard != null && scopeGuard.IsReleased)
+            throw new ObjectDisposedException("IPluginSettings", "The owning plugin scope has been released.");
+    }
 
     private sealed class PrefixedSettings : IPluginSettings
     {
@@ -283,11 +371,59 @@ public sealed class PluginSettingsStore : IPluginSettings
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));
             var registration = new SettingSubscription<T>(store, definition, handler);
-            if (resources != null) resources.Own("setting-subscription:" + definition.Key, PluginResourceKind.Configuration, registration);
+            try
+            {
+                if (resources != null) resources.Own("setting-subscription:" + definition.Key, PluginResourceKind.Configuration, registration);
+            }
+            catch
+            {
+                registration.Dispose();
+                throw;
+            }
             return registration;
         }
 
         private T Normalize(T value) => definition.Normalize == null ? value : definition.Normalize(value);
+    }
+
+    private interface IRegisteredSettingDefinition
+    {
+        string SerializedDefault { get; }
+        object? DefaultValue { get; }
+        bool IsCompatibleWith(IRegisteredSettingDefinition other);
+        object? TryDeserialize(string serialized);
+    }
+
+    private sealed class RegisteredSettingDefinition<T> : IRegisteredSettingDefinition
+    {
+        private readonly Type valueType = typeof(T);
+        internal RegisteredSettingDefinition(PluginSettingDefinition<T> definition)
+        {
+            T normalized = definition.Normalize == null ? definition.DefaultValue : definition.Normalize(definition.DefaultValue);
+            Default = normalized;
+            SerializedDefault = Serialize(normalized);
+        }
+
+        internal T Default { get; }
+        public string SerializedDefault { get; }
+        public object? DefaultValue => Default;
+        public bool IsCompatibleWith(IRegisteredSettingDefinition other)
+        {
+            var typed = other as RegisteredSettingDefinition<T>;
+            return typed != null && typed.valueType == valueType && string.Equals(SerializedDefault, typed.SerializedDefault, StringComparison.Ordinal);
+        }
+        public object? TryDeserialize(string serialized)
+        {
+            try { return Deserialize<T>(serialized); }
+            catch { return null; }
+        }
+    }
+
+    private sealed class ScopeGuard : IDisposable
+    {
+        private int released;
+        internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+        public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); }
     }
 
     private sealed class PrefixedSetting<T> : IPluginSetting<T>

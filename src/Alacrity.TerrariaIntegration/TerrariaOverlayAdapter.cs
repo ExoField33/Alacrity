@@ -28,7 +28,7 @@ internal sealed class TerrariaOverlayAdapter : IDisposable
         if (overlays == null) throw new ArgumentNullException(nameof(overlays));
 
         graphicsResources.Prepare(spriteBatch.GraphicsDevice);
-        canvas.Begin(spriteBatch);
+        canvas.Begin(spriteBatch, space);
         overlays.Dispatch(canvas, new PluginOverlayFrame(
             Main.screenWidth,
             Main.screenHeight,

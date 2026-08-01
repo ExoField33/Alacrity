@@ -15,7 +15,8 @@ public sealed class PluginLifecycleController : IDisposable
 {
     private readonly IAlacrityPlugin? plugin;
     private readonly IAsyncAlacrityPlugin? asyncPlugin;
-    private readonly IPluginContext context;
+    private IPluginContext context;
+    private readonly Func<IPluginContext>? contextFactory;
     private readonly TimeSpan asyncCallbackTimeout;
     private bool initialized;
     private bool hasInitialized;
@@ -23,17 +24,31 @@ public sealed class PluginLifecycleController : IDisposable
     private bool shutdown;
 
     public PluginLifecycleController(IAlacrityPlugin plugin, IPluginContext context)
-        : this((object)plugin, context, null)
+        : this((object)plugin, context, default(TimeSpan?), null)
     {
     }
 
     public PluginLifecycleController(IAsyncAlacrityPlugin plugin, IPluginContext context, TimeSpan? asyncCallbackTimeout = null)
-        : this((object)plugin, context, asyncCallbackTimeout)
+        : this((object)plugin, context, asyncCallbackTimeout, null)
     {
     }
 
     /// <summary>Creates one lifecycle state machine for exactly one supported callback contract.</summary>
     public PluginLifecycleController(object plugin, IPluginContext context, TimeSpan? asyncCallbackTimeout = null)
+        : this(plugin, context, asyncCallbackTimeout, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a lifecycle controller whose host supplies a fresh context for every activation after
+    /// the first. This prevents released, scope-guarded services from leaking into a later enable.
+    /// </summary>
+    public PluginLifecycleController(object plugin, IPluginContext context, Func<IPluginContext> contextFactory, TimeSpan? asyncCallbackTimeout = null)
+        : this(plugin, context, asyncCallbackTimeout, contextFactory)
+    {
+    }
+
+    private PluginLifecycleController(object plugin, IPluginContext context, TimeSpan? asyncCallbackTimeout, Func<IPluginContext>? contextFactory)
     {
         if (plugin == null) throw new ArgumentNullException(nameof(plugin));
         this.context = context ?? throw new ArgumentNullException(nameof(context));
@@ -44,6 +59,7 @@ public sealed class PluginLifecycleController : IDisposable
         if ((this.plugin == null) == (this.asyncPlugin == null))
             throw new ArgumentException("A plugin entry must implement exactly one lifecycle contract.", nameof(plugin));
         this.asyncCallbackTimeout = asyncCallbackTimeout ?? TimeSpan.FromSeconds(5);
+        this.contextFactory = contextFactory;
         if (this.asyncCallbackTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(asyncCallbackTimeout));
         State = PluginLifecycleState.Discovered;
@@ -87,6 +103,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureState(PluginLifecycleState.Disabled);
         try
         {
+            PrepareContextForInitialization();
             plugin!.Initialize(context);
             initialized = true;
             hasInitialized = true;
@@ -266,6 +283,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureState(PluginLifecycleState.Disabled);
         try
         {
+            PrepareContextForInitialization();
             await InvokeAsync("Initialize", token => asyncPlugin!.InitializeAsync(context, token), cancellationToken).ConfigureAwait(false);
             initialized = true;
             hasInitialized = true;
@@ -461,6 +479,17 @@ public sealed class PluginLifecycleController : IDisposable
     {
         if (shutdown || State == PluginLifecycleState.Uninstalled)
             throw new ObjectDisposedException(nameof(PluginLifecycleController));
+    }
+
+    private void PrepareContextForInitialization()
+    {
+        if (!hasInitialized || contextFactory == null)
+            return;
+
+        IPluginContext replacement = contextFactory() ?? throw new InvalidOperationException("The plugin context factory returned null.");
+        if (replacement.Manifest == null || replacement.Manifest.Id != Manifest.Id)
+            throw new InvalidOperationException("The plugin context factory returned a context for a different manifest.");
+        context = replacement;
     }
 
     private void EnsureSynchronousLifecycle()

@@ -18,6 +18,10 @@ internal sealed class TerrariaEntitySnapshotCache
     private Snapshot current;
     private Snapshot alternate;
     private uint capturedTick = uint.MaxValue;
+    private int entityDemand;
+    private int playerDemand;
+    private int buffDemand;
+    private int botClassificationDemand;
 
     internal TerrariaEntitySnapshotCache()
     {
@@ -31,6 +35,13 @@ internal sealed class TerrariaEntitySnapshotCache
     {
         uint tick = Main.GameUpdateCount;
         if (tick == capturedTick) return;
+        int entitiesRequested = Volatile.Read(ref entityDemand);
+        int playersRequested = Volatile.Read(ref playerDemand);
+        int buffsRequested = Volatile.Read(ref buffDemand);
+        int botsRequested = Volatile.Read(ref botClassificationDemand);
+        bool meleeRequested = CombatPresentationRuntime.HasMeleeCaptureDemand;
+        if (entitiesRequested == 0 && playersRequested == 0 && buffsRequested == 0 && botsRequested == 0 && !meleeRequested)
+            return;
 
         gate.EnterWriteLock();
         try
@@ -38,9 +49,12 @@ internal sealed class TerrariaEntitySnapshotCache
             if (tick == capturedTick) return;
             Snapshot next = alternate;
             EnsureCapacity(next);
-            CapturePlayers(next);
-            int entityCount = CopyLiveEntities(next.Entities);
-            int meleeCount = CombatPresentationRuntime.HasMeleeCaptureDemand ? CombatPresentationRuntime.CopyMeleeHitboxes(next.Melee) : 0;
+            if (playersRequested != 0 || buffsRequested != 0 || botsRequested != 0)
+                CapturePlayers(next, buffsRequested != 0, botsRequested != 0);
+            else
+                next.ClearPlayers();
+            int entityCount = entitiesRequested != 0 ? CopyLiveEntities(next.Entities) : 0;
+            int meleeCount = meleeRequested ? CombatPresentationRuntime.CopyMeleeHitboxes(next.Melee) : 0;
             next.SetCounts(entityCount, meleeCount, tick);
             alternate = current;
             Volatile.Write(ref current, next);
@@ -86,7 +100,16 @@ internal sealed class TerrariaEntitySnapshotCache
         if (!HasReadAccess(manifest))
             return new DeniedService(manifest.Id);
         var guard = new ScopeGuard(resources);
-        resources.Own("entity-snapshots", PluginResourceKind.EventSubscription, guard);
+        try
+        {
+            resources.Own("entity-snapshots", PluginResourceKind.EventSubscription, guard);
+            guard.OwnDemand(AcquireDemand(DemandKind.Entities));
+        }
+        catch
+        {
+            guard.Dispose();
+            throw;
+        }
         return new ScopedService(this, guard);
     }
 
@@ -96,7 +119,16 @@ internal sealed class TerrariaEntitySnapshotCache
         if (resources == null) throw new ArgumentNullException(nameof(resources));
         if (!HasReadAccess(manifest)) return new DeniedPlayerService(manifest.Id);
         var guard = new ScopeGuard(resources);
-        resources.Own("player-snapshots", PluginResourceKind.EventSubscription, guard);
+        try
+        {
+            resources.Own("player-snapshots", PluginResourceKind.EventSubscription, guard);
+            guard.OwnDemand(AcquireDemand(DemandKind.Players));
+        }
+        catch
+        {
+            guard.Dispose();
+            throw;
+        }
         return new ScopedPlayerService(this, guard);
     }
 
@@ -143,7 +175,7 @@ internal sealed class TerrariaEntitySnapshotCache
         if (snapshot.Players.Length < Main.maxPlayers) snapshot.ResizePlayers(Main.maxPlayers);
     }
 
-    private static void CapturePlayers(Snapshot snapshot)
+    private static void CapturePlayers(Snapshot snapshot, bool includeBuffs, bool includeBotClassification)
     {
         Player[] players = Main.player;
         int count = Math.Min(Main.maxPlayers, players == null ? 0 : players.Length);
@@ -156,7 +188,12 @@ internal sealed class TerrariaEntitySnapshotCache
                 continue;
             }
             Player player = players[index];
-            snapshot.Players[index] = new PluginPlayerSnapshot(index, player.name, player.team, player.active, player.dead, player.ghost, player.statLife, player.statLifeMax, player.respawnTimer, IsSuspectedBot(player));
+            snapshot.Players[index] = new PluginPlayerSnapshot(index, player.name, player.team, player.active, player.dead, player.ghost, player.statLife, player.statLifeMax, player.respawnTimer, includeBotClassification && IsSuspectedBot(player));
+            if (!includeBuffs)
+            {
+                snapshot.BuffCounts[index] = 0;
+                continue;
+            }
             int limit = Math.Min(player.buffType == null ? 0 : player.buffType.Length, player.buffTime == null ? 0 : player.buffTime.Length);
             if (snapshot.Buffs[index] == null || snapshot.Buffs[index].Length < limit) snapshot.Buffs[index] = new PluginBuffSnapshot[Math.Max(1, limit)];
             int buffs = 0;
@@ -197,7 +234,8 @@ internal sealed class TerrariaEntitySnapshotCache
             if (guard.IsReleased) throw new ObjectDisposedException("IPluginEntitySnapshotService", "The owning plugin scope has been released.");
             IDisposable demand = CombatPresentationRuntime.AcquireMeleeCaptureDemand();
             var registration = new DemandRegistration(demand);
-            guard.Resources.Own(registration.Name, PluginResourceKind.EventSubscription, registration);
+            try { guard.Resources.Own(registration.Name, PluginResourceKind.EventSubscription, registration); }
+            catch { registration.Dispose(); throw; }
             return registration;
         }
         private void Copy(ICollection<PluginEntitySnapshot> destination, bool melee)
@@ -218,14 +256,51 @@ internal sealed class TerrariaEntitySnapshotCache
 
     private sealed class ScopeGuard : IPluginRegistration
     {
+        private readonly List<IDisposable> demands = new List<IDisposable>();
         internal ScopeGuard(IPluginResourceScope resources) { Resources = resources; }
         internal IPluginResourceScope Resources { get; }
         public string Name => "entity-snapshots";
         public bool IsReleased { get; private set; }
-        public void Dispose() { IsReleased = true; }
+        internal void OwnDemand(IDisposable demand)
+        {
+            if (demand == null) throw new ArgumentNullException(nameof(demand));
+            if (IsReleased) { demand.Dispose(); throw new ObjectDisposedException("IPluginResourceScope"); }
+            demands.Add(demand);
+        }
+        public void Dispose()
+        {
+            if (IsReleased) return;
+            IsReleased = true;
+            for (int index = demands.Count - 1; index >= 0; index--) demands[index].Dispose();
+            demands.Clear();
+        }
     }
 
-    private sealed class ScopedPlayerService : IPluginPlayerService
+    private IDisposable AcquireDemand(DemandKind kind)
+    {
+        switch (kind)
+        {
+            case DemandKind.Entities: Interlocked.Increment(ref entityDemand); break;
+            case DemandKind.Players: Interlocked.Increment(ref playerDemand); break;
+            case DemandKind.Buffs: Interlocked.Increment(ref buffDemand); break;
+            case DemandKind.BotClassification: Interlocked.Increment(ref botClassificationDemand); break;
+            default: throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+        return new CounterDemand(this, kind);
+    }
+
+    private void ReleaseDemand(DemandKind kind)
+    {
+        switch (kind)
+        {
+            case DemandKind.Entities: Interlocked.Decrement(ref entityDemand); break;
+            case DemandKind.Players: Interlocked.Decrement(ref playerDemand); break;
+            case DemandKind.Buffs: Interlocked.Decrement(ref buffDemand); break;
+            case DemandKind.BotClassification: Interlocked.Decrement(ref botClassificationDemand); break;
+        }
+    }
+
+    private sealed class ScopedPlayerService : IPluginPlayerService, IPluginPlayerSnapshotDemandService
     {
         private readonly TerrariaEntitySnapshotCache cache; private readonly ScopeGuard guard;
         internal ScopedPlayerService(TerrariaEntitySnapshotCache cache, ScopeGuard guard) { this.cache = cache; this.guard = guard; }
@@ -245,16 +320,36 @@ internal sealed class TerrariaEntitySnapshotCache
             if (destination == null) throw new ArgumentNullException(nameof(destination)); EnsureActive();
             cache.gate.EnterReadLock(); try { if (playerId < 0 || playerId >= cache.current.Buffs.Length) return; PluginBuffSnapshot[] buffs = cache.current.Buffs[playerId]; int count = cache.current.BuffCounts[playerId]; for (int index = 0; buffs != null && index < count; index++) destination.Add(buffs[index]); } finally { cache.gate.ExitReadLock(); }
         }
+        public IPluginRegistration RequestPlayerBuffSnapshots() => RequestBuffDemand();
+        public IPluginRegistration RequestSuspectedBotClassification() => RequestBotDemand();
+        private IPluginRegistration RequestBuffDemand()
+        {
+            EnsureActive();
+            var registration = new DemandRegistration(cache.AcquireDemand(DemandKind.Buffs), "player-buffs");
+            try { guard.Resources.Own(registration.Name, PluginResourceKind.EventSubscription, registration); }
+            catch { registration.Dispose(); throw; }
+            return registration;
+        }
+        private IPluginRegistration RequestBotDemand()
+        {
+            EnsureActive();
+            var registration = new DemandRegistration(cache.AcquireDemand(DemandKind.BotClassification), "suspected-bots");
+            try { guard.Resources.Own(registration.Name, PluginResourceKind.EventSubscription, registration); }
+            catch { registration.Dispose(); throw; }
+            return registration;
+        }
         private void EnsureActive() { if (guard.IsReleased) throw new ObjectDisposedException("IPluginPlayerService"); }
     }
 
-    private sealed class DeniedPlayerService : IPluginPlayerService
+    private sealed class DeniedPlayerService : IPluginPlayerService, IPluginPlayerSnapshotDemandService
     {
         private readonly PluginId owner; internal DeniedPlayerService(PluginId owner) { this.owner = owner; }
         public bool TryGet(int playerId, out PluginPlayerSnapshot player) { player = default; Deny(); return false; }
         public string GetName(int playerId) { Deny(); return null; }
         public void CopyPlayers(ICollection<PluginPlayerSnapshot> destination) { Deny(); }
         public void CopyBuffs(int playerId, ICollection<PluginBuffSnapshot> destination) { Deny(); }
+        public IPluginRegistration RequestPlayerBuffSnapshots() { Deny(); return null; }
+        public IPluginRegistration RequestSuspectedBotClassification() { Deny(); return null; }
         private void Deny() => throw new UnauthorizedAccessException("Plugin '" + owner.Value + "' must declare GameStateRead capability and ReadGameState permission before reading player snapshots.");
     }
 
@@ -281,15 +376,34 @@ internal sealed class TerrariaEntitySnapshotCache
         internal uint Tick { get; private set; }
         internal void SetCounts(int entityCount, int meleeCount, uint tick) { EntityCount = entityCount; MeleeCount = meleeCount; Tick = tick; }
         internal void ResizePlayers(int capacity) { Array.Resize(ref Players, capacity); Array.Resize(ref Buffs, capacity); Array.Resize(ref BuffCounts, capacity); }
+        internal void ClearPlayers()
+        {
+            Array.Clear(Players, 0, Players.Length);
+            Array.Clear(BuffCounts, 0, BuffCounts.Length);
+        }
     }
 
     private sealed class DemandRegistration : IPluginRegistration
     {
         private readonly IDisposable demand;
         private bool released;
-        internal DemandRegistration(IDisposable demand) { this.demand = demand; }
-        public string Name => "melee-collision-snapshots";
+        internal DemandRegistration(IDisposable demand, string name = "melee-collision-snapshots") { this.demand = demand; Name = name; }
+        public string Name { get; }
         public bool IsReleased => released;
         public void Dispose() { if (released) return; released = true; demand.Dispose(); }
+    }
+
+    private enum DemandKind { Entities, Players, Buffs, BotClassification }
+
+    private sealed class CounterDemand : IDisposable
+    {
+        private TerrariaEntitySnapshotCache cache;
+        private readonly DemandKind kind;
+        internal CounterDemand(TerrariaEntitySnapshotCache cache, DemandKind kind) { this.cache = cache; this.kind = kind; }
+        public void Dispose()
+        {
+            TerrariaEntitySnapshotCache current = Interlocked.Exchange(ref cache, null);
+            if (current != null) current.ReleaseDemand(kind);
+        }
     }
 }

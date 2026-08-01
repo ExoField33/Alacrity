@@ -25,12 +25,20 @@ internal sealed class TerrariaHudAdapter : IPluginHudRenderer
         if (spriteBatch == null || Main.gameMenu) return;
         float scale = Main.UIScale;
         if (float.IsNaN(scale) || float.IsInfinity(scale) || scale <= 0f) scale = 1f;
-        host.Dispatch(this, new PluginHudFrame(Main.screenWidth, Main.screenHeight, scale, Clock.Elapsed, Main.GameUpdateCount));
+        canvas.BeginFrame(spriteBatch);
+        try
+        {
+            host.Dispatch(this, new PluginHudFrame(Main.screenWidth, Main.screenHeight, scale, Clock.Elapsed, Main.GameUpdateCount));
+            // PlayerRenderer may adjust Terraria render state. Heads are intentionally deferred until
+            // every retained HUD widget has completed its ordinary panel/text pass.
+            canvas.FlushPlayerAvatars();
+        }
+        finally { canvas.EndFrame(); }
     }
 
     public void Render(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, PluginHudFrame frame)
     {
-        canvas.Bind(owner, Main.spriteBatch);
+        canvas.Bind(owner);
         draw(canvas, frame);
     }
 }
@@ -39,10 +47,35 @@ internal sealed class TerrariaHudAdapter : IPluginHudRenderer
 internal sealed class TerrariaHudCanvas : IPluginHudCanvas
 {
     private readonly TerrariaPlayerAvatarRenderer avatars = new TerrariaPlayerAvatarRenderer();
+    private readonly System.Collections.Generic.List<AvatarCommand> pendingAvatars = new System.Collections.Generic.List<AvatarCommand>(32);
     private PluginId owner;
     private SpriteBatch spriteBatch;
 
-    internal void Bind(PluginId owner, SpriteBatch spriteBatch) { this.owner = owner; this.spriteBatch = spriteBatch; }
+    internal void BeginFrame(SpriteBatch spriteBatch)
+    {
+        this.spriteBatch = spriteBatch;
+        pendingAvatars.Clear();
+    }
+
+    internal void EndFrame()
+    {
+        pendingAvatars.Clear();
+        spriteBatch = null;
+    }
+
+    internal void Bind(PluginId owner) { this.owner = owner; }
+
+    internal void FlushPlayerAvatars()
+    {
+        if (spriteBatch == null) return;
+        for (int index = 0; index < pendingAvatars.Count; index++)
+        {
+            AvatarCommand command = pendingAvatars[index];
+            if (Main.player == null || command.PlayerId < 0 || command.PlayerId >= Main.player.Length) continue;
+            avatars.DrawPlayer(spriteBatch, Main.player[command.PlayerId], new Vector2(command.X, command.Y), command.Scale);
+        }
+        pendingAvatars.Clear();
+    }
 
     public void DrawPanel(PluginUiRect bounds, PluginOverlayColor color)
     {
@@ -67,7 +100,7 @@ internal sealed class TerrariaHudCanvas : IPluginHudCanvas
     public void DrawPlayerAvatar(int playerId, float x, float y, float scale = 1f)
     {
         if (spriteBatch == null || playerId < 0 || Main.player == null || playerId >= Main.player.Length) return;
-        avatars.DrawPlayer(spriteBatch, Main.player[playerId], new Vector2(x, y), scale);
+        pendingAvatars.Add(new AvatarCommand(playerId, x, y, scale));
     }
 
     public void DrawNpcHead(int npcType, float x, float y, float scale = 1f, PluginOverlayColor? tint = null)
@@ -115,6 +148,15 @@ internal sealed class TerrariaHudCanvas : IPluginHudCanvas
     }
     private static Rectangle ToRectangle(PluginUiRect bounds) => new Rectangle((int)Math.Round(bounds.X), (int)Math.Round(bounds.Y), Math.Max(1, (int)Math.Round(bounds.Width)), Math.Max(1, (int)Math.Round(bounds.Height)));
     private static Color ToColor(PluginOverlayColor color) => new Color(color.Red, color.Green, color.Blue, color.Alpha);
+
+    private readonly struct AvatarCommand
+    {
+        internal AvatarCommand(int playerId, float x, float y, float scale) { PlayerId = playerId; X = x; Y = y; Scale = scale; }
+        internal int PlayerId { get; }
+        internal float X { get; }
+        internal float Y { get; }
+        internal float Scale { get; }
+    }
 }
 
 /// <summary>Caches optional Terraria avatar renderer lookups for every HUD widget, not one plugin.</summary>
@@ -129,7 +171,7 @@ internal sealed class TerrariaPlayerAvatarRenderer
 
     internal void DrawPlayer(SpriteBatch spriteBatch, Player player, Vector2 position, float scale)
     {
-        if (player == null || player.dead) return;
+        if (player == null) return;
         Ensure();
         try
         {
@@ -141,6 +183,7 @@ internal sealed class TerrariaPlayerAvatarRenderer
                 spriteBatch.Draw(texture, position, new Rectangle(0, frameHeight * (player.ghostFrame % 4), texture.Width, frameHeight), Color.White, 0f, new Vector2(texture.Width / 2f, frameHeight / 2f), 0.42f * scale, SpriteEffects.None, 0f);
                 return;
             }
+            if (player.dead) return;
             playerRenderer?.DrawPlayerHead(Main.Camera, player, position + new Vector2(0f, -2f * scale), 1f, 0.55f * 1.15f * scale, Color.Transparent);
         }
         catch { }

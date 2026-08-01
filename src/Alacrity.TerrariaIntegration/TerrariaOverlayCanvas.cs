@@ -10,6 +10,7 @@ namespace AlacrityTerraria;
 internal sealed class TerrariaOverlayCanvas : IPluginOverlayCanvas
 {
     private SpriteBatch spriteBatch;
+    private PluginOverlaySpace space;
     private readonly TerrariaOverlayGraphicsResources resources;
 
     internal TerrariaOverlayCanvas(TerrariaOverlayGraphicsResources resources)
@@ -17,9 +18,10 @@ internal sealed class TerrariaOverlayCanvas : IPluginOverlayCanvas
         this.resources = resources ?? throw new ArgumentNullException(nameof(resources));
     }
 
-    internal void Begin(SpriteBatch spriteBatch)
+    internal void Begin(SpriteBatch spriteBatch, PluginOverlaySpace space)
     {
         this.spriteBatch = spriteBatch ?? throw new ArgumentNullException(nameof(spriteBatch));
+        this.space = space;
     }
 
     public void DrawText(string text, float x, float y, PluginOverlayColor color, float scale = 1f)
@@ -59,12 +61,14 @@ internal sealed class TerrariaOverlayCanvas : IPluginOverlayCanvas
 
     public void DrawWorldMarker(float worldX, float worldY, string text, PluginOverlayColor color)
     {
+        EnsureWorldSpace();
         Vector2 position = Project(worldX, worldY);
         DrawText(text, position.X, position.Y, color);
     }
 
     public void DrawWorldRectangle(float worldX, float worldY, float width, float height, PluginOverlayColor color, float thickness = 1f)
     {
+        EnsureWorldSpace();
         Vector2 topLeft = Project(worldX, worldY);
         Vector2 bottomRight = Project(worldX + width, worldY + height);
         DrawRectangle(System.Math.Min(topLeft.X, bottomRight.X), System.Math.Min(topLeft.Y, bottomRight.Y), System.Math.Abs(bottomRight.X - topLeft.X), System.Math.Abs(bottomRight.Y - topLeft.Y), color, thickness);
@@ -72,9 +76,13 @@ internal sealed class TerrariaOverlayCanvas : IPluginOverlayCanvas
 
     private static Vector2 Project(float worldX, float worldY)
     {
-        // The verified world-overlay hook runs in Terraria's already screen-space SpriteBatch pass.
-        // Applying GameViewMatrix or UIScale here would transform the coordinates a second time.
-        return new Vector2(worldX, worldY) - Main.screenPosition;
+        return TerrariaWorldProjection.Project(worldX, worldY);
+    }
+
+    private void EnsureWorldSpace()
+    {
+        if (space != PluginOverlaySpace.World)
+            throw new InvalidOperationException("World-space overlay commands are only valid during the world overlay phase.");
     }
 
     private static Color ToColor(PluginOverlayColor color) => new Color(color.Red, color.Green, color.Blue, color.Alpha);

@@ -105,4 +105,13 @@ public interface IPluginPlayerService
     void CopyBuffs(int playerId, ICollection<PluginBuffSnapshot> destination);
 }
 
+/// <summary>Optional demand controls for capture categories that are expensive to populate.</summary>
+public interface IPluginPlayerSnapshotDemandService
+{
+    /// <summary>Requests detached timed buff snapshots while the returned registration remains active.</summary>
+    IPluginRegistration RequestPlayerBuffSnapshots();
+    /// <summary>Requests bounded host-side suspected-bot classification while the registration remains active.</summary>
+    IPluginRegistration RequestSuspectedBotClassification();
+}
+
 #pragma warning restore CS1591

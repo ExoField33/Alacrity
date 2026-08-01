@@ -11,8 +11,11 @@ public sealed class PluginNotificationCenter
     private readonly object gate = new object();
     private PluginNotification[] activeSnapshot = Array.Empty<PluginNotification>();
     private bool snapshotDirty = true;
+    private readonly Dictionary<PluginId, PublicationWindow> publicationWindows = new Dictionary<PluginId, PublicationWindow>();
     private const int GlobalLimit = 16;
     private const int PerPluginLimit = 3;
+    private const int PerPluginPublicationsPerWindow = 8;
+    private static readonly TimeSpan PublicationWindowDuration = TimeSpan.FromSeconds(10);
     /// <summary>Publishes a transient notification with a bounded on-screen lifetime.</summary>
     public void Publish(string message, TimeSpan duration, PluginNotificationOptions? options = null)
     {
@@ -50,8 +53,17 @@ public sealed class PluginNotificationCenter
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
         manifest.Validate();
-        resources.Own("notifications", PluginResourceKind.UserInterface, new OwnerCleanup(this, manifest.Id));
-        return new Service(this, manifest.Id);
+        var cleanup = new OwnerCleanup(this, manifest.Id);
+        try
+        {
+            resources.Own("notifications", PluginResourceKind.UserInterface, cleanup);
+        }
+        catch
+        {
+            cleanup.Dispose();
+            throw;
+        }
+        return new Service(this, manifest.Id, cleanup);
     }
 
     /// <summary>Removes pending notifications owned by a plugin as part of lifecycle cleanup.</summary>
@@ -68,6 +80,7 @@ public sealed class PluginNotificationCenter
                 removed = true;
             }
             if (removed) snapshotDirty = true;
+            publicationWindows.Remove(owner);
         }
     }
 
@@ -85,6 +98,8 @@ public sealed class PluginNotificationCenter
                 return;
             }
         }
+        if (owner.IsValid && !TryConsumePublication(owner, now))
+            return;
         if (owner.IsValid)
         {
             int owned = 0;
@@ -94,6 +109,19 @@ public sealed class PluginNotificationCenter
         while (notifications.Count >= GlobalLimit) notifications.RemoveAt(0);
         notifications.Add(new PluginNotification(owner, message, now.Add(duration), options));
         snapshotDirty = true;
+    }
+
+    private bool TryConsumePublication(PluginId owner, DateTimeOffset now)
+    {
+        if (!publicationWindows.TryGetValue(owner, out PublicationWindow window) || now - window.StartedAt > PublicationWindowDuration)
+        {
+            publicationWindows[owner] = new PublicationWindow(now, 1);
+            return true;
+        }
+        if (window.Count >= PerPluginPublicationsPerWindow)
+            return false;
+        publicationWindows[owner] = new PublicationWindow(window.StartedAt, window.Count + 1);
+        return true;
     }
 
     private void RemoveExpired(DateTimeOffset now)
@@ -114,12 +142,14 @@ public sealed class PluginNotificationCenter
         private static readonly TimeSpan MaximumDuration = TimeSpan.FromSeconds(15);
         private readonly PluginNotificationCenter center;
         private readonly PluginId owner;
+        private readonly OwnerCleanup? guard;
 
-        public Service(PluginNotificationCenter center, PluginId owner) { this.center = center; this.owner = owner; }
+        public Service(PluginNotificationCenter center, PluginId owner, OwnerCleanup? guard = null) { this.center = center; this.owner = owner; this.guard = guard; }
 
         public void Show(string message, PluginNotificationOptions? options = null)
         {
             if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("A notification message is required.", nameof(message));
+            if (guard != null && guard.IsReleased) throw new ObjectDisposedException("IPluginNotificationService", "The owning plugin scope has been released.");
             TimeSpan effective = options?.Duration ?? DefaultDuration;
             if (effective <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options));
             if (effective > MaximumDuration) effective = MaximumDuration;
@@ -144,6 +174,15 @@ public sealed class PluginNotificationCenter
             center = null;
             if (current != null) current.RemoveOwner(owner);
         }
+
+        internal bool IsReleased => center == null;
+    }
+
+    private readonly struct PublicationWindow
+    {
+        internal PublicationWindow(DateTimeOffset startedAt, int count) { StartedAt = startedAt; Count = count; }
+        internal DateTimeOffset StartedAt { get; }
+        internal int Count { get; }
     }
 }
 

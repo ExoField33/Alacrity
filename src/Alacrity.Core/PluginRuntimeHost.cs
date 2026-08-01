@@ -32,7 +32,8 @@ public sealed class PluginRuntimeHost
             throw new InvalidOperationException("Package loading is blocked by trust result: " + trust.Level + ".");
         PluginGameVersionCompatibility.EnsureSupported(package.Manifest, currentGameVersion);
         var context = contexts.Create(package.Manifest, logger, multiplayer);
-        var controller = new PluginLifecycleController(loader.LoadAny(package), context);
+        var controller = new PluginLifecycleController(loader.LoadAny(package), context,
+            () => contexts.Create(package.Manifest, logger, multiplayer));
         controller.Validate();
         return controller;
     }
