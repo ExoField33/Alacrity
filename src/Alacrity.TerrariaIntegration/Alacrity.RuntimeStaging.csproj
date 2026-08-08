@@ -7,33 +7,93 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <AssemblyName>Alacrity.RuntimeStaging</AssemblyName>
-    <!-- Override for a disposable staging location; the default is the client directory. -->
-    <AlacrityRuntimeStageDirectory Condition="'$(AlacrityRuntimeStageDirectory)' == ''">$(MSBuildThisFileDirectory)..\..</AlacrityRuntimeStageDirectory>
-    <AlacrityPluginBridgeStageDirectory>$(AlacrityRuntimeStageDirectory)\bin</AlacrityPluginBridgeStageDirectory>
+    <!-- Normal builds write only generated artifacts, never the client/repository root. -->
+    <AlacrityRuntimeArtifactDirectory Condition="'$(AlacrityRuntimeArtifactDirectory)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\runtime</AlacrityRuntimeArtifactDirectory>
+    <AlacrityRuntimeBridgeDirectory>$(AlacrityRuntimeArtifactDirectory)\bin</AlacrityRuntimeBridgeDirectory>
   </PropertyGroup>
+
   <ItemGroup>
     <Compile Include="RuntimeStagingMarker.cs" />
     <ProjectReference Include="Alacrity.TerrariaIntegration.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="Alacrity.PluginUiRuntime.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="AlacrityBootstrapRuntime.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.Core\Alacrity.Core.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.App\Alacrity.App.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.BetterChat\Alacrity.BetterChat.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.PlayerList\Alacrity.PlayerList.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.DustGoreToggle\Alacrity.DustGoreToggle.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!-- Query project target outputs instead of reconstructing target-framework output paths. -->
   <Target Name="StageAlacrityRuntime" AfterTargets="Build">
-    <PropertyGroup>
-      <_IntegrationOutput>$(MSBuildThisFileDirectory)bin\$(Configuration)\net472\Alacrity.PluginUiCoreBridge.dll</_IntegrationOutput>
-      <_FacadeOutput>$(MSBuildThisFileDirectory)bin\$(Configuration)\net472\Alacrity.PluginUiRuntime.dll</_FacadeOutput>
-      <_BootstrapOutput>$(MSBuildThisFileDirectory)bin\$(Configuration)\net472\AlacrityBootstrapRuntime.dll</_BootstrapOutput>
-      <_SdkOutput>$(MSBuildThisFileDirectory)..\Alacrity.PluginSdk\bin\$(Configuration)\netstandard2.0\Alacrity.PluginSdk.dll</_SdkOutput>
-      <_CoreOutput>$(MSBuildThisFileDirectory)..\Alacrity.Core\bin\$(Configuration)\netstandard2.0\Alacrity.Core.dll</_CoreOutput>
-      <_AppOutput>$(MSBuildThisFileDirectory)..\Alacrity.App\bin\$(Configuration)\netstandard2.0\Alacrity.App.dll</_AppOutput>
-    </PropertyGroup>
-    <Error Condition="!Exists('$(_IntegrationOutput)') Or !Exists('$(_FacadeOutput)') Or !Exists('$(_BootstrapOutput)') Or !Exists('$(_SdkOutput)') Or !Exists('$(_CoreOutput)') Or !Exists('$(_AppOutput)')" Text="Alacrity runtime staging requires all managed bridge outputs. Build failed before staging completed." />
-    <MakeDir Directories="$(AlacrityRuntimeStageDirectory);$(AlacrityPluginBridgeStageDirectory)" />
-    <Delete Files="$(AlacrityPluginBridgeStageDirectory)\Alacrity.PluginUiCoreBridge.dll;$(AlacrityRuntimeStageDirectory)\Alacrity.PluginUiRuntime.dll;$(AlacrityRuntimeStageDirectory)\AlacrityBootstrapRuntime.dll" />
+    <MSBuild Projects="Alacrity.TerrariaIntegration.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_BridgeOutput" />
+    </MSBuild>
+    <MSBuild Projects="Alacrity.PluginUiRuntime.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_FacadeOutput" />
+    </MSBuild>
+    <MSBuild Projects="AlacrityBootstrapRuntime.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_BootstrapOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_SdkOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.Core\Alacrity.Core.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_CoreOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.App\Alacrity.App.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_AppOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.BetterChat\Alacrity.BetterChat.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_BetterChatOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.PlayerList\Alacrity.PlayerList.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_PlayerListOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.DustGoreToggle\Alacrity.DustGoreToggle.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_DustGoreOutput" />
+    </MSBuild>
+    <MSBuild Projects="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_HitboxesOutput" />
+    </MSBuild>
+
     <ItemGroup>
-      <_BridgeFiles Include="$(_IntegrationOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
-      <_RootFiles Include="$(_IntegrationOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput);$(_FacadeOutput);$(_BootstrapOutput)" />
+      <_RuntimeAssembly Include="$(_BridgeOutput);$(_FacadeOutput);$(_BootstrapOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
+      <!-- The patcher imports the facade from bin; the CLR resolves the same facade beside Alacrity.exe. -->
+      <_BridgeAssembly Include="$(_BridgeOutput);$(_FacadeOutput);$(_BootstrapOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
+      <_RuntimeMetadata Include="$(MSBuildThisFileDirectory)..\..\VERSION" />
+      <_PluginPackage Include="$(_BetterChatOutput)">
+        <PluginId>alacrity.better-chat</PluginId>
+      </_PluginPackage>
+      <_PluginPackage Include="$(_PlayerListOutput)">
+        <PluginId>alacrity.player-list</PluginId>
+      </_PluginPackage>
+      <_PluginPackage Include="$(_DustGoreOutput)">
+        <PluginId>alacrity.dust-gore-toggle</PluginId>
+      </_PluginPackage>
+      <_PluginPackage Include="$(_HitboxesOutput)">
+        <PluginId>alacrity.hitboxes</PluginId>
+      </_PluginPackage>
     </ItemGroup>
-    <Copy SourceFiles="@(_BridgeFiles)" DestinationFolder="$(AlacrityPluginBridgeStageDirectory)" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="@(_RootFiles)" DestinationFolder="$(AlacrityRuntimeStageDirectory)" SkipUnchangedFiles="false" />
+    <Error Condition="'@(_RuntimeAssembly)' == '' Or !Exists('$(_BridgeOutput)') Or !Exists('$(_FacadeOutput)') Or !Exists('$(_BootstrapOutput)') Or !Exists('$(_SdkOutput)') Or !Exists('$(_CoreOutput)') Or !Exists('$(_AppOutput)') Or !Exists('$(MSBuildThisFileDirectory)..\..\VERSION')" Text="Alacrity runtime staging requires every managed assembly and the current VERSION file from this build." />
+
+    <!-- A fresh stage cannot silently retain an older runtime component. -->
+    <RemoveDir Directories="$(AlacrityRuntimeArtifactDirectory)" />
+    <MakeDir Directories="$(AlacrityRuntimeArtifactDirectory);$(AlacrityRuntimeBridgeDirectory)" />
+    <Copy SourceFiles="@(_RuntimeAssembly)" DestinationFolder="$(AlacrityRuntimeArtifactDirectory)" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="@(_BridgeAssembly)" DestinationFolder="$(AlacrityRuntimeBridgeDirectory)" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="@(_RuntimeMetadata)" DestinationFolder="$(AlacrityRuntimeArtifactDirectory)" SkipUnchangedFiles="false" />
+    <MakeDir Directories="@(_PluginPackage->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)')" />
+    <Copy SourceFiles="@(_PluginPackage)" DestinationFiles="@(_PluginPackage->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)\%(Filename)%(Extension)')" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="..\Alacrity.BetterChat\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.better-chat\plugin.json" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="..\Alacrity.PlayerList\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.player-list\plugin.json" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="..\Alacrity.DustGoreToggle\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.dust-gore-toggle\plugin.json" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="..\Alacrity.Hitboxes\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.hitboxes\plugin.json" SkipUnchangedFiles="false" />
+    <GetFileHash Files="@(_RuntimeAssembly);@(_BridgeAssembly);@(_PluginPackage);@(_RuntimeMetadata)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_RuntimeHash" />
+    </GetFileHash>
+    <WriteLinesToFile File="$(AlacrityRuntimeArtifactDirectory)\runtime-manifest.txt" Lines="Configuration=$(Configuration);@(_RuntimeHash->'%(Filename)%(Extension)|%(FileHash)')" Overwrite="true" />
   </Target>
 </Project>

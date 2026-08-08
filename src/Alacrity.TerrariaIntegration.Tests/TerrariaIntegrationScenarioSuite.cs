@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -18,48 +20,94 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace AlacrityTerraria;
 
-internal static class Program
+/// <summary>
+/// Integration scenarios that can run without launching Terraria. Graphics-device probing remains
+/// opt-in because legacy XNA device teardown is not stable under all headless test environments.
+/// </summary>
+public static class TerrariaIntegrationScenarioSuite
 {
-    [STAThread]
-    private static int Main(string[] args)
+    public static IEnumerable<object[]> GetScenarioCases(string category)
     {
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            throw new ArgumentException("A scenario category is required.", nameof(category));
+        }
+
+        return GetScenarioMethods()
+            .Where(method => string.Equals(GetScenarioCategory(method.Name), category, StringComparison.Ordinal))
+            .OrderBy(method => method.Name, StringComparer.Ordinal)
+            .Select(method => new object[] { method.Name });
+    }
+
+    private static IEnumerable<MethodInfo> GetScenarioMethods()
+    {
+        return typeof(TerrariaIntegrationScenarioSuite)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method => method.Name != nameof(RunAll) && method.ReturnType == typeof(void) && method.GetParameters().Length == 0 && !method.Name.StartsWith("VerifyGraphics", StringComparison.Ordinal));
+    }
+
+    private static string GetScenarioCategory(string name)
+    {
+        if (name.IndexOf("Bridge", StringComparison.Ordinal) >= 0 || name.IndexOf("Staged", StringComparison.Ordinal) >= 0)
+        {
+            return "Bridge";
+        }
+
+        if (name.IndexOf("Projection", StringComparison.Ordinal) >= 0 || name.IndexOf("Presentation", StringComparison.Ordinal) >= 0)
+        {
+            return "Rendering";
+        }
+
+        return "GameState";
+    }
+
+    public static void RunScenario(string name)
+    {
+        MethodInfo scenario = typeof(TerrariaIntegrationScenarioSuite).GetMethod(
+            name,
+            BindingFlags.NonPublic | BindingFlags.Static);
+        if (scenario == null || scenario.ReturnType != typeof(void) || scenario.GetParameters().Length != 0 || scenario.Name.StartsWith("VerifyGraphics", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Unknown Terraria integration scenario: " + name, nameof(name));
+        }
+
         try
         {
-            if (Array.IndexOf(args, "--graphics") >= 0)
-            {
-                using (var window = new Form())
-                {
-                    window.CreateControl();
-                    using (GraphicsDevice firstDevice = CreateDevice(window.Handle))
-                    using (GraphicsDevice secondDevice = CreateDevice(window.Handle))
-                    using (var firstBatch = new SpriteBatch(firstDevice))
-                    using (var secondBatch = new SpriteBatch(secondDevice))
-                    using (var resources = new TerrariaOverlayGraphicsResources())
-                    {
-                        resources.Prepare(firstBatch.GraphicsDevice);
-                        Assert(resources.TryGetPixel(out Texture2D firstPixel), "The first SpriteBatch device must create an integration-owned pixel texture.");
-                        resources.Prepare(secondBatch.GraphicsDevice);
-                        Assert(firstPixel.IsDisposed, "Replacing the GraphicsDevice must dispose the texture owned by the prior device.");
-                        Assert(resources.TryGetPixel(out Texture2D secondPixel) && !ReferenceEquals(firstPixel, secondPixel), "The replacement SpriteBatch device must receive a new pixel texture.");
-                        VerifyAvatarBatchIsolation(firstBatch, secondBatch, secondPixel);
-                    }
-                }
-            }
-            VerifyConcurrentSnapshotDemandAcquisition();
-            VerifyEntityGenerationReuse();
-            VerifyProjectionStates();
-            VerifyPresentationStateTransitions();
-            VerifyBridgeHandshakeParsing();
-            VerifyBridgeAbiContract();
-            VerifyStagedRuntimeArtifacts();
-            Console.WriteLine("Terraria integration tests passed." + (Array.IndexOf(args, "--graphics") >= 0 ? string.Empty : " Graphics-device validation is opt-in: rerun with --graphics in an interactive desktop session."));
-            return 0;
+            scenario.Invoke(null, null);
         }
-        catch (Exception exception)
+        catch (TargetInvocationException exception) when (exception.InnerException != null)
         {
-            Console.Error.WriteLine(exception);
-            return 1;
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
         }
+    }
+
+    internal static void RunAll()
+    {
+        VerifyConcurrentSnapshotDemandAcquisition();
+        VerifyEntityGenerationReuse();
+        VerifyProjectionStates();
+        VerifyPresentationStateTransitions();
+        VerifyBridgeHandshakeParsing();
+        VerifyBridgeAbiContract();
+        VerifyStagedRuntimeArtifacts();
+    }
+
+    [STAThread]
+    internal static void VerifyGraphicsDeviceResources()
+    {
+        using var window = new Form();
+        window.CreateControl();
+        using GraphicsDevice firstDevice = CreateDevice(window.Handle);
+        using GraphicsDevice secondDevice = CreateDevice(window.Handle);
+        using var firstBatch = new SpriteBatch(firstDevice);
+        using var secondBatch = new SpriteBatch(secondDevice);
+        using var resources = new TerrariaOverlayGraphicsResources();
+        resources.Prepare(firstBatch.GraphicsDevice);
+        Assert(resources.TryGetPixel(out Texture2D firstPixel), "The first SpriteBatch device must create an integration-owned pixel texture.");
+        resources.Prepare(secondBatch.GraphicsDevice);
+        Assert(firstPixel.IsDisposed, "Replacing the GraphicsDevice must dispose the texture owned by the prior device.");
+        Assert(resources.TryGetPixel(out Texture2D secondPixel) && !ReferenceEquals(firstPixel, secondPixel), "The replacement SpriteBatch device must receive a new pixel texture.");
+        VerifyAvatarBatchIsolation(firstBatch, secondBatch, secondPixel);
     }
 
     private static GraphicsDevice CreateDevice(IntPtr handle)
@@ -201,14 +249,25 @@ internal static class Program
 
     private static void VerifyStagedRuntimeArtifacts()
     {
-        string root = Directory.GetCurrentDirectory();
+        string root = GetRuntimeArtifactDirectory();
         string bridgePath = GetStagedBridgePath();
         string facadePath = Path.Combine(root, "Alacrity.PluginUiRuntime.dll");
+        string facadeImportPath = Path.Combine(root, "bin", "Alacrity.PluginUiRuntime.dll");
         string bootstrapPath = Path.Combine(root, "AlacrityBootstrapRuntime.dll");
 
         Assert(File.Exists(bridgePath), "Runtime staging must copy the exact bridge DLL loaded by the facade.");
         Assert(File.Exists(facadePath), "Runtime staging must copy the injected PluginUiRuntime facade.");
+        Assert(File.Exists(facadeImportPath), "Runtime staging must copy the facade where the version-locked patcher imports it.");
         Assert(File.Exists(bootstrapPath), "Runtime staging must copy the bootstrap runtime assembly.");
+        AssertBundledPluginPackage(root, "alacrity.better-chat", "Alacrity.BetterChat.dll");
+        AssertBundledPluginPackage(root, "alacrity.player-list", "Alacrity.PlayerList.dll");
+        AssertBundledPluginPackage(root, "alacrity.dust-gore-toggle", "Alacrity.DustGoreToggle.dll");
+        AssertBundledPluginPackage(root, "alacrity.hitboxes", "Alacrity.Hitboxes.dll");
+        string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
+        Assert(manifest.Contains("Alacrity.BetterChat.dll"), "The stage manifest must identify the BetterChat package assembly from this build.");
+        Assert(manifest.Contains("Alacrity.PlayerList.dll"), "The stage manifest must identify the Player List package assembly from this build.");
+        Assert(manifest.Contains("Alacrity.DustGoreToggle.dll"), "The stage manifest must identify the Dust/Gore package assembly from this build.");
+        Assert(manifest.Contains("Alacrity.Hitboxes.dll"), "The stage manifest must identify the Hitboxes package assembly from this build.");
         Assert(AssemblyName.GetAssemblyName(bridgePath).Name == "Alacrity.PluginUiCoreBridge", "The staged bridge file must carry the assembly identity expected by the runtime facade.");
 
         Assembly facade = Assembly.LoadFrom(facadePath);
@@ -232,9 +291,39 @@ internal static class Program
         Assert((bool)isReady.GetValue(null), "The staged bootstrap runtime must load the staged Core and PluginSdk assemblies.");
     }
 
+    private static void AssertBundledPluginPackage(string runtimeRoot, string pluginId, string assemblyName)
+    {
+        string packageDirectory = Path.Combine(runtimeRoot, "plugins", pluginId);
+        Assert(File.Exists(Path.Combine(packageDirectory, "plugin.json")), "Runtime staging must copy the manifest for " + pluginId + ".");
+        Assert(File.Exists(Path.Combine(packageDirectory, assemblyName)), "Runtime staging must copy the assembly for " + pluginId + ".");
+    }
+
     private static string GetStagedBridgePath()
     {
-        return Path.Combine(Directory.GetCurrentDirectory(), "bin", "Alacrity.PluginUiCoreBridge.dll");
+        return Path.Combine(GetRuntimeArtifactDirectory(), "bin", "Alacrity.PluginUiCoreBridge.dll");
+    }
+
+    private static string GetRuntimeArtifactDirectory()
+    {
+        string configuredDirectory = Environment.GetEnvironmentVariable("ALACRITY_RUNTIME_ARTIFACT_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(configuredDirectory))
+        {
+            return configuredDirectory;
+        }
+
+        DirectoryInfo directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            string integrationProject = Path.Combine(directory.FullName, "src", "Alacrity.TerrariaIntegration", "Alacrity.TerrariaIntegration.csproj");
+            if (File.Exists(integrationProject))
+            {
+                return Path.Combine(directory.FullName, "artifacts", "runtime");
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new InvalidOperationException("Unable to locate the repository runtime artifact directory. Set ALACRITY_RUNTIME_ARTIFACT_DIRECTORY for an external test host.");
     }
 
     private static void VerifyBridgeHandshakeParsing()

@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Alacrity.App;
@@ -33,12 +36,126 @@ public sealed class LoaderAsyncTestPlugin : IAsyncAlacrityPlugin
     public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
-internal static class Program
+/// <summary>
+/// Legacy scenario implementations retained while they are gradually moved into focused domain
+/// test classes. The discoverable xUnit adapter exposes each parameterless scenario independently.
+/// </summary>
+public static class FoundationScenarioSuite
 {
-    private static int Main()
+    public static IEnumerable<object[]> GetScenarioCases(string category)
     {
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            throw new ArgumentException("A scenario category is required.", nameof(category));
+        }
+
+        return GetScenarioMethods()
+            .Where(method => string.Equals(GetScenarioCategory(method.Name), category, StringComparison.Ordinal))
+            .OrderBy(method => method.Name, StringComparer.Ordinal)
+            .Select(method => new object[] { method.Name });
+    }
+
+    public static void RunScenario(string name)
+    {
+        MethodInfo? scenario = typeof(FoundationScenarioSuite).GetMethod(
+            name,
+            BindingFlags.NonPublic | BindingFlags.Static);
+        if (scenario == null || scenario.ReturnType != typeof(void) || scenario.GetParameters().Length != 0)
+        {
+            throw new ArgumentException("Unknown foundation scenario: " + name, nameof(name));
+        }
+
         try
         {
+            scenario.Invoke(null, null);
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException != null)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+        }
+    }
+
+    private static IEnumerable<MethodInfo> GetScenarioMethods()
+    {
+        return typeof(FoundationScenarioSuite)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method => method.Name != nameof(RunAll) && method.ReturnType == typeof(void) && method.GetParameters().Length == 0);
+    }
+
+    private static string GetScenarioCategory(string name)
+    {
+        if (name.StartsWith("Tile", StringComparison.Ordinal))
+        {
+            return "TileStorage";
+        }
+
+        if (name.Contains("Patch", StringComparison.Ordinal) || name.Contains("ManagedPatch", StringComparison.Ordinal))
+        {
+            return "Patching";
+        }
+
+        if (name.StartsWith("Lifecycle", StringComparison.Ordinal) ||
+            name.StartsWith("Async", StringComparison.Ordinal) ||
+            name.StartsWith("SynchronousDisable", StringComparison.Ordinal) ||
+            name.StartsWith("ActivationTransaction", StringComparison.Ordinal))
+        {
+            return "Lifecycle";
+        }
+
+        if (name.Contains("Scheduler", StringComparison.Ordinal) ||
+            name.Contains("Dispatcher", StringComparison.Ordinal) ||
+            name.Contains("Background", StringComparison.Ordinal) ||
+            name.Contains("Transient", StringComparison.Ordinal))
+        {
+            return "Scheduling";
+        }
+
+        if (name.Contains("Setting", StringComparison.Ordinal) ||
+            name.StartsWith("BetterChat", StringComparison.Ordinal) ||
+            name.StartsWith("PlayerList", StringComparison.Ordinal) ||
+            name.StartsWith("DustGore", StringComparison.Ordinal) ||
+            name.StartsWith("Hitboxes", StringComparison.Ordinal))
+        {
+            return "SettingsAndPlugins";
+        }
+
+        if (name.Contains("Chat", StringComparison.Ordinal) || name.Contains("UserInteraction", StringComparison.Ordinal))
+        {
+            return "Chat";
+        }
+
+        if (name.Contains("Overlay", StringComparison.Ordinal) ||
+            name.Contains("Hud", StringComparison.Ordinal) ||
+            name.Contains("Renderer", StringComparison.Ordinal) ||
+            name.Contains("Projection", StringComparison.Ordinal) ||
+            name.Contains("Notification", StringComparison.Ordinal) ||
+            name.Contains("Icon", StringComparison.Ordinal) ||
+            name.Contains("Ui", StringComparison.Ordinal) ||
+            name.Contains("Keybind", StringComparison.Ordinal))
+        {
+            return "Presentation";
+        }
+
+        if (name.Contains("Manifest", StringComparison.Ordinal) ||
+            name.Contains("Package", StringComparison.Ordinal) ||
+            name.Contains("PluginAssembly", StringComparison.Ordinal) ||
+            name.Contains("HostManifest", StringComparison.Ordinal) ||
+            name.Contains("Trust", StringComparison.Ordinal) ||
+            name.Contains("EnablePlanner", StringComparison.Ordinal) ||
+            name.Contains("Dependency", StringComparison.Ordinal) ||
+            name.Contains("PluginStorage", StringComparison.Ordinal) ||
+            name.Contains("PluginData", StringComparison.Ordinal) ||
+            name.Contains("Uninstall", StringComparison.Ordinal) ||
+            name.Contains("Presenter", StringComparison.Ordinal))
+        {
+            return "Packages";
+        }
+
+        return "Core";
+    }
+
+    internal static void RunAll()
+    {
             ManifestRejectsInvalidServerClassification();
             PackageManifestLoadsBeforePluginExecution();
             BundledPluginManifestsRemainValid();
@@ -121,11 +238,14 @@ internal static class Program
             NotificationPublicationCannotOutliveScopeCleanup();
             DispatcherHonorsFrameBudget();
             DispatcherRetainsPhysicalQueueSlotsAfterCancellation();
+            EmptyDispatcherDrainIsAllocationFree();
             SchedulerUsesDispatcherAndActivationCleanup();
             SchedulerElapsedWorkUsesMonotonicClockUnits();
+            SchedulerTickWithoutDueWorkIsAllocationFree();
             BackgroundWorkIsBoundedAndActivationOwned();
             TransientSchedulerAndDispatcherResourcesAreReleased();
             LifecycleDrainsActivationBackgroundWorkBeforeDisableAndReenable();
+            SynchronousDisableDoesNotWaitForNonCooperativeBackgroundWork();
             AsyncLifecycleDrainsActivationBackgroundWorkBeforeDisable();
             ChatDecoratorOwnershipDoesNotRequireAnEditor();
             DistinctTypedSettingDefinitionsAreRejected();
@@ -138,14 +258,6 @@ internal static class Program
             SettingsSchemaMigrationPersistsOnce();
             PluginUninstallPreservesOrRemovesOnlySelectedData();
             SettingsValidationFeatureScopeAndAtomicDataWrites();
-            Console.WriteLine("Alacrity foundation tests passed.");
-            return 0;
-        }
-        catch (Exception exception)
-        {
-            Console.Error.WriteLine(exception);
-            return 1;
-        }
     }
 
     private static void ManifestRejectsInvalidServerClassification()
@@ -1864,6 +1976,32 @@ internal static class Program
         AssertThrows<ObjectDisposedException>(() => service.NextUpdate("stale", () => { }));
     }
 
+    private static void EmptyDispatcherDrainIsAllocationFree()
+    {
+        var dispatcher = new PluginDispatcherHost();
+        dispatcher.Drain();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        dispatcher.Drain();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert(allocated == 0, "An empty dispatcher drain must not allocate a Stopwatch or temporary collection.");
+    }
+
+    private static void SchedulerTickWithoutDueWorkIsAllocationFree()
+    {
+        var dispatcher = new PluginDispatcherHost();
+        var scheduler = new PluginSchedulerHost();
+        using var scope = new PluginResourceScope();
+        PluginManifest manifest = CreateManifest();
+        IPluginScheduler service = scheduler.CreateService(manifest, scope, dispatcher.CreateService(manifest, scope), new TestLogger());
+        service.AfterUpdates("later", 10, () => { });
+        scheduler.Tick(1);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        scheduler.Tick(2);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert(allocated == 0, "A scheduler tick with no due work must not allocate a temporary list or array.");
+    }
+
     private static void SchedulerElapsedWorkUsesMonotonicClockUnits()
     {
         var clock = new ManualMonotonicClock(3);
@@ -1976,7 +2114,7 @@ internal static class Program
         controller.Enable();
         Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The activation-owned background callback must start before disable is tested.");
         controller.Disable();
-        Assert(plugin.DisableObservedDrain, "Synchronous disable must not invoke the plugin callback while its activation background work remains active.");
+        Assert(controller.State == PluginLifecycleState.Disabled, "Synchronous disable must close the activation without waiting for worker completion.");
 
         controller.Initialize();
         controller.Enable();
@@ -1997,6 +2135,24 @@ internal static class Program
         Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The async activation-owned background callback must start before disable is tested.");
         controller.DisableAsync(CancellationToken.None).GetAwaiter().GetResult();
         Assert(plugin.DisableObservedDrain, "Asynchronous disable must drain the activation background work before its lifecycle callback.");
+    }
+
+    private static void SynchronousDisableDoesNotWaitForNonCooperativeBackgroundWork()
+    {
+        using var host = new FakePluginHost();
+        PluginManifest manifest = CreateBundledTestManifest("activation.background.noncooperative");
+        var plugin = new NonCooperativeBackgroundPlugin();
+        using var controller = new PluginLifecycleController(plugin, host.Create(manifest), () => host.Create(manifest), TimeSpan.FromSeconds(2));
+        controller.Validate();
+        controller.Initialize();
+        controller.Enable();
+        Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The non-cooperative callback must start before disable.");
+
+        var stopwatch = Stopwatch.StartNew();
+        controller.Disable();
+        stopwatch.Stop();
+        Assert(stopwatch.Elapsed < TimeSpan.FromMilliseconds(250), "Synchronous plugin disable must not block the caller waiting for ignored background cancellation.");
+        plugin.Release();
     }
 
     private static void ChatDecoratorOwnershipDoesNotRequireAnEditor()
@@ -2434,6 +2590,33 @@ internal static class Program
         }
 
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class NonCooperativeBackgroundPlugin : IAlacrityPlugin
+    {
+        private readonly ManualResetEventSlim release = new ManualResetEventSlim();
+
+        public ManualResetEventSlim Started { get; } = new ManualResetEventSlim();
+
+        public void Initialize(IPluginContext context)
+        {
+            context.Scheduler.RunBackground("non-cooperative", _ => Task.Run(() =>
+            {
+                Started.Set();
+                release.Wait();
+            }));
+        }
+
+        public void Enable() { }
+
+        public void Disable() { }
+
+        public void Shutdown() { }
+
+        public void Release()
+        {
+            release.Set();
+        }
     }
 
     private sealed class TestContext : IPluginContext

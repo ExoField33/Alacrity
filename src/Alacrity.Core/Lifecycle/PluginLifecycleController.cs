@@ -22,6 +22,7 @@ public sealed class PluginLifecycleController : IDisposable
     private bool hasInitialized;
     private bool shutdownCalled;
     private bool shutdown;
+    private int asynchronousDisposeStarted;
 
     public PluginLifecycleController(IAlacrityPlugin plugin, IPluginContext context)
         : this((object)plugin, context, default(TimeSpan?), null)
@@ -156,7 +157,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
 
-        var cleanupFailures = DrainBackgroundWork();
+        var cleanupFailures = RequestBackgroundDrain();
         Exception? callbackFailure = null;
         try
         {
@@ -180,7 +181,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         EnsureSynchronousLifecycle();
         EnsureNotShutdown();
-        var cleanupFailures = DrainBackgroundWork();
+        var cleanupFailures = RequestBackgroundDrain();
         Exception? callbackFailure = null;
         State = PluginLifecycleState.Uninstalling;
 
@@ -207,11 +208,11 @@ public sealed class PluginLifecycleController : IDisposable
 
         if (UsesAsyncLifecycle)
         {
-            DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            BeginAsynchronousDispose();
             return;
         }
 
-        var cleanupFailures = DrainBackgroundWork();
+        var cleanupFailures = RequestBackgroundDrain();
         Exception? callbackFailure = null;
         try
         {
@@ -229,6 +230,42 @@ public sealed class PluginLifecycleController : IDisposable
             State = PluginLifecycleState.Uninstalled;
             Record("Dispose", callbackFailure, cleanupFailures);
         }
+    }
+
+    /// <summary>
+    /// <see cref="IDisposable.Dispose"/> has no asynchronous completion channel. Starting a bounded
+    /// async teardown here keeps accidental disposal from freezing Terraria's update/render thread;
+    /// explicit host shutdown paths use <see cref="DisposeAsync"/> when they need to await it.
+    /// </summary>
+    private void BeginAsynchronousDispose()
+    {
+        if (Interlocked.Exchange(ref asynchronousDisposeStarted, 1) != 0)
+        {
+            return;
+        }
+
+        Task disposal;
+        try
+        {
+            disposal = DisposeAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            context.Logger.Error("Asynchronous plugin disposal could not be started.", exception);
+            return;
+        }
+
+        disposal.ContinueWith(
+            completed =>
+            {
+                if (completed.IsFaulted)
+                {
+                    context.Logger.Error("Asynchronous plugin disposal failed.", completed.Exception!.GetBaseException());
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private List<PluginCleanupFailure> ForceReleaseResources()
@@ -250,18 +287,22 @@ public sealed class PluginLifecycleController : IDisposable
     }
 
     /// <summary>
-    /// Stops the current activation's background admission before lifecycle callbacks can begin
-    /// final teardown. Old work is bounded and observed; a timeout is retained as cleanup
-    /// diagnostics rather than allowing a non-cooperative plugin to hang Terraria indefinitely.
+    /// Begins cancellation for synchronous lifecycle teardown without blocking the game thread.
+    /// The released activation rejects all old services immediately; cooperative worker completion
+    /// is observed in the background and attributed to the owning plugin logger.
     /// </summary>
-    private List<PluginCleanupFailure> DrainBackgroundWork()
+    private List<PluginCleanupFailure> RequestBackgroundDrain()
     {
         try
         {
-            if (context is not IActivationBackgroundWorkContext activation ||
-                activation.StopAndDrainBackgroundWorkAsync(asyncCallbackTimeout).GetAwaiter().GetResult())
+            if (context is not IActivationBackgroundWorkContext activation)
+            {
                 return new List<PluginCleanupFailure>();
-            return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", new TimeoutException("Activation background work did not stop before the host timeout.")) };
+            }
+
+            Task<bool> drain = activation.StopAndDrainBackgroundWorkAsync(asyncCallbackTimeout);
+            ObserveBackgroundDrain(drain);
+            return new List<PluginCleanupFailure>();
         }
         catch (Exception exception)
         {
@@ -281,6 +322,26 @@ public sealed class PluginLifecycleController : IDisposable
         catch (Exception exception)
         {
             return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", exception) };
+        }
+    }
+
+    private void ObserveBackgroundDrain(Task<bool> drain)
+    {
+        _ = ObserveBackgroundDrainAsync(drain);
+    }
+
+    private async Task ObserveBackgroundDrainAsync(Task<bool> drain)
+    {
+        try
+        {
+            if (!await drain.ConfigureAwait(false))
+            {
+                context.Logger.Warn("Activation background work exceeded the shutdown timeout after the plugin scope was released.");
+            }
+        }
+        catch (Exception exception)
+        {
+            context.Logger.Error("Activation background work failed while completing teardown.", exception);
         }
     }
 

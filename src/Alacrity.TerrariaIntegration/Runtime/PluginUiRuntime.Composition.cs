@@ -16,30 +16,17 @@ namespace AlacrityTerraria
     {
         private static void EnsurePluginManager()
         {
-            if (_menu != null)
+            if (runtimeState != null)
                 return;
 
             string root = AppDomain.CurrentDomain.BaseDirectory;
-            ITerrariaClientRuntime services = TerrariaClientRuntime.Create(root);
-            _runtime = services.Lifecycle.PluginRuntime;
-            _menu = services.PluginUi.Menu;
-            _notifications = services.Rendering.Notifications;
-            _diagnostics = services.Lifecycle.Diagnostics;
-            _extensions = services.PluginUi.Extensions;
-            _serviceHub = services.PluginUi.ServiceHub;
-            _commands = services.Communication.Commands;
-            _drawAdapter = new TerrariaPluginDrawAdapter(services.Rendering.Notifications, services.Rendering.Overlays, services.Rendering.Hud, services.Rendering.HudAdapter, services.GameState.Entities, ReportOptionalUiFailure);
-            _dispatcher = services.Lifecycle.Dispatcher;
-            _scheduler = services.Lifecycle.Scheduler;
-            _entitySnapshots = services.GameState.Entities;
-            _sessionPresentation = services.GameState.Session;
-            _chat = services.Communication.Chat;
-            _userInteraction = services.Communication.UserInteraction;
-            _chatAdapter = new TerrariaPluginChatAdapter(_chat, EnsureChatRuntime, GetActiveChatUserInteraction, ReportOptionalUiFailure);
-            _visualEffects = new TerrariaVisualEffectsAdapter(services.VisualEffects.Policies, ReportOptionalUiFailure);
-            _enabledStateStore = new TerrariaPluginEnabledStateStore(root);
-            _keybindRuntime = new TerrariaKeybindRuntime(root, _extensions, _notifications, ReportOptionalUiFailure);
-            _pluginOperations = new TerrariaPluginOperationCoordinator(_runtime, PersistEnabledPlugins, PublishPluginOperationNotification);
+            runtimeState = PluginUiRuntimeState.Create(
+                root,
+                EnsureChatRuntime,
+                GetActiveChatUserInteraction,
+                ReportOptionalUiFailure,
+                PersistEnabledPlugins,
+                PublishPluginOperationNotification);
         }
 
         private static IPluginUserInteractionService GetActiveChatUserInteraction()
@@ -84,26 +71,10 @@ namespace AlacrityTerraria
 
         private static void EnablePlugin(PluginId id)
         {
-            var record = _runtime.Registry.Records.Single(record => record.Manifest.Id == id);
-            if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
+            if (!BeginPluginOperation(id, enable: true, out string error))
             {
-                using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-                _runtime.EnableAsync(id, cancellation.Token).GetAwaiter().GetResult();
+                _notifications?.Publish("Unable to enable " + id.Value + ": " + error, TimeSpan.FromSeconds(4));
             }
-            else
-                _runtime.Enable(id);
-        }
-
-        private static void DisablePlugin(PluginId id)
-        {
-            var record = _runtime.Registry.Records.Single(record => record.Manifest.Id == id);
-            if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
-            {
-                using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-                _runtime.DisableAsync(id, cancellation.Token).GetAwaiter().GetResult();
-            }
-            else
-                _runtime.Disable(id);
         }
 
         private static bool BeginPluginOperation(PluginId id, bool enable, out string error)

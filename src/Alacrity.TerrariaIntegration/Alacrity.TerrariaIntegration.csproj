@@ -38,6 +38,8 @@
     <Compile Include="GlobalUsings.cs" />
     <Compile Include="Bridge\PluginUiRuntime.CoreBridge.cs" />
     <Compile Include="Runtime\PluginUiRuntime.Composition.cs" />
+    <Compile Include="Runtime\PluginUiRuntimeState.cs" />
+    <Compile Include="Runtime\PluginUiRuntimeBridgeState.cs" />
     <Compile Include="Chat\PluginUiRuntime.Chat.cs" />
     <Compile Include="Chat\PluginUiRuntime.Commands.cs" />
     <Compile Include="Chat\BetterChatRuntime.cs" />

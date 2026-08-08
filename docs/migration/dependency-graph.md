@@ -10,12 +10,12 @@ Terraria.exe 1.4.5.6
   |-- Windows Core Audio COM (default endpoint detection)
   `-- System.Windows.Forms (clipboard)
 
-Program.ConsoleApp1
+Alacrity.ClientBuilder
   |-- Mono.Cecil 0.11.6
   |-- Terraria.exe metadata
   |-- VanillaChatEnhancer.dll metadata
   `-- XNA/Terraria assembly resolution
-       `-- writes Terraria.ChatEnhanced.exe
+       `-- writes a version-locked copied Alacrity.exe
 
 VanillaChatEnhancer.dll
   |-- EnhancerStorage

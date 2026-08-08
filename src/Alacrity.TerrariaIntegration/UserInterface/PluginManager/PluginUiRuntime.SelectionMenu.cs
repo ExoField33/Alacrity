@@ -21,7 +21,7 @@ namespace AlacrityTerraria;
 
 public static partial class PluginUiRuntime
 {
-        private sealed partial class PluginSelectionMenu : UIState
+        internal sealed partial class PluginSelectionMenu : UIState
         {
             private readonly UIList _availableList = new UIList();
             private readonly UIList _enabledList = new UIList();

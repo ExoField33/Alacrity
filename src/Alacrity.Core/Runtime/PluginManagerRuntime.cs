@@ -96,13 +96,39 @@ public sealed class PluginManagerRuntime
     public void RequestReload(PluginId id)
     {
         var record = registry.Records.Single(record => record.Manifest.Id == id);
+        if (record.Controller?.UsesAsyncLifecycle == true)
+        {
+            throw new InvalidOperationException(
+                "Reloading an asynchronous plugin requires RequestReloadAsync so the caller does not block waiting for plugin teardown.");
+        }
+
+        if (record.Controller?.State == PluginLifecycleState.Enabled)
+        {
+            record.Controller.Disable();
+        }
+
+        registry.MarkRestartRequired(id, "Plugin reload requires restarting Alacrity because loaded assemblies cannot be unloaded safely.");
+    }
+
+    /// <summary>
+    /// Requests a reload for either lifecycle contract without synchronously blocking the caller.
+    /// The current Terraria runtime marks all reloads restart-required after deterministic disable.
+    /// </summary>
+    public async Task RequestReloadAsync(PluginId id, CancellationToken cancellationToken)
+    {
+        var record = registry.Records.Single(record => record.Manifest.Id == id);
         if (record.Controller?.State == PluginLifecycleState.Enabled)
         {
             if (record.Controller.UsesAsyncLifecycle)
-                record.Controller.DisableAsync(CancellationToken.None).GetAwaiter().GetResult();
+            {
+                await record.Controller.DisableAsync(cancellationToken).ConfigureAwait(false);
+            }
             else
+            {
                 record.Controller.Disable();
+            }
         }
+
         registry.MarkRestartRequired(id, "Plugin reload requires restarting Alacrity because loaded assemblies cannot be unloaded safely.");
     }
 

@@ -11,7 +11,7 @@ whether an existing context service can be extended without duplicating a host b
 | `context.Resources` | Scope-owned cleanup in reverse registration order, including child scopes. |
 | `context.Logger` | Plugin-attributed diagnostics. |
 | `context.Dispatcher` | Scope-owned main-thread work dispatch. |
-| `context.Scheduler` | Scope-owned next-update, interval, elapsed-time, and named background work. |
+| `context.Scheduler` | Scope-owned next-update, interval, elapsed-time, and named background work. Background work is bounded per activation, cancelled at teardown, and observed without blocking Terraria's update/render thread. |
 | `context.Notifications` | Bounded, targeted, colored transient notifications. |
 | `context.Services` | Dependency-aware cross-plugin service publication and lookup. |
 | `context.Settings` | Typed persisted settings, validation, migration, subscriptions, and reset. |

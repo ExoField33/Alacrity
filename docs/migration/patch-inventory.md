@@ -1,6 +1,6 @@
 # Patch Inventory
 
-Analysis snapshot: 2026-07-22. Every patch below is installed by `Program/ConsoleApp1/Program.cs` into a copy named `Terraria.ChatEnhanced.exe`. The patcher rejects assemblies whose version is not exactly `1.4.5.6` and imports methods from the helper DLL beside the target executable.
+Analysis snapshot: 2026-07-22. The active Alacrity patch set is installed by `tools/Alacrity.ClientBuilder/Program.cs` into a copied executable named `Alacrity.exe`. The patcher rejects any executable whose identity and SHA-256 do not match the audited Terraria 1.4.5.6 baseline and imports methods from the staged helper DLLs beside the copied target executable.
 
 | ID | Terraria target | Current patch action | Proposed owner | Risk |
 |---|---|---|---|---|

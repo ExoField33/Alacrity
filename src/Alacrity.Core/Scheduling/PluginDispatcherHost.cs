@@ -15,7 +15,7 @@ public sealed class PluginDispatcherHost
     private int queuedWorkCount;
     private readonly int mainThreadId = Environment.CurrentManagedThreadId;
     private readonly int maximumCallbacksPerDrain;
-    private readonly TimeSpan maximumDrainTime;
+    private readonly long maximumDrainTicks;
     private readonly int maximumQueuedWork;
     private readonly int maximumQueuedWorkPerPlugin;
 
@@ -23,8 +23,9 @@ public sealed class PluginDispatcherHost
     {
         if (maximumCallbacksPerDrain <= 0) throw new ArgumentOutOfRangeException(nameof(maximumCallbacksPerDrain));
         this.maximumCallbacksPerDrain = maximumCallbacksPerDrain;
-        this.maximumDrainTime = maximumDrainTime ?? TimeSpan.FromMilliseconds(2);
-        if (this.maximumDrainTime <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(maximumDrainTime));
+        TimeSpan drainTime = maximumDrainTime ?? TimeSpan.FromMilliseconds(2);
+        if (drainTime <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(maximumDrainTime));
+        maximumDrainTicks = MonotonicClockMath.ToClockTicks(drainTime, Stopwatch.Frequency);
         if (maximumQueuedWork <= 0) throw new ArgumentOutOfRangeException(nameof(maximumQueuedWork));
         if (maximumQueuedWorkPerPlugin <= 0 || maximumQueuedWorkPerPlugin > maximumQueuedWork) throw new ArgumentOutOfRangeException(nameof(maximumQueuedWorkPerPlugin));
         this.maximumQueuedWork = maximumQueuedWork;
@@ -53,9 +54,17 @@ public sealed class PluginDispatcherHost
     {
         if (Environment.CurrentManagedThreadId != mainThreadId)
             throw new InvalidOperationException("Plugin dispatcher can only drain on its owning main thread.");
-        var stopwatch = Stopwatch.StartNew();
+        lock (gate)
+        {
+            if (pending.Count == 0)
+            {
+                return;
+            }
+        }
+
+        long deadline = MonotonicClockMath.SaturatingAdd(Stopwatch.GetTimestamp(), maximumDrainTicks);
         int executed = 0;
-        while (executed < maximumCallbacksPerDrain && stopwatch.Elapsed < maximumDrainTime)
+        while (executed < maximumCallbacksPerDrain && Stopwatch.GetTimestamp() < deadline)
         {
             WorkItem item;
             lock (gate)
@@ -64,14 +73,24 @@ public sealed class PluginDispatcherHost
                 item = pending.Dequeue();
                 ReleaseQueueSlotUnderLock(item.Owner);
             }
-            if (item.Registration.IsReleased || item.Scope.IsReleased) continue;
-            try { item.Callback(); }
+            if (item.Registration.IsReleased || item.Scope.IsReleased)
+            {
+                continue;
+            }
+
+            try
+            {
+                item.Callback();
+            }
             catch (Exception exception)
             {
                 item.Logger?.Error("Dispatcher callback '" + item.Name + "' failed for plugin '" + item.Owner.Value + "'.", exception);
                 reportFailure?.Invoke(exception);
             }
-            finally { item.Registration.Dispose(); }
+            finally
+            {
+                item.Registration.Dispose();
+            }
             executed++;
         }
     }
@@ -87,7 +106,12 @@ public sealed class PluginDispatcherHost
             IPluginResourceHandle ownership = resources.Own("dispatcher-work", PluginResourceKind.BackgroundTask, registration);
             registration.AttachOwnership(ownership);
         }
-        catch { registration.Dispose(); ReleaseQueueSlot(owner); throw; }
+        catch
+        {
+            registration.Dispose();
+            ReleaseQueueSlot(owner);
+            throw;
+        }
         lock (gate)
         {
             if (guard.IsReleased || registration.IsReleased)
@@ -156,40 +180,73 @@ public sealed class PluginDispatcherHost
         private readonly ScopeGuard guard;
         private readonly PluginId owner;
         private readonly IPluginLogger? logger;
-        public ScopedDispatcher(PluginDispatcherHost host, IPluginResourceScope resources, ScopeGuard guard, PluginId owner, IPluginLogger? logger) { this.host = host; this.resources = resources; this.guard = guard; this.owner = owner; this.logger = logger; }
+        public ScopedDispatcher(PluginDispatcherHost host, IPluginResourceScope resources, ScopeGuard guard, PluginId owner, IPluginLogger? logger)
+        {
+            this.host = host;
+            this.resources = resources;
+            this.guard = guard;
+            this.owner = owner;
+            this.logger = logger;
+        }
         public bool IsMainThread => Environment.CurrentManagedThreadId == host.mainThreadId;
         public IPluginRegistration Post(Action callback) => host.Post(resources, guard, owner, logger, callback);
     }
 
-    private sealed class WorkItem { public WorkItem(Action callback, WorkRegistration registration, ScopeGuard scope, PluginId owner, IPluginLogger? logger) { Callback = callback; Registration = registration; Scope = scope; Owner = owner; Logger = logger; } public Action Callback { get; } public WorkRegistration Registration { get; } public ScopeGuard Scope { get; } public PluginId Owner { get; } public IPluginLogger? Logger { get; } public string Name => Registration.Name; }
+    private sealed class WorkItem
+    {
+        internal WorkItem(Action callback, WorkRegistration registration, ScopeGuard scope, PluginId owner, IPluginLogger? logger)
+        {
+            Callback = callback;
+            Registration = registration;
+            Scope = scope;
+            Owner = owner;
+            Logger = logger;
+        }
+
+        internal Action Callback { get; }
+        internal WorkRegistration Registration { get; }
+        internal ScopeGuard Scope { get; }
+        internal PluginId Owner { get; }
+        internal IPluginLogger? Logger { get; }
+        internal string Name => Registration.Name;
+    }
+
     private sealed class WorkRegistration : IPluginRegistration
     {
-        private readonly object ownershipGate = new object();
-        private int released;
-        private IPluginResourceHandle? ownership;
+        private readonly TransientRegistrationOwnership ownership = new TransientRegistrationOwnership();
 
         public string Name => "dispatcher-work";
-        public bool IsReleased => Volatile.Read(ref released) != 0;
+        public bool IsReleased => ownership.IsReleased;
 
         internal void AttachOwnership(IPluginResourceHandle resource)
         {
-            if (resource == null) throw new ArgumentNullException(nameof(resource));
-            bool releaseNow;
-            lock (ownershipGate)
-            {
-                releaseNow = IsReleased;
-                if (!releaseNow) ownership = resource;
-            }
-            if (releaseNow) resource.Dispose();
+            ownership.Attach(resource);
         }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref released, 1) != 0) return;
-            IPluginResourceHandle? resource;
-            lock (ownershipGate) { resource = ownership; ownership = null; }
-            resource?.Dispose();
+            ownership.Release();
         }
     }
-    private sealed class ScopeGuard : IDisposable { private readonly PluginDispatcherHost host; private int released; public ScopeGuard(PluginDispatcherHost host) { this.host = host; } public bool IsReleased => Volatile.Read(ref released) != 0; public void Dispose() { if (Interlocked.Exchange(ref released, 1) == 0) host.CancelAndRemove(this); } }
+
+    private sealed class ScopeGuard : IDisposable
+    {
+        private readonly PluginDispatcherHost host;
+        private int released;
+
+        internal ScopeGuard(PluginDispatcherHost host)
+        {
+            this.host = host;
+        }
+
+        internal bool IsReleased => Volatile.Read(ref released) != 0;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) == 0)
+            {
+                host.CancelAndRemove(this);
+            }
+        }
+    }
 }

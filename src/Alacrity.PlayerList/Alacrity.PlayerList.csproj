@@ -4,7 +4,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <PluginPackageDirectory>$(MSBuildProjectDirectory)\..\..\Plugins\alacrity.player-list</PluginPackageDirectory>
+    <PluginPackageDirectory Condition="'$(PluginPackageDirectory)' == ''">$(MSBuildProjectDirectory)\..\..\artifacts\plugins\alacrity.player-list</PluginPackageDirectory>
   </PropertyGroup>
   <Target Name="BuildPluginPackage" AfterTargets="Build">
     <MakeDir Directories="$(PluginPackageDirectory)" />

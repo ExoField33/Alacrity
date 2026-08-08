@@ -9,9 +9,8 @@ using Alacrity.PluginSdk;
 namespace AlacrityTerraria.Runtime;
 
 /// <summary>
-/// Coordinates lifecycle actions initiated by Terraria UI. Synchronous plugins stay synchronous;
-/// asynchronous plugins are polled from the UI update path so their callbacks never hold a menu
-/// click handler hostage.
+/// Coordinates lifecycle actions initiated by Terraria UI. Work is started at the UI boundary and
+/// completed by polling; the update path never blocks waiting for an asynchronous plugin callback.
 /// </summary>
 internal sealed class TerrariaPluginOperationCoordinator
 {
@@ -37,8 +36,17 @@ internal sealed class TerrariaPluginOperationCoordinator
         error = string.Empty;
         lock (gate)
         {
-            if (stopping) { error = "Plugin runtime is shutting down."; return false; }
-            if (pending.ContainsKey(id)) { error = "Plugin operation is already in progress."; return false; }
+            if (stopping)
+            {
+                error = "Plugin runtime is shutting down.";
+                return false;
+            }
+
+            if (pending.ContainsKey(id))
+            {
+                error = "Plugin operation is already in progress.";
+                return false;
+            }
         }
 
         PluginPackageRuntimeRecord record = runtime.Registry.Records.Single(record => record.Manifest.Id == id);
@@ -46,7 +54,12 @@ internal sealed class TerrariaPluginOperationCoordinator
         {
             lock (gate)
             {
-                if (stopping || pending.ContainsKey(id)) { error = stopping ? "Plugin runtime is shutting down." : "Plugin operation is already in progress."; return false; }
+                if (stopping || pending.ContainsKey(id))
+                {
+                    error = stopping ? "Plugin runtime is shutting down." : "Plugin operation is already in progress.";
+                    return false;
+                }
+
                 pending.Add(id, PendingOperation.Synchronous(enable));
             }
             try
@@ -55,7 +68,13 @@ internal sealed class TerrariaPluginOperationCoordinator
                 persistEnabledState();
                 return true;
             }
-            finally { lock (gate) pending.Remove(id); }
+            finally
+            {
+                lock (gate)
+                {
+                    pending.Remove(id);
+                }
+            }
         }
 
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
@@ -66,7 +85,6 @@ internal sealed class TerrariaPluginOperationCoordinator
             {
                 cancellation.Cancel();
                 Observe(task);
-                cancellation.Dispose();
                 error = "Plugin runtime is shutting down.";
                 return false;
             }
@@ -78,13 +96,30 @@ internal sealed class TerrariaPluginOperationCoordinator
     internal bool CompleteFinished()
     {
         bool changed = false;
-        KeyValuePair<PluginId, PendingOperation>[] completed;
+        List<KeyValuePair<PluginId, PendingOperation>> completed = null;
         lock (gate)
-            completed = pending.Where(pair => pair.Value.Task != null && pair.Value.Task.IsCompleted).ToArray();
-        foreach (KeyValuePair<PluginId, PendingOperation> pair in completed)
         {
-            PluginId id = pair.Key;
-            PendingOperation operation = pair.Value;
+            foreach (KeyValuePair<PluginId, PendingOperation> pair in pending)
+            {
+                if (pair.Value.Task == null || !pair.Value.Task.IsCompleted)
+                {
+                    continue;
+                }
+
+                completed ??= new List<KeyValuePair<PluginId, PendingOperation>>();
+                completed.Add(pair);
+            }
+        }
+
+        if (completed == null)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < completed.Count; index++)
+        {
+            PluginId id = completed[index].Key;
+            PendingOperation operation = completed[index].Value;
             lock (gate)
             {
                 if (!pending.TryGetValue(id, out PendingOperation current) || !ReferenceEquals(current, operation)) continue;
@@ -93,7 +128,16 @@ internal sealed class TerrariaPluginOperationCoordinator
             operation.Cancellation.Dispose();
             try
             {
-            operation.Task.GetAwaiter().GetResult();
+                if (operation.Task.IsCanceled)
+                {
+                    throw new OperationCanceledException("The plugin lifecycle operation was cancelled.");
+                }
+
+                if (operation.Task.IsFaulted)
+                {
+                    throw operation.Task.Exception.GetBaseException();
+                }
+
                 persistEnabledState();
                 notify((operation.Enable ? "Enabled " : "Disabled ") + id.Value + ".", TimeSpan.FromSeconds(4));
             }
@@ -113,10 +157,14 @@ internal sealed class TerrariaPluginOperationCoordinator
 
     internal void CancelAll()
     {
-        CancelAllAndWait(TimeSpan.Zero);
+        Observe(CancelAllAsync(TimeSpan.Zero));
     }
 
-    internal bool CancelAllAndWait(TimeSpan timeout)
+    /// <summary>
+    /// Stops admission and cancels UI-started async lifecycle operations. The caller observes the
+    /// bounded task instead of blocking Terraria's update or render thread waiting for a worker.
+    /// </summary>
+    internal Task<bool> CancelAllAsync(TimeSpan timeout)
     {
         PendingOperation[] operations;
         lock (gate)
@@ -124,36 +172,110 @@ internal sealed class TerrariaPluginOperationCoordinator
             stopping = true;
             operations = pending.Values.ToArray();
         }
-        PendingOperation[] asynchronous = operations.Where(operation => operation.Task != null).ToArray();
-        for (int index = 0; index < asynchronous.Length; index++) asynchronous[index].Cancellation.Cancel();
-        bool allCompleted = asynchronous.Length == 0;
-        if (asynchronous.Length != 0 && timeout > TimeSpan.Zero)
+        var asynchronous = new List<PendingOperation>();
+        for (int index = 0; index < operations.Length; index++)
         {
-            Task all = Task.WhenAll(asynchronous.Select(operation => operation.Task));
-            try { Task.WhenAny(all, Task.Delay(timeout)).GetAwaiter().GetResult(); }
-            catch { }
-            allCompleted = all.IsCompleted;
+            if (operations[index].Task != null)
+            {
+                asynchronous.Add(operations[index]);
+            }
         }
+
+        for (int index = 0; index < asynchronous.Count; index++)
+        {
+            asynchronous[index].Cancellation.Cancel();
+        }
+
+        return CompleteCancellationAsync(asynchronous.ToArray(), timeout);
+    }
+
+    private async Task<bool> CompleteCancellationAsync(PendingOperation[] asynchronous, TimeSpan timeout)
+    {
+        if (asynchronous.Length == 0)
+        {
+            RemoveCompletedOperations();
+            return true;
+        }
+
+        Task[] tasks = new Task[asynchronous.Length];
+        for (int index = 0; index < asynchronous.Length; index++)
+        {
+            tasks[index] = asynchronous[index].Task;
+        }
+
+        Task all = Task.WhenAll(tasks);
+        bool completed = all.IsCompleted;
+        if (!completed && timeout > TimeSpan.Zero)
+        {
+            using (var timeoutCancellation = new CancellationTokenSource())
+            {
+                Task timeoutTask = Task.Delay(timeout, timeoutCancellation.Token);
+                completed = await Task.WhenAny(all, timeoutTask).ConfigureAwait(false) == all;
+                timeoutCancellation.Cancel();
+            }
+        }
+
+        if (completed)
+        {
+            Observe(all);
+            RemoveCompletedOperations();
+            return true;
+        }
+
+        for (int index = 0; index < asynchronous.Length; index++)
+        {
+            PendingOperation operation = asynchronous[index];
+            Observe(operation.Task);
+            _ = operation.Task.ContinueWith(
+                _ => RemoveCompletedOperation(operation),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        return false;
+    }
+
+    private void RemoveCompletedOperations()
+    {
         lock (gate)
         {
             foreach (KeyValuePair<PluginId, PendingOperation> pair in pending.ToArray())
             {
                 PendingOperation operation = pair.Value;
-                if (operation.Task == null || operation.Task.IsCompleted)
+                if (operation.Task != null && !operation.Task.IsCompleted)
                 {
-                    if (operation.Task != null) Observe(operation.Task);
-                    operation.Cancellation?.Dispose();
-                    pending.Remove(pair.Key);
+                    continue;
                 }
-                else
-                {
-                    Observe(operation.Task);
-                    CancellationTokenSource cancellation = operation.Cancellation;
-                    operation.Task.ContinueWith(_ => cancellation.Dispose(), TaskContinuationOptions.ExecuteSynchronously);
-                }
+
+                pending.Remove(pair.Key);
+                operation.Cancellation?.Dispose();
             }
         }
-        return allCompleted;
+    }
+
+    private void RemoveCompletedOperation(PendingOperation operation)
+    {
+        lock (gate)
+        {
+            PluginId? matchingId = null;
+            foreach (KeyValuePair<PluginId, PendingOperation> pair in pending)
+            {
+                if (!ReferenceEquals(pair.Value, operation))
+                {
+                    continue;
+                }
+
+                matchingId = pair.Key;
+                break;
+            }
+
+            if (matchingId.HasValue)
+            {
+                pending.Remove(matchingId.Value);
+                operation.Cancellation?.Dispose();
+            }
+        }
     }
 
     private static void Observe(Task task) { task.ContinueWith(completed => { _ = completed.Exception; }, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously); }

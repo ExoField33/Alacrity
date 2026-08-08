@@ -38,53 +38,145 @@ namespace AlacrityTerraria
         /// Integration tests assert these values remain synchronized with <see cref="AlacrityCompatibility"/>.
         /// </remarks>
         public static string GetBridgeHandshake() => "2|2|2|1.4.5.6";
-        private static PluginManagerRuntime _runtime;
-        private static PluginManagementMenu _menu;
-        private static PluginNotificationCenter _notifications;
-        private static PluginDependencyDiagnostics _diagnostics;
-        private static PluginExtensionHost _extensions;
-        private static PluginServiceHub _serviceHub;
-        private static PluginCommandHost _commands;
-        private static TerrariaPluginDrawAdapter _drawAdapter;
-        private static PluginDispatcherHost _dispatcher;
-        private static PluginSchedulerHost _scheduler;
-        private static readonly ClientPresentationStateTracker _presentationStates = new ClientPresentationStateTracker();
-        private static TerrariaEntitySnapshotCache _entitySnapshots;
-        private static TerrariaSessionPresentationService _sessionPresentation;
-        private static PluginChatHost _chat;
-        private static TerrariaPluginChatAdapter _chatAdapter;
-        private static PluginUserInteractionHost _userInteraction;
-        private static readonly PluginManagerPresenter _presenter = new PluginManagerPresenter();
+        private static PluginUiRuntimeState runtimeState;
+        private static PluginManagerRuntime _runtime => runtimeState == null ? null : runtimeState.Runtime;
+        private static PluginManagementMenu _menu => runtimeState == null ? null : runtimeState.Menu;
+        private static PluginNotificationCenter _notifications => runtimeState == null ? null : runtimeState.Notifications;
+        private static PluginDependencyDiagnostics _diagnostics => runtimeState == null ? null : runtimeState.Diagnostics;
+        private static PluginExtensionHost _extensions => runtimeState == null ? null : runtimeState.Extensions;
+        private static PluginServiceHub _serviceHub => runtimeState == null ? null : runtimeState.ServiceHub;
+        private static PluginCommandHost _commands => runtimeState == null ? null : runtimeState.Commands;
+        private static TerrariaPluginDrawAdapter _drawAdapter => runtimeState == null ? null : runtimeState.DrawAdapter;
+        private static PluginDispatcherHost _dispatcher => runtimeState == null ? null : runtimeState.Dispatcher;
+        private static PluginSchedulerHost _scheduler => runtimeState == null ? null : runtimeState.Scheduler;
+        // The fallback only records diagnostics before bootstrap. Normal gameplay state belongs
+        // to the managed runtime instance rather than the version-locked static facade.
+        private static readonly PluginUiRuntimeBridgeState FallbackBridgeState = new PluginUiRuntimeBridgeState();
+        private static PluginUiRuntimeBridgeState BridgeState => runtimeState == null ? FallbackBridgeState : runtimeState.BridgeState;
+        private static ClientPresentationStateTracker _presentationStates => BridgeState.PresentationStates;
+        private static TerrariaEntitySnapshotCache _entitySnapshots => runtimeState == null ? null : runtimeState.EntitySnapshots;
+        private static TerrariaSessionPresentationService _sessionPresentation => runtimeState == null ? null : runtimeState.SessionPresentation;
+        private static PluginChatHost _chat => runtimeState == null ? null : runtimeState.Chat;
+        private static TerrariaPluginChatAdapter _chatAdapter => runtimeState == null ? null : runtimeState.ChatAdapter;
+        private static PluginUserInteractionHost _userInteraction => runtimeState == null ? null : runtimeState.UserInteraction;
+        private static PluginManagerPresenter _presenter => BridgeState.Presenter;
         private static readonly Color ResourcePackBackground = new Color(26, 40, 89) * 0.8f;
         private static readonly Color ResourcePackBorder = new Color(13, 20, 44) * 0.8f;
         private static readonly Color ResourcePackHoverBackground = new Color(46, 60, 119);
         private static readonly Color ResourcePackHoverBorder = new Color(20, 30, 56);
-        private static MethodInfo _assetRequest;
-        private static MethodInfo _assetFrame;
-        private static PropertyInfo _assetValue;
-        private static FieldInfo _mainAssetsField;
-        private static readonly HashSet<string> ReportedOptionalUiFailures = new HashSet<string>(StringComparer.Ordinal);
-        private static Texture2D _ingameBlankTexture;
-        private static GraphicsDevice _ingameBlankTextureDevice;
-        private static bool _pluginMenuOpen;
-        private static PluginSelectionMenu _selectionMenu;
-        private static PluginManagerRow[] _ingameEntries = Array.Empty<PluginManagerRow>();
-        private static int _ingameSelectedEntry;
-        private static int _ingameView;
-        private static float _ingameScroll;
-        private static float _ingameDescriptionScroll;
-        private static string _ingameHoveredSettingId;
-        private static TerrariaPluginEnabledStateStore _enabledStateStore;
+        private static MethodInfo _assetRequest
+        {
+            get => BridgeState.AssetRequest;
+            set => BridgeState.AssetRequest = value;
+        }
+
+        private static MethodInfo _assetFrame
+        {
+            get => BridgeState.AssetFrame;
+            set => BridgeState.AssetFrame = value;
+        }
+
+        private static PropertyInfo _assetValue
+        {
+            get => BridgeState.AssetValue;
+            set => BridgeState.AssetValue = value;
+        }
+
+        private static FieldInfo _mainAssetsField
+        {
+            get => BridgeState.MainAssetsField;
+            set => BridgeState.MainAssetsField = value;
+        }
+        private static HashSet<string> ReportedOptionalUiFailures => BridgeState.ReportedOptionalUiFailures;
+        private static Texture2D _ingameBlankTexture
+        {
+            get => BridgeState.IngameBlankTexture;
+            set => BridgeState.IngameBlankTexture = value;
+        }
+
+        private static GraphicsDevice _ingameBlankTextureDevice
+        {
+            get => BridgeState.IngameBlankTextureDevice;
+            set => BridgeState.IngameBlankTextureDevice = value;
+        }
+
+        private static bool _pluginMenuOpen
+        {
+            get => BridgeState.PluginMenuOpen;
+            set => BridgeState.PluginMenuOpen = value;
+        }
+
+        private static PluginSelectionMenu _selectionMenu
+        {
+            get => BridgeState.SelectionMenu;
+            set => BridgeState.SelectionMenu = value;
+        }
+
+        private static PluginManagerRow[] _ingameEntries
+        {
+            get => BridgeState.IngameEntries;
+            set => BridgeState.IngameEntries = value;
+        }
+
+        private static int _ingameSelectedEntry
+        {
+            get => BridgeState.IngameSelectedEntry;
+            set => BridgeState.IngameSelectedEntry = value;
+        }
+
+        private static int _ingameView
+        {
+            get => BridgeState.IngameView;
+            set => BridgeState.IngameView = value;
+        }
+
+        private static float _ingameScroll
+        {
+            get => BridgeState.IngameScroll;
+            set => BridgeState.IngameScroll = value;
+        }
+
+        private static float _ingameDescriptionScroll
+        {
+            get => BridgeState.IngameDescriptionScroll;
+            set => BridgeState.IngameDescriptionScroll = value;
+        }
+
+        private static string _ingameHoveredSettingId
+        {
+            get => BridgeState.IngameHoveredSettingId;
+            set => BridgeState.IngameHoveredSettingId = value;
+        }
+        private static TerrariaPluginEnabledStateStore _enabledStateStore => runtimeState == null ? null : runtimeState.EnabledStateStore;
         private static readonly object RuntimeGate = new object();
-        private static TerrariaVisualEffectsAdapter _visualEffects;
+        private static TerrariaVisualEffectsAdapter _visualEffects => runtimeState == null ? null : runtimeState.VisualEffects;
         private static bool _runtimeBootstrapped;
         private static bool _runtimeShuttingDown;
-        private static TerrariaPluginOperationCoordinator _pluginOperations;
-        private static TerrariaKeybindRuntime _keybindRuntime;
-        private static uint _iconInteractionInputTick = uint.MaxValue;
-        private static bool _iconInteractionWasDown;
-        private static bool _iconInteractionPressed;
-        private static bool _iconInteractionConsumed;
+        private static TerrariaPluginOperationCoordinator _pluginOperations => runtimeState == null ? null : runtimeState.Operations;
+        private static TerrariaKeybindRuntime _keybindRuntime => runtimeState == null ? null : runtimeState.KeybindRuntime;
+        private static uint _iconInteractionInputTick
+        {
+            get => BridgeState.IconInteractionInputTick;
+            set => BridgeState.IconInteractionInputTick = value;
+        }
+
+        private static bool _iconInteractionWasDown
+        {
+            get => BridgeState.IconInteractionWasDown;
+            set => BridgeState.IconInteractionWasDown = value;
+        }
+
+        private static bool _iconInteractionPressed
+        {
+            get => BridgeState.IconInteractionPressed;
+            set => BridgeState.IconInteractionPressed = value;
+        }
+
+        private static bool _iconInteractionConsumed
+        {
+            get => BridgeState.IconInteractionConsumed;
+            set => BridgeState.IconInteractionConsumed = value;
+        }
 
         /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
         public static void BootstrapPluginRuntime()
@@ -115,10 +207,14 @@ namespace AlacrityTerraria
                 _extensions?.Publish(new ClientShuttingDownEvent(TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency)));
                 // Stop new activation-owned work before lifecycle operations begin their teardown.
                 _scheduler?.StopAcceptingWork();
-                _pluginOperations?.CancelAllAndWait(TimeSpan.FromSeconds(6));
+                if (_pluginOperations != null)
+                {
+                    ObserveShutdownTask(
+                        "Plugin lifecycle operation shutdown",
+                        _pluginOperations.CancelAllAsync(TimeSpan.FromSeconds(6)));
+                }
                 if (_runtime != null)
                 {
-                    using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
                     foreach (var record in GetShutdownOrder())
                     {
                         if (_pluginOperations != null && _pluginOperations.IsPending(record.Manifest.Id))
@@ -129,19 +225,73 @@ namespace AlacrityTerraria
                         try
                         {
                             if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
-                                record.Controller.DisposeAsync(cancellation.Token).GetAwaiter().GetResult();
+                                BeginAsyncControllerShutdown(record.Manifest.Id, record.Controller);
                             else
                                 record.Controller?.Dispose();
                         }
                         catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
                     }
                 }
-                if (_scheduler != null && !_scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult())
-                    ReportOptionalUiFailure("Plugin background shutdown", new TimeoutException("Plugin background work did not stop before the shutdown timeout."));
+                if (_scheduler != null)
+                {
+                    ObserveShutdownTask(
+                        "Plugin background shutdown",
+                        _scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(3)));
+                }
                 _drawAdapter?.Dispose();
                 _ingameBlankTexture?.Dispose();
                 _ingameBlankTexture = null;
                 _ingameBlankTextureDevice = null;
+            }
+        }
+
+        private static void BeginAsyncControllerShutdown(PluginId pluginId, PluginLifecycleController controller)
+        {
+            var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            try
+            {
+                _ = ObserveAsyncControllerShutdown(pluginId, controller.DisposeAsync(cancellation.Token), cancellation);
+            }
+            catch (Exception exception)
+            {
+                cancellation.Dispose();
+                ReportOptionalUiFailure("Plugin shutdown: " + pluginId.Value, exception);
+            }
+        }
+
+        private static async Task ObserveAsyncControllerShutdown(PluginId pluginId, Task shutdown, CancellationTokenSource cancellation)
+        {
+            try
+            {
+                await shutdown.ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                Trace.WriteLine("Alacrity async plugin shutdown failed for " + pluginId.Value + ": " + exception);
+            }
+            finally
+            {
+                cancellation.Dispose();
+            }
+        }
+
+        private static void ObserveShutdownTask(string operation, Task<bool> task)
+        {
+            _ = ObserveShutdownTaskAsync(operation, task);
+        }
+
+        private static async Task ObserveShutdownTaskAsync(string operation, Task<bool> task)
+        {
+            try
+            {
+                if (!await task.ConfigureAwait(false))
+                {
+                    Trace.WriteLine("Alacrity " + operation + " exceeded its bounded cancellation timeout.");
+                }
+            }
+            catch (Exception exception)
+            {
+                Trace.WriteLine("Alacrity " + operation + " failed: " + exception);
             }
         }
 
