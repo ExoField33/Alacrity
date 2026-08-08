@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
+    <ProjectReference Include="..\Alacrity.Core\Alacrity.Core.csproj" />
     <Reference Include="Terraria"><HintPath>$(AlacrityTerrariaAssemblyPath)</HintPath><Private>true</Private></Reference>
     <!-- Test-only copies allow the executable harness to exercise a real GraphicsDevice without
          changing production's external-reference deployment policy. -->
@@ -21,8 +22,14 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
-    <Compile Include="..\Alacrity.TerrariaIntegration\TerrariaOverlayCanvas.cs" Link="TerrariaOverlayCanvas.cs" />
-    <Compile Include="..\Alacrity.TerrariaIntegration\TerrariaWorldProjection.cs" Link="TerrariaWorldProjection.cs" />
-    <Compile Include="..\Alacrity.TerrariaIntegration\TerrariaWorldProjectionMath.cs" Link="TerrariaWorldProjectionMath.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Overlays\TerrariaOverlayCanvas.cs" Link="TerrariaOverlayCanvas.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Projection\TerrariaWorldProjection.cs" Link="TerrariaWorldProjection.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Projection\TerrariaWorldProjectionMath.cs" Link="TerrariaWorldProjectionMath.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Projection\TerrariaWorldProjectionVerifier.cs" Link="TerrariaWorldProjectionVerifier.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Hud\TerrariaAvatarRenderBoundary.cs" Link="TerrariaAvatarRenderBoundary.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Combat\CombatCollisionCapture.cs" Link="CombatCollisionCapture.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Entities\TerrariaEntitySnapshotService.cs" Link="TerrariaEntitySnapshotService.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Entities\EntityGenerationTracker.cs" Link="EntityGenerationTracker.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Runtime\ClientPresentationStateTracker.cs" Link="ClientPresentationStateTracker.cs" />
   </ItemGroup>
 </Project>

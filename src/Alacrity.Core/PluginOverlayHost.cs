@@ -91,8 +91,6 @@ public sealed class PluginOverlayHost
             if (entries.Any(candidate => candidate.Owner == manifest.Id && string.Equals(candidate.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
                 throw new InvalidOperationException("The plugin already registered overlay '" + descriptor.Id + "'.");
             entry = new Entry(manifest.Id, descriptor, draw, logger, nextSequence++);
-            entries.Add(entry);
-            RebuildSnapshot();
         }
         var registration = new Registration("overlay:" + manifest.Id.Value + ":" + descriptor.Id, () => { lock (gate) { entries.Remove(entry); RebuildSnapshot(); } });
         try
@@ -103,6 +101,27 @@ public sealed class PluginOverlayHost
         {
             registration.Dispose();
             throw;
+        }
+        bool releaseAfterCommit = false;
+        bool scopeReleasedDuringCommit = false;
+        lock (gate)
+        {
+            scopeReleasedDuringCommit = registration.IsReleased;
+            if (scopeReleasedDuringCommit || entries.Any(candidate => candidate.Owner == manifest.Id && string.Equals(candidate.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
+            {
+                releaseAfterCommit = true;
+            }
+            else
+            {
+                entries.Add(entry);
+                RebuildSnapshot();
+            }
+        }
+        if (releaseAfterCommit)
+        {
+            registration.Dispose();
+            if (scopeReleasedDuringCommit) throw new ObjectDisposedException("IPluginResourceScope", "The owning plugin scope was released during overlay registration.");
+            throw new InvalidOperationException("The plugin already registered overlay '" + descriptor.Id + "'.");
         }
         return registration;
     }

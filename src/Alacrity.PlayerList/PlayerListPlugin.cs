@@ -38,6 +38,10 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     private bool showPlayerHeads = true;
     private bool showPing = true;
     private bool hideBots;
+    private bool botClassificationInitialized;
+    private bool waitingForBotClassification;
+    private long requestedBotClassificationVersion;
+    private long observedBotClassificationVersion;
     private PlayerListSortMode sortMode;
     private PlayerListDisplayMode displayMode;
     private int nextRosterRefreshTick;
@@ -68,14 +72,14 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
         displayModeSetting = context.Settings.Register(new PluginSettingDefinition<string>("displayMode", "Hold", value => ReadDisplayMode(value).ToString()));
         playersPerColumn = playersPerColumnSetting.Value; rowWidth = rowWidthSetting.Value; textScalePercent = textScaleSetting.Value;
         showPlayerHeads = showPlayerHeadsSetting.Value; showPing = showPingSetting.Value; hideBots = hideBotsSetting.Value;
-        EnsureBotClassificationDemand();
+        UpdateBotClassificationDemand();
         sortMode = ReadSortMode(sortModeSetting.Value); displayMode = ReadDisplayMode(displayModeSetting.Value);
         playersPerColumnSetting.Subscribe(value => { playersPerColumn = value; rosterDirty = true; });
         rowWidthSetting.Subscribe(value => rowWidth = value);
         textScaleSetting.Subscribe(value => textScalePercent = value);
         showPlayerHeadsSetting.Subscribe(value => showPlayerHeads = value);
         showPingSetting.Subscribe(value => showPing = value);
-        hideBotsSetting.Subscribe(value => { hideBots = value; rosterDirty = true; });
+        hideBotsSetting.Subscribe(value => { hideBots = value; UpdateBotClassificationDemand(); if (hideBots && visible && !botClassificationInitialized) { botClassificationInitialized = true; RequestBotClassification(); } rosterDirty = true; });
         sortModeSetting.Subscribe(value => { sortMode = ReadSortMode(value); rosterDirty = true; });
         displayModeSetting.Subscribe(value => displayMode = ReadDisplayMode(value));
 
@@ -99,6 +103,8 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     public void Disable()
     {
         visible = false;
+        botClassificationInitialized = false;
+        waitingForBotClassification = false;
         ClearRoster();
         botClassificationDemand?.Dispose();
         botClassificationDemand = null;
@@ -106,22 +112,77 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
         players = null;
         session = null;
     }
-    public void Shutdown() { visible = false; ClearRoster(); botClassificationDemand?.Dispose(); botClassificationDemand = null; playerSnapshotDemand = null; players = null; session = null; playersPerColumnSetting = null; rowWidthSetting = null; textScaleSetting = null; showPlayerHeadsSetting = null; showPingSetting = null; hideBotsSetting = null; sortModeSetting = null; displayModeSetting = null; }
-    public void ToggleVisibility() => visible = !visible;
-    public void SetVisibility(bool isVisible) => visible = isVisible;
+    public void Shutdown() { visible = false; waitingForBotClassification = false; ClearRoster(); botClassificationDemand?.Dispose(); botClassificationDemand = null; playerSnapshotDemand = null; players = null; session = null; playersPerColumnSetting = null; rowWidthSetting = null; textScaleSetting = null; showPlayerHeadsSetting = null; showPingSetting = null; hideBotsSetting = null; sortModeSetting = null; displayModeSetting = null; }
     public void CycleSortMode() { sortMode = sortMode == PlayerListSortMode.Alphabetical ? PlayerListSortMode.Team : sortMode == PlayerListSortMode.Team ? PlayerListSortMode.Health : PlayerListSortMode.Alphabetical; if (sortModeSetting != null) sortModeSetting.Value = sortMode.ToString(); }
     public void ToggleBotFiltering()
     {
-        playerSnapshotDemand?.RefreshSuspectedBotClassification();
         hideBots = !hideBots;
         if (hideBotsSetting != null) hideBotsSetting.Value = hideBots;
+        if (hideBots)
+        {
+            botClassificationInitialized = true;
+            RequestBotClassification();
+        }
     }
 
-    private void EnsureBotClassificationDemand()
+    private void UpdateBotClassificationDemand()
     {
-        if ((botClassificationDemand == null || botClassificationDemand.IsReleased) && playerSnapshotDemand != null)
-            botClassificationDemand = playerSnapshotDemand.RequestSuspectedBotClassification();
+        if (hideBots)
+        {
+            if ((botClassificationDemand == null || botClassificationDemand.IsReleased) && playerSnapshotDemand != null)
+                botClassificationDemand = playerSnapshotDemand.RequestSuspectedBotClassification();
+        }
+        else
+        {
+            botClassificationDemand?.Dispose();
+            botClassificationDemand = null;
+            waitingForBotClassification = false;
+        }
     }
+
+    private void RequestBotClassification()
+    {
+        if (hideBots && playerSnapshotDemand != null)
+        {
+            UpdateBotClassificationDemand();
+            requestedBotClassificationVersion = playerSnapshotDemand.SuspectedBotClassificationVersion;
+            observedBotClassificationVersion = requestedBotClassificationVersion;
+            waitingForBotClassification = true;
+            playerSnapshotDemand.RefreshSuspectedBotClassification();
+            // Do not display an unclassified first roster and then make the user toggle twice.
+            // The next update-thread capture publishes a newer version and releases this gate.
+            ClearRoster();
+        }
+    }
+
+    private void OnListShown()
+    {
+        if (hideBots)
+        {
+            if (botClassificationInitialized) return;
+            botClassificationInitialized = true;
+            RequestBotClassification();
+        }
+    }
+
+    private void SetVisible(bool isVisible)
+    {
+        bool wasVisible = visible;
+        visible = isVisible;
+        if (!wasVisible && isVisible)
+            OnListShown();
+    }
+
+    public void ToggleVisibility()
+    {
+        SetVisible(!visible);
+    }
+
+    public void SetVisibility(bool isVisible)
+    {
+        SetVisible(isVisible);
+    }
+
 
     private void DrawHud(IPluginHudCanvas canvas, PluginHudFrame frame)
     {
@@ -157,8 +218,9 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
         float nameX = bounds.X + (showPlayerHeads ? 44f * uiScale : 12f * uiScale) - 3f;
         float nameY = bounds.Y + bounds.Height / 2f - 8f * TextScale;
         float reservedRight = row.Player.IsDead && !row.Player.IsGhost ? 44f : 8f;
-        string name = FitText(row.Name, bounds.Width - (nameX - bounds.X) - reservedRight, 0.74f * TextScale);
-        canvas.DrawText(name, nameX, nameY, row.Player.IsDead ? new PluginOverlayColor(145, 145, 145) : TeamColor(row.Player.Team), 0.74f * TextScale);
+        const float playerNameScale = 0.703f; // 5% smaller than the established 0.74 player-row scale.
+        string name = FitText(row.Name, bounds.Width - (nameX - bounds.X) - reservedRight, playerNameScale * TextScale);
+        canvas.DrawText(name, nameX, nameY, row.Player.IsDead ? new PluginOverlayColor(145, 145, 145) : TeamColor(row.Player.Team), playerNameScale * TextScale);
         if (row.Player.IsDead && !row.Player.IsGhost) canvas.DrawText(FormatRespawn(row.Player.RespawnTimer), bounds.X + bounds.Width - 40f, nameY, new PluginOverlayColor(220, 220, 220), 0.62f * TextScale);
         if (showPlayerHeads && (!row.Player.IsDead || row.Player.IsGhost)) canvas.DrawPlayerAvatar(row.Player.Id, bounds.X + 23f * uiScale - 3f, bounds.Y + bounds.Height / 2f - 4f * uiScale, uiScale);
     }
@@ -174,6 +236,23 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     private void RefreshRoster()
     {
         int now = Environment.TickCount;
+        if (hideBots && playerSnapshotDemand != null)
+        {
+            long currentBotClassificationVersion = playerSnapshotDemand.SuspectedBotClassificationVersion;
+            if (waitingForBotClassification && currentBotClassificationVersion <= requestedBotClassificationVersion)
+            {
+                rosterDirty = true;
+                nextRosterRefreshTick = unchecked(now + 16);
+                return;
+            }
+            if (waitingForBotClassification)
+                waitingForBotClassification = false;
+            if (currentBotClassificationVersion != observedBotClassificationVersion)
+            {
+                observedBotClassificationVersion = currentBotClassificationVersion;
+                rosterDirty = true;
+            }
+        }
         int interval = sortMode == PlayerListSortMode.Health ? 200 : 500;
         if (!rosterDirty && unchecked(now - nextRosterRefreshTick) < 0) return;
         playerSnapshots.Clear(); players!.CopyPlayers(playerSnapshots);
@@ -218,7 +297,7 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     }
 
     private void ClearRoster() { playerSnapshots.Clear(); rows.Clear(); columnStarts.Clear(); columnCounts.Clear(); rosterDirty = true; nextRosterRefreshTick = 0; }
-    private void HandleDisplayKeybind(bool isDown) { if (displayMode == PlayerListDisplayMode.Hold) visible = isDown; else if (isDown) visible = !visible; }
+    private void HandleDisplayKeybind(bool isDown) { if (displayMode == PlayerListDisplayMode.Hold) SetVisible(isDown); else if (isDown) SetVisible(!visible); }
     private PluginTooltipOptions GetSortTooltip() { string name = sortMode == PlayerListSortMode.Team ? "Teams" : sortMode == PlayerListSortMode.Health ? "Health" : "Alphabetically"; return new PluginTooltipOptions("Sorted: " + name, PluginTooltipPlacement.Mouse, new PluginColor(255, 255, 255), 0.75f); }
     private PluginTooltipOptions GetBotFilterTooltip() => new PluginTooltipOptions("Bots: " + (hideBots ? "Hidden" : "Visible"), PluginTooltipPlacement.Mouse, new PluginColor(255, 255, 255), 0.75f);
     private static int Clamp(int value, int minimum, int maximum) => value < minimum ? minimum : value > maximum ? maximum : value;

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Alacrity.App;
+using Alacrity.App.PluginManagement;
 using Alacrity.BetterChat;
 using Alacrity.DustGoreToggle;
 using Alacrity.Hitboxes;
@@ -12,6 +13,7 @@ using Alacrity.PlayerList;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using AlacrityTerraria;
+using AlacrityTerraria.Rendering.Projection;
 
 #pragma warning disable CS0618 // Compatibility-only API coverage remains intentional in this test assembly.
 
@@ -44,6 +46,11 @@ internal static class Program
             AsyncPluginAssemblyLoaderUsesSharedRuntimeController();
             HostManifestIsAuthoritativeOverPluginImplementation();
             UnifiedContextExposesAllHostServices();
+            PluginSdkHasNoEngineImplementationReferences();
+            BundledPluginsInitializeInFakeHost();
+            FakeHostRecordsPluginDiagnostics();
+            FakeHostRecordsRealRegistrations();
+            EntityHandlesPreserveGenerationIdentity();
             PluginResourceKindValuesRemainStable();
             BridgeReflectionResolverCachesSuccessfulLookups();
             BridgeReflectionResolverReportsUnavailableSignatures();
@@ -76,6 +83,7 @@ internal static class Program
             AsyncLifecycleSupportsMixedActivationCancellationAndTimeout();
             AsyncLifecycleCancelsAfterCallbackStarts();
             AsyncUninstallPropagatesLifecycleFailures();
+            AsyncShutdownIsBoundedAndRetainsFailures();
             ResourceScopeReleasesChildrenInParentOrder();
             ResourceScopeRecordsIndividualCleanupFailures();
             ActivationTransactionRollsBackInReverseOrder();
@@ -112,7 +120,12 @@ internal static class Program
             NotificationServicesRejectReleasedScopesAndRateLimit();
             NotificationPublicationCannotOutliveScopeCleanup();
             DispatcherHonorsFrameBudget();
+            DispatcherRetainsPhysicalQueueSlotsAfterCancellation();
+            SchedulerUsesDispatcherAndActivationCleanup();
+            ChatDecoratorOwnershipDoesNotRequireAnEditor();
+            DistinctTypedSettingDefinitionsAreRejected();
             PackageCatalogReadsManifestWithoutAssemblyLoad();
+            PackageCompatibilityRejectsStalePluginBeforeAssemblyLoad();
             IncompatibleGameVersionNeverLoadsAssembly();
             PackageRegistryRetainsHostLoadFailure();
             PresenterProjectsRuntimePackageRows();
@@ -243,7 +256,7 @@ internal static class Program
             Directory.CreateDirectory(package);
             string assemblyName = typeof(LoaderAsyncTestPlugin).Assembly.GetName().Name + ".dll";
             File.Copy(typeof(LoaderAsyncTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
-            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.loader-async-test\",\"name\":\"Loader Async Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"" + typeof(LoaderAsyncTestPlugin).FullName + "\"}");
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.loader-async-test\",\"name\":\"Loader Async Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"pluginSdkCompatibilityVersion\":2,\"hostCompatibilityVersion\":2,\"bridgeAbiVersion\":2,\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"" + typeof(LoaderAsyncTestPlugin).FullName + "\"}");
             var descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
             object entry = new PluginAssemblyLoader().LoadAny(descriptor);
             Assert(entry is IAsyncAlacrityPlugin && entry is not IAlacrityPlugin, "The loader must accept exactly the asynchronous lifecycle contract.");
@@ -271,6 +284,79 @@ internal static class Program
     private static void PluginResourceKindValuesRemainStable()
     {
         Assert((int)PluginResourceKind.Patch == 0 && (int)PluginResourceKind.EventSubscription == 9 && (int)PluginResourceKind.NativeHandle == 7, "Public resource-kind numeric values must remain stable for compiled plugin compatibility.");
+    }
+
+    private static void EntityHandlesPreserveGenerationIdentity()
+    {
+        var first = new PluginEntityHandle(PluginEntityKind.Player, 4, 1);
+        var replacement = new PluginEntityHandle(PluginEntityKind.Player, 4, 2);
+        var same = new PluginEntityHandle(PluginEntityKind.Player, 4, 1);
+        Assert(first == same && first != replacement && first.GetHashCode() == same.GetHashCode(), "Entity handles must include their generation in equality and hashing.");
+        Assert(!default(PluginEntityHandle).IsValid, "The default entity handle must never identify a live entity.");
+        var snapshot = new PluginPlayerSnapshot(first, "Player", 0, true, false, false, 100, 100, 0, false);
+        Assert(snapshot.Handle == first && snapshot.Id == 4, "Player snapshots must retain a generation-aware handle while preserving slot compatibility.");
+    }
+
+    private static void BundledPluginsInitializeInFakeHost()
+    {
+        using var host = new FakePluginHost();
+        var plugins = new IAlacrityPlugin[]
+        {
+            new BetterChatPlugin(), new DustGoreTogglePlugin(), new HitboxesPlugin(), new PlayerListPlugin()
+        };
+        for (int index = 0; index < plugins.Length; index++)
+        {
+            PluginManifest manifest = CreateBundledTestManifest("fake.plugin." + index);
+            PluginHostContext first = host.Create(manifest);
+            using var controller = new PluginLifecycleController(plugins[index], first, () => host.Create(manifest));
+            controller.Validate();
+            controller.Initialize();
+            controller.Enable();
+            controller.Disable();
+            controller.Initialize();
+            controller.Enable();
+            controller.Disable();
+        }
+    }
+
+    private static void FakeHostRecordsPluginDiagnostics()
+    {
+        using var host = new FakePluginHost();
+        PluginHostContext context = host.Create(CreateManifest());
+        context.Logger.Info("recorded by the fake host");
+        Assert(host.Diagnostics.Count == 1 && host.Diagnostics[0].Contains("recorded by the fake host"), "The fake host must record plugin-attributed diagnostics while exercising real Core contexts.");
+    }
+
+    private static void FakeHostRecordsRealRegistrations()
+    {
+        using var host = new FakePluginHost();
+        PluginManifest manifest = CreateBundledTestManifest("fake.recording");
+        PluginHostContext context = host.Create(manifest);
+        context.Keybinds.Register(new PluginKeybindDescriptor("recorded", "K", "Recorded"), () => { });
+        context.Commands.Register(new PluginCommandDescriptor("recorded", "Recorded command"), invocation => invocation.Reply("ok"));
+        context.Ui.RegisterSettingsPage(new PluginUiContribution("recorded-page", "Recorded page"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("recorded-toggle", "Recorded toggle", () => true, _ => { }).InPage("recorded-page"));
+        context.Notifications.Show("recorded notification");
+
+        Assert(host.Keybinds.Registrations.Count == 1, "The fake host must expose real host keybind registrations.");
+        Assert(host.GetSettingsPages(manifest.Id).Count == 1 && host.GetSettingsControls(manifest.Id).Count == 1, "The fake host must expose retained UI registrations.");
+        string reply = string.Empty;
+        Assert(host.DispatchCommand("recorded", Array.Empty<string>(), value => reply = value) == PluginCommandDispatchResult.Handled && reply == "ok", "The fake host must dispatch real registered commands.");
+        Assert(host.ActiveNotifications.Count == 1, "The fake host must expose notifications published through its real Core service.");
+    }
+
+    private static void PluginSdkHasNoEngineImplementationReferences()
+    {
+        var forbidden = new[] { "Terraria", "ReLogic", "Microsoft.Xna", "Alacrity.Core", "Alacrity.TerrariaIntegration" };
+        foreach (var reference in typeof(IPluginContext).Assembly.GetReferencedAssemblies())
+            Assert(!forbidden.Contains(reference.Name), "PluginSdk must remain independently implementable and must not reference " + reference.Name + ".");
+    }
+
+    private static PluginManifest CreateBundledTestManifest(string id)
+    {
+        return new PluginManifest(new PluginId(id), "Fake bundled plugin", new Version(1, 0), "Tests", "Fake host test", new[] { "1.4.5.6" },
+            capabilities: PluginCapability.UserInterface | PluginCapability.Input | PluginCapability.Rendering | PluginCapability.GameStateRead | PluginCapability.MultiplayerObservation,
+            permissions: PluginPermission.DrawUserInterface | PluginPermission.ReadGameState | PluginPermission.ObserveMultiplayer | PluginPermission.Clipboard | PluginPermission.OpenExternalLinks);
     }
 
     private static void BridgeReflectionResolverCachesSuccessfulLookups()
@@ -1036,6 +1122,39 @@ internal static class Program
         plugin.Complete();
     }
 
+    private static void AsyncShutdownIsBoundedAndRetainsFailures()
+    {
+        var manifest = new PluginManifest(new PluginId("async.shutdown"), "Async shutdown", new Version(1, 0), "Tests", "Async shutdown", new[] { "1.4.5.6" });
+
+        using (var scope = new PluginResourceScope())
+        {
+            var plugin = new ShutdownBlockingAsyncPlugin(scope, false);
+            var controller = new PluginLifecycleController(plugin, new TestContext(manifest, scope), TimeSpan.FromMilliseconds(25));
+            controller.Validate();
+            controller.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            controller.EnableAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+            controller.DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Assert(plugin.DisableStarted, "Shutdown must begin an enabled async plugin's disable callback.");
+            Assert(plugin.ShutdownCalled, "Shutdown must continue after a bounded disable timeout.");
+            Assert(scope.IsDisposed && controller.State == PluginLifecycleState.Uninstalled, "A timed-out async shutdown must permanently release its activation scope.");
+            plugin.CompleteDisable();
+        }
+
+        using (var scope = new PluginResourceScope())
+        {
+            var plugin = new ShutdownBlockingAsyncPlugin(scope, true);
+            var controller = new PluginLifecycleController(plugin, new TestContext(manifest, scope), TimeSpan.FromMilliseconds(100));
+            controller.Validate();
+            controller.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            controller.EnableAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+            controller.DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Assert(controller.LastOperation.CallbackFailure?.Exception is InvalidOperationException, "Async shutdown faults must remain attributed to the lifecycle operation.");
+            Assert(scope.IsDisposed && controller.State == PluginLifecycleState.Uninstalled, "A faulting shutdown callback must not prevent final cleanup.");
+        }
+    }
+
     private static void ResourceScopeReleasesChildrenInParentOrder()
     {
         var order = new List<string>();
@@ -1350,6 +1469,7 @@ internal static class Program
         first.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("first-decoration", priority: 1), new TestDecorator("first"));
         second.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("second-decoration", priority: 2), new AppendingDecorator("-second"));
         Assert(host.Decorate(new ChatMessageSnapshot("original")).Single().Text == "first-second", "Later chat decorators must receive the current decorated output in deterministic priority order.");
+        Assert(host.TryGetInteraction(firstManifest.Id, out IPluginUserInteractionService? decoratorInteraction) && ReferenceEquals(firstInteraction, decoratorInteraction), "A decorator-only presentation span must retain its own interaction capability.");
         firstScope.ReleaseAll();
         Assert(!host.HasInputEditor(firstManifest.Id) && host.HasInputEditor(secondManifest.Id), "Disabling one scope must remove only its chat editor.");
         Assert(host.TryGetActiveEditorInteraction(out activeInteraction) && ReferenceEquals(secondInteraction, activeInteraction), "After owner cleanup, interaction dispatch must follow the remaining active editor rather than a stale owner cache.");
@@ -1702,6 +1822,65 @@ internal static class Program
         scope.Dispose();
     }
 
+    private static void DispatcherRetainsPhysicalQueueSlotsAfterCancellation()
+    {
+        var dispatcher = new PluginDispatcherHost(8, TimeSpan.FromSeconds(1), maximumQueuedWork: 1, maximumQueuedWorkPerPlugin: 1);
+        using var scope = new PluginResourceScope();
+        IPluginDispatcher service = dispatcher.CreateService(CreateManifest(), scope);
+        IPluginRegistration cancelled = service.Post(() => { });
+        cancelled.Dispose();
+        AssertThrows<InvalidOperationException>(() => service.Post(() => { }));
+        dispatcher.Drain();
+        service.Post(() => { }).Dispose();
+    }
+
+    private static void SchedulerUsesDispatcherAndActivationCleanup()
+    {
+        var dispatcher = new PluginDispatcherHost(16, TimeSpan.FromSeconds(1));
+        var scheduler = new PluginSchedulerHost();
+        using var scope = new PluginResourceScope();
+        PluginManifest manifest = CreateManifest();
+        IPluginDispatcher dispatch = dispatcher.CreateService(manifest, scope);
+        IPluginScheduler service = scheduler.CreateService(manifest, scope, dispatch, new TestLogger());
+        int delayed = 0;
+        int repeating = 0;
+        service.AfterUpdates("delayed", 2, () => delayed++);
+        service.EveryUpdates("repeat", 1, () => repeating++);
+
+        scheduler.Tick(1); dispatcher.Drain();
+        Assert(delayed == 0 && repeating == 1, "Scheduler must dispatch due update work through the bounded dispatcher.");
+        scheduler.Tick(2); dispatcher.Drain();
+        Assert(delayed == 1 && repeating == 2, "Delayed and repeated scheduler work must run at their documented update counts.");
+
+        scope.Dispose();
+        scheduler.Tick(3); dispatcher.Drain();
+        Assert(repeating == 2, "Activation cleanup must cancel repeating scheduler work.");
+        AssertThrows<ObjectDisposedException>(() => service.NextUpdate("stale", () => { }));
+    }
+
+    private static void ChatDecoratorOwnershipDoesNotRequireAnEditor()
+    {
+        var manifest = new PluginManifest(new PluginId("decorator.only"), "Decorator only", new Version(1, 0), "Tests", "Decorator only", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
+        using var scope = new PluginResourceScope();
+        var interactions = new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance);
+        IPluginUserInteractionService interaction = interactions.CreateService(manifest, scope);
+        var host = new PluginChatHost();
+        host.CreateService(manifest, scope, interaction).RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("decorator"), new TestDecorator("decorated"));
+        Assert(host.HasMessageDecorators && host.TryGetInteraction(manifest.Id, out IPluginUserInteractionService? resolved) && ReferenceEquals(interaction, resolved), "Decorator-only chat extensions must remain interactive without an input editor.");
+    }
+
+    private static void DistinctTypedSettingDefinitionsAreRejected()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-settings-definition-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = new PluginSettingsStore(root, new PluginId("settings.definition"));
+            settings.Register(new PluginSettingDefinition<int>("value", 1, value => Math.Max(0, value)));
+            AssertThrows<InvalidOperationException>(() => settings.Register(new PluginSettingDefinition<int>("value", 1, value => Math.Min(10, value))));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     private static void PackageCatalogReadsManifestWithoutAssemblyLoad()
     {
         var root = Path.Combine(Path.GetTempPath(), "alacrity-catalog-test-" + Guid.NewGuid().ToString("N"));
@@ -1716,6 +1895,18 @@ internal static class Program
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
+    private static void PackageCompatibilityRejectsStalePluginBeforeAssemblyLoad()
+    {
+        PluginManifest manifest = new PluginManifest(
+            new PluginId("stale.compatibility"), "Stale", new Version(1, 0), "Tests", "Stale package",
+            new[] { "1.4.5.6" }, compatibility: PluginCompatibilityRequirements.Legacy);
+        PluginCompatibilityException error = AssertThrows<PluginCompatibilityException>(() => PluginCompatibilityValidator.EnsureSupported(manifest));
+        Assert(error.Component == "PluginSdk" && error.Expected == 1 && error.Actual == AlacrityCompatibility.PluginSdk,
+            "Compatibility validation must identify the mismatched component before any assembly load is attempted.");
+
+        PluginCompatibilityValidator.EnsureSupported(CreateManifest());
+    }
+
     private static void IncompatibleGameVersionNeverLoadsAssembly()
     {
         string root = Path.Combine(Path.GetTempPath(), "alacrity-version-admission-" + Guid.NewGuid().ToString("N"));
@@ -1723,7 +1914,7 @@ internal static class Program
         {
             string package = Path.Combine(root, "plugins", "version.test");
             Directory.CreateDirectory(package);
-            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"version.test\",\"name\":\"Version Test\",\"version\":\"1.0.0\",\"publisher\":\"Tests\",\"description\":\"Compatibility test\",\"supportedGameVersions\":[\"9.9.9\"],\"entryAssembly\":\"missing.dll\",\"entryType\":\"Missing.Plugin\"}");
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"version.test\",\"name\":\"Version Test\",\"version\":\"1.0.0\",\"publisher\":\"Tests\",\"description\":\"Compatibility test\",\"supportedGameVersions\":[\"9.9.9\"],\"pluginSdkCompatibilityVersion\":2,\"hostCompatibilityVersion\":2,\"bridgeAbiVersion\":2,\"entryAssembly\":\"missing.dll\",\"entryType\":\"Missing.Plugin\"}");
             PluginPackageDescriptor descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
             var runtime = new PluginRuntimeHost(
                 new PluginPackageCatalog(new PluginPackageManifestReader()),
@@ -1797,6 +1988,16 @@ internal static class Program
         now = now.AddSeconds(6);
         overlays.Dispatch(new TestOverlayCanvas(), new PluginOverlayFrame(1, 1, 1f, false, TimeSpan.Zero));
         Assert(overlayCalls == 4, "A suspended overlay must receive one retry after the cooldown.");
+
+        using var retryScope = new PluginResourceScope();
+        var retryHost = new PluginHudHost(TimeSpan.FromSeconds(5), () => now);
+        int retryCalls = 0;
+        retryHost.CreateService(manifest, retryScope).Register(new PluginHudWidgetDescriptor("failing-retry", 0), (_, __) => { retryCalls++; throw new InvalidOperationException("expected"); });
+        for (int index = 0; index < 4; index++) retryHost.Dispatch(new TestHudRenderer(), new PluginHudFrame(1, 1, 1f, TimeSpan.Zero, 0));
+        now = now.AddSeconds(6);
+        retryHost.Dispatch(new TestHudRenderer(), new PluginHudFrame(1, 1, 1f, TimeSpan.Zero, 0));
+        retryHost.Dispatch(new TestHudRenderer(), new PluginHudFrame(1, 1, 1f, TimeSpan.Zero, 0));
+        Assert(retryCalls == 4, "A failed retry trial must immediately return to cooldown rather than receive normal failure attempts.");
     }
 
     private static void WorldProjectionUsesOnlyTheVerifiedCameraTranslation()
@@ -1809,6 +2010,9 @@ internal static class Program
 
         TerrariaWorldProjectionMath.Project(640f, 360f, 160f, 90f, out float zoomedX, out float zoomedY);
         Assert(zoomedX == 480f && zoomedY == 270f, "The screen-space hook must not apply zoom or a view matrix a second time.");
+        Assert(TerrariaWorldProjectionVerifier.TryVerify(new TerrariaWorldProjectionState(160f, 90f, 0.5f, 0.5f, 1f), out _), "Projection verification must accept zoomed-in live state.");
+        Assert(TerrariaWorldProjectionVerifier.TryVerify(new TerrariaWorldProjectionState(-80f, 32f, 2f, 2f, -1f), out _), "Projection verification must accept flipped-gravity live state without adding another transform.");
+        Assert(!TerrariaWorldProjectionVerifier.TryVerify(new TerrariaWorldProjectionState(0f, 0f, 0f, 1f, 1f), out _), "Projection verification must reject invalid live zoom values.");
     }
 
     private static void NotificationPublicationCannotOutliveScopeCleanup()
@@ -1946,15 +2150,15 @@ internal static class Program
             permissions: PluginPermission.None);
     }
 
-    private static void AssertThrows<TException>(Action action) where TException : Exception
+    private static TException AssertThrows<TException>(Action action) where TException : Exception
     {
         try
         {
             action();
         }
-        catch (TException)
+        catch (TException exception)
         {
-            return;
+            return exception;
         }
 
         throw new InvalidOperationException("Expected " + typeof(TException).Name + ".");
@@ -2021,6 +2225,7 @@ internal static class Program
             Resources = resources;
             Logger = new TestLogger();
             Dispatcher = new PluginDispatcherHost().CreateService(manifest, resources);
+            Scheduler = new PluginSchedulerHost().CreateService(manifest, resources, Dispatcher, Logger);
             Notifications = new PluginNotificationCenter().CreateService(manifest);
             Services = new PluginServiceHub().CreateRegistry(manifest, resources);
             Settings = new TestSettings();
@@ -2040,6 +2245,7 @@ internal static class Program
         public IPluginResourceScope Resources { get; }
         public IPluginLogger Logger { get; }
         public IPluginDispatcher Dispatcher { get; }
+        public IPluginScheduler Scheduler { get; }
         public IPluginNotificationService Notifications { get; }
         public IPluginServiceRegistry Services { get; }
         public IPluginSettings Settings { get; }
@@ -2134,6 +2340,44 @@ internal static class Program
         public Task DisableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public void Complete() => completion.TrySetResult(null);
+    }
+
+    private sealed class ShutdownBlockingAsyncPlugin : IAsyncAlacrityPlugin
+    {
+        private readonly IPluginResourceScope scope;
+        private readonly bool failShutdown;
+        private readonly TaskCompletionSource<object?> disableCompletion = new TaskCompletionSource<object?>();
+
+        public ShutdownBlockingAsyncPlugin(IPluginResourceScope scope, bool failShutdown)
+        {
+            this.scope = scope;
+            this.failShutdown = failShutdown;
+        }
+
+        public bool DisableStarted { get; private set; }
+        public bool ShutdownCalled { get; private set; }
+
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken)
+        {
+            scope.Own("async-shutdown", PluginResourceKind.BackgroundTask, new TestRegistration("async-shutdown"));
+            return Task.CompletedTask;
+        }
+
+        public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task DisableAsync(CancellationToken cancellationToken)
+        {
+            DisableStarted = true;
+            return failShutdown ? Task.CompletedTask : disableCompletion.Task;
+        }
+
+        public Task ShutdownAsync(CancellationToken cancellationToken)
+        {
+            ShutdownCalled = true;
+            return failShutdown ? Task.FromException(new InvalidOperationException("Expected async shutdown failure.")) : Task.CompletedTask;
+        }
+
+        public void CompleteDisable() => disableCompletion.TrySetResult(null);
     }
 
     private sealed class CancellableAsyncPlugin : IAsyncAlacrityPlugin
@@ -2285,8 +2529,11 @@ internal static class Program
 
     private sealed class TestEntitySnapshots : IPluginEntitySnapshotService
     {
+        public int ActiveEntityCount => 0;
         public void CopyActiveEntities(ICollection<PluginEntitySnapshot> destination) { }
         public void CopyMeleeHitboxes(ICollection<PluginEntitySnapshot> destination) { }
+        public bool TryGetBySlot(PluginEntityKind kind, int slot, out PluginEntitySnapshot entity) { entity = default; return false; }
+        public bool TryGetByHandle(PluginEntityHandle handle, out PluginEntitySnapshot entity) { entity = default; return false; }
     }
 
     private sealed class TestVisualEffects : IPluginVisualEffectsService
@@ -2296,7 +2543,9 @@ internal static class Program
 
     private sealed class TestPlayers : IPluginPlayerService
     {
+        public int ActivePlayerCount => 0;
         public bool TryGet(int playerId, out PluginPlayerSnapshot player) { player = default; return false; }
+        public bool TryGet(PluginEntityHandle handle, out PluginPlayerSnapshot player) { player = default; return false; }
         public string? GetName(int playerId) => null;
         public void CopyPlayers(ICollection<PluginPlayerSnapshot> destination) { }
         public void CopyBuffs(int playerId, ICollection<PluginBuffSnapshot> destination) { }

@@ -83,7 +83,6 @@ public sealed class PluginHudHost
             if (entries.Any(entry => entry.Owner == owner && string.Equals(entry.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
                 throw new InvalidOperationException("The plugin already registered HUD widget '" + descriptor.Id + "'.");
             entry = new Entry(owner, descriptor, draw, ++sequence, Remove, logger);
-            entries.Add(entry); snapshotDirty = true;
         }
         try
         {
@@ -93,6 +92,27 @@ public sealed class PluginHudHost
         {
             entry.Dispose();
             throw;
+        }
+        bool releaseAfterCommit = false;
+        bool scopeReleasedDuringCommit = false;
+        lock (gate)
+        {
+            scopeReleasedDuringCommit = entry.IsReleased;
+            if (scopeReleasedDuringCommit || entries.Any(candidate => candidate.Owner == owner && string.Equals(candidate.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
+            {
+                releaseAfterCommit = true;
+            }
+            else
+            {
+                entries.Add(entry);
+                snapshotDirty = true;
+            }
+        }
+        if (releaseAfterCommit)
+        {
+            entry.Dispose();
+            if (scopeReleasedDuringCommit) throw new ObjectDisposedException("IPluginResourceScope", "The owning plugin scope was released during HUD registration.");
+            throw new InvalidOperationException("The plugin already registered HUD widget '" + descriptor.Id + "'.");
         }
         return entry;
     }

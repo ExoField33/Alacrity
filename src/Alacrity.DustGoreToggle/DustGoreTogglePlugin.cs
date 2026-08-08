@@ -30,9 +30,9 @@ public sealed class DustGoreTogglePlugin : IAlacrityPlugin
         goreEffectsEnabled = goreEffectsSetting.Value;
         dustEffectsSetting.Subscribe(ApplyDustEffectsSetting);
         goreEffectsSetting.Subscribe(ApplyGoreEffectsSetting);
-        dustExceptionsSetting.Subscribe(value => { dustExceptions = LoadExceptions(value); RebuildExceptionSnapshot(); });
+        dustExceptionsSetting.Subscribe(value => { dustExceptions = LoadExceptions(value); RebuildExceptionSnapshot(true); });
         dustExceptions = LoadExceptions(dustExceptionsSetting.Value);
-        RebuildExceptionSnapshot();
+        RebuildExceptionSnapshot(false);
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("dust-gore-toggle", "Dust & Gore Toggle"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("dust-effects", "Dust Effects", dustEffectsSetting).InPage("dust-gore-toggle"));
@@ -95,8 +95,16 @@ public sealed class DustGoreTogglePlugin : IAlacrityPlugin
 
     private void SaveExceptions()
     {
-        RebuildExceptionSnapshot();
-        if (dustExceptionsSetting != null) dustExceptionsSetting.Value = dustExceptionSnapshot;
+        int[] snapshot = CreateExceptionSnapshot();
+        if (dustExceptionsSetting == null)
+        {
+            dustExceptionSnapshot = snapshot;
+            RegisterPolicy();
+            return;
+        }
+        if (dustExceptionSnapshot.SequenceEqual(snapshot)) return;
+        dustExceptionSnapshot = snapshot;
+        dustExceptionsSetting.Value = snapshot;
     }
 
     private static HashSet<int> LoadExceptions(IReadOnlyList<int> values)
@@ -109,11 +117,13 @@ public sealed class DustGoreTogglePlugin : IAlacrityPlugin
         return result;
     }
 
-    private void RebuildExceptionSnapshot()
+    private void RebuildExceptionSnapshot(bool registerPolicy)
     {
-        dustExceptionSnapshot = dustExceptions.OrderBy(value => value).ToArray();
-        RegisterPolicy();
+        dustExceptionSnapshot = CreateExceptionSnapshot();
+        if (registerPolicy) RegisterPolicy();
     }
+
+    private int[] CreateExceptionSnapshot() => dustExceptions.OrderBy(value => value).ToArray();
 
     private void RegisterPolicy()
     {

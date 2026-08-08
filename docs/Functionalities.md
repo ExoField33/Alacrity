@@ -11,6 +11,7 @@ whether an existing context service can be extended without duplicating a host b
 | `context.Resources` | Scope-owned cleanup in reverse registration order, including child scopes. |
 | `context.Logger` | Plugin-attributed diagnostics. |
 | `context.Dispatcher` | Scope-owned main-thread work dispatch. |
+| `context.Scheduler` | Scope-owned next-update, interval, elapsed-time, and named background work. |
 | `context.Notifications` | Bounded, targeted, colored transient notifications. |
 | `context.Services` | Dependency-aware cross-plugin service publication and lookup. |
 | `context.Settings` | Typed persisted settings, validation, migration, subscriptions, and reset. |
@@ -30,8 +31,8 @@ whether an existing context service can be extended without duplicating a host b
 | Service | Current purpose |
 | --- | --- |
 | `context.Terraria.Chat` | Input editors, message decorators/filters, and link handlers. |
-| `context.Terraria.Entities` | Shared immutable active entity snapshots; plugins may request scoped, demand-gated melee collision snapshots through `IPluginMeleeCollisionSnapshotService`. |
-| `context.Terraria.Players` | Detached player name, team, life, death/ghost status, buffs, and host-derived suspected-bot state. |
+| `context.Terraria.Entities` | Shared immutable active entity snapshots with counts, caller-buffer copying, slot lookup, generation-aware handle lookup, and optional scoped melee capture demand. |
+| `context.Terraria.Players` | Detached player name, team, life, death/ghost status, buffs, and host-derived suspected-bot state, with caller-buffer copying and generation-aware lookup. |
 | `context.Terraria.Session` | Server/world display name, capacity, and a bounded sampled ping value. |
 | `context.Terraria.VisualEffects` | Scoped dust/gore presentation policies. |
 

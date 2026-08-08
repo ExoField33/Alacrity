@@ -127,8 +127,17 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
             else if (entity.Kind == PluginEntityKind.Npc && showNpcs) Draw(canvas, entity, npcColor);
             else if (entity.Kind == PluginEntityKind.Projectile && showProjectiles)
             {
-                if (entity.Friendly && showFriendlyProjectiles) Draw(canvas, entity, friendlyProjectileColor);
-                else if (entity.Hostile && showHostileProjectiles) Draw(canvas, entity, hostileProjectileColor);
+                if (entity.Friendly)
+                {
+                    if (showFriendlyProjectiles) Draw(canvas, entity, friendlyProjectileColor);
+                }
+                // Terraria also has active neutral projectiles. Enhancer treated them as the
+                // default/hostile presentation category, so they must not disappear merely
+                // because neither network combat flag is set.
+                else if (showHostileProjectiles)
+                {
+                    Draw(canvas, entity, hostileProjectileColor);
+                }
             }
         }
         if (!showSwings) return;
