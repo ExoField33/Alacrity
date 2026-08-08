@@ -32,7 +32,7 @@ namespace AlacrityTerraria
     public static partial class PluginUiRuntime
     {
         /// <summary>Exact bridge ABI handshake consumed by the injected runtime before plugin bootstrap.</summary>
-        public static string GetBridgeHandshake() => AlacrityCompatibility.PluginSdk + "|" + AlacrityCompatibility.Host + "|" + AlacrityCompatibility.BridgeAbi + "|1.4.5.6";
+        public static string GetBridgeHandshake() => new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6").ToHandshake();
         private static PluginManagerRuntime _runtime;
         private static PluginManagementMenu _menu;
         private static PluginNotificationCenter _notifications;
@@ -108,6 +108,8 @@ namespace AlacrityTerraria
                     return;
                 Volatile.Write(ref _runtimeShuttingDown, true);
                 _extensions?.Publish(new ClientShuttingDownEvent(TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency)));
+                // Stop new activation-owned work before lifecycle operations begin their teardown.
+                _scheduler?.StopAcceptingWork();
                 _pluginOperations?.CancelAllAndWait(TimeSpan.FromSeconds(6));
                 if (_runtime != null)
                 {
@@ -129,6 +131,8 @@ namespace AlacrityTerraria
                         catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
                     }
                 }
+                if (_scheduler != null && !_scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult())
+                    ReportOptionalUiFailure("Plugin background shutdown", new TimeoutException("Plugin background work did not stop before the shutdown timeout."));
                 _drawAdapter?.Dispose();
                 _ingameBlankTexture?.Dispose();
                 _ingameBlankTexture = null;

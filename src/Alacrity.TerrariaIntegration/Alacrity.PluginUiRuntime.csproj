@@ -16,6 +16,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Bridge\AlacrityPluginUiRuntime.cs" />
+    <!-- Shared source keeps the injected façade able to diagnose a missing/stale SDK DLL. -->
+    <Compile Include="..\Alacrity.PluginSdk\Compatibility\BridgeCompatibilityDescriptor.cs" Link="Bridge\BridgeCompatibilityDescriptor.cs" />
     <Compile Include="BridgeReflectionContracts.cs" />
   </ItemGroup>
 </Project>

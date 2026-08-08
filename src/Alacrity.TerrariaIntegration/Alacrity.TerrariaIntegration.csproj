@@ -35,7 +35,7 @@
 
   <ItemGroup>
     <Compile Include="GlobalUsings.cs" />
-    <Compile Include="Bridge\AlacrityPluginUiCoreBridge.cs" />
+    <Compile Include="Bridge\PluginUiRuntime.CoreBridge.cs" />
     <Compile Include="Runtime\PluginUiRuntime.Composition.cs" />
     <Compile Include="Chat\PluginUiRuntime.Chat.cs" />
     <Compile Include="Chat\PluginUiRuntime.Commands.cs" />
@@ -63,9 +63,9 @@
     <Compile Include="Input\TerrariaPluginKeybindPersistence.cs" />
     <Compile Include="Input\TerrariaPluginKeybindControlsAdapter.cs" />
     <Compile Include="Input\TerrariaKeybindRuntime.cs" />
-    <Compile Include="UserInterface\PluginManager\TerrariaPluginDescriptionMenu.cs" />
-    <Compile Include="UserInterface\PluginManager\TerrariaPluginSelectionMenu.cs" />
-    <Compile Include="UserInterface\Settings\TerrariaPluginSettingsMenu.cs" />
+    <Compile Include="UserInterface\PluginManager\PluginUiRuntime.DescriptionMenu.cs" />
+    <Compile Include="UserInterface\PluginManager\PluginUiRuntime.SelectionMenu.cs" />
+    <Compile Include="UserInterface\Settings\PluginUiRuntime.SettingsMenu.cs" />
     <Compile Include="UserInterface\Settings\PluginUiRuntime.IngamePluginList.cs" />
     <Compile Include="UserInterface\Settings\PluginUiRuntime.IngamePluginSettings.cs" />
     <Compile Include="TileStorage.cs" />

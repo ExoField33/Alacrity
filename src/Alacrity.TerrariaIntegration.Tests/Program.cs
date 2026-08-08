@@ -49,6 +49,7 @@ internal static class Program
             VerifyEntityGenerationReuse();
             VerifyProjectionStates();
             VerifyPresentationStateTransitions();
+            VerifyBridgeHandshakeParsing();
             VerifyBridgeAbiContract();
             Console.WriteLine("Terraria integration tests passed." + (Array.IndexOf(args, "--graphics") >= 0 ? string.Empty : " Graphics-device validation is opt-in: rerun with --graphics in an interactive desktop session."));
             return 0;
@@ -193,6 +194,19 @@ internal static class Program
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
         Assert((string)handshake.Invoke(null, null) == "2|2|2|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
+    }
+
+    private static void VerifyBridgeHandshakeParsing()
+    {
+        BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
+        Assert(BridgeCompatibilityDescriptor.TryParse("2|2|2|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
+            "The current bridge handshake must parse and validate through the shared compatibility descriptor.");
+        Assert(!BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic) && diagnostic.Contains("exactly four"), "A handshake with the wrong field count must diagnose its shape.");
+        Assert(!BridgeCompatibilityDescriptor.TryParse("x|2|2|1.4.5.6", out _, out diagnostic) && diagnostic.Contains("PluginSdk"), "An invalid compatibility integer must identify its field.");
+        Assert(!BridgeCompatibilityDescriptor.TryParse("2|2|2|1.4", out _, out diagnostic) && diagnostic.Contains("Terraria"), "A malformed Terraria version must be rejected before runtime startup.");
+        BridgeCompatibilityDescriptor stale = new BridgeCompatibilityDescriptor(1, 1, 1, "1.4.4.9");
+        Assert(!stale.TryValidateAgainst(expected, out diagnostic) && diagnostic.Contains("PluginSdk") && diagnostic.Contains("Core Host") && diagnostic.Contains("Bridge ABI") && diagnostic.Contains("Terraria"),
+            "Compatibility diagnostics must identify every stale component instead of reporting a generic mismatch.");
     }
 
     private static void VerifyStaticBridgeMethod(Type bridge, string name, Type returnType, params Type[] parameters)

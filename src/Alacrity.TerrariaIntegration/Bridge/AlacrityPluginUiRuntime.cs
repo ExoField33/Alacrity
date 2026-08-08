@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using Alacrity.PluginSdk;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria.Audio;
@@ -11,12 +12,13 @@ using Terraria.GameContent.UI.States;
 
 namespace AlacrityTerraria
 {
-    // The injected entry point stays independent from SDK/Core until the optional Plugins UI is opened.
+    // The injected entry point source-links the framework-neutral handshake model and never loads Core.
     // Every reflected member is exact-signature checked and cached so unavailable bridge code falls back to Terraria.
     public static class PluginUiRuntime
     {
         private const int PluginMenuMode = 888;
         private const int IngamePluginsCategory = 777016;
+        private static readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(2, 2, 2, "1.4.5.6");
         private static readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
         private static FieldInfo _versionNumber;
         private static Assembly _bridgeAssembly;
@@ -541,9 +543,14 @@ namespace AlacrityTerraria
                     return false;
                 }
                 _getBridgeHandshake = (Func<string>)callback;
-                if (!string.Equals(_getBridgeHandshake(), "2|2|2|1.4.5.6", StringComparison.Ordinal))
+                if (!BridgeCompatibilityDescriptor.TryParse(_getBridgeHandshake(), out BridgeCompatibilityDescriptor descriptor, out diagnostic))
                 {
-                    RecordUnavailable("Bridge compatibility mismatch. Expected SDK|Core|ABI|Terraria = 2|2|2|1.4.5.6; rebuild/copy Alacrity assemblies together.");
+                    RecordUnavailable("Bridge compatibility handshake is invalid: " + diagnostic + " Rebuild/copy Alacrity assemblies together.");
+                    return false;
+                }
+                if (!descriptor.TryValidateAgainst(ExpectedBridgeCompatibility, out diagnostic))
+                {
+                    RecordUnavailable(diagnostic + " Rebuild/copy Alacrity assemblies together.");
                     return false;
                 }
                 if (!Reflection.TryResolveStaticMethod(_bridgeType, "BootstrapPluginRuntime", typeof(void), Type.EmptyTypes, out bootstrap, out diagnostic) ||

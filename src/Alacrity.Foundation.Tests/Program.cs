@@ -122,10 +122,13 @@ internal static class Program
             DispatcherHonorsFrameBudget();
             DispatcherRetainsPhysicalQueueSlotsAfterCancellation();
             SchedulerUsesDispatcherAndActivationCleanup();
+            SchedulerElapsedWorkUsesMonotonicClockUnits();
+            BackgroundWorkIsBoundedAndActivationOwned();
             ChatDecoratorOwnershipDoesNotRequireAnEditor();
             DistinctTypedSettingDefinitionsAreRejected();
             PackageCatalogReadsManifestWithoutAssemblyLoad();
             PackageCompatibilityRejectsStalePluginBeforeAssemblyLoad();
+            PackageCompatibilityDiagnosesHostAndBridgeRequirements();
             IncompatibleGameVersionNeverLoadsAssembly();
             PackageRegistryRetainsHostLoadFailure();
             PresenterProjectsRuntimePackageRows();
@@ -1858,6 +1861,90 @@ internal static class Program
         AssertThrows<ObjectDisposedException>(() => service.NextUpdate("stale", () => { }));
     }
 
+    private static void SchedulerElapsedWorkUsesMonotonicClockUnits()
+    {
+        var clock = new ManualMonotonicClock(3);
+        var dispatcher = new PluginDispatcherHost(16, TimeSpan.FromSeconds(1));
+        var scheduler = new PluginSchedulerHost(clock);
+        using var scope = new PluginResourceScope();
+        PluginManifest manifest = CreateManifest();
+        IPluginScheduler service = scheduler.CreateService(manifest, scope, dispatcher.CreateService(manifest, scope), new TestLogger());
+        int oneShot = 0;
+        int repeating = 0;
+        service.After("one-second", TimeSpan.FromSeconds(1), () => oneShot++);
+        service.Every("half-second", TimeSpan.FromMilliseconds(500), () => repeating++);
+
+        scheduler.Tick(0); dispatcher.Drain();
+        Assert(oneShot == 0 && repeating == 0, "Elapsed work must not run before its monotonic deadline.");
+        clock.Advance(1);
+        scheduler.Tick(1); dispatcher.Drain();
+        Assert(oneShot == 0 && repeating == 0, "Fractional TimeSpan conversion must round up at a non-10MHz clock frequency.");
+        clock.Advance(1);
+        scheduler.Tick(2); dispatcher.Drain();
+        Assert(oneShot == 0 && repeating == 1, "Half-second repeat work must use the scheduler clock frequency, not TimeSpan ticks.");
+        clock.Advance(1);
+        scheduler.Tick(3); dispatcher.Drain();
+        Assert(oneShot == 1 && repeating == 1, "One-shot elapsed work must run at exactly one synthetic clock second.");
+        clock.Advance(1);
+        scheduler.Tick(4); dispatcher.Drain();
+        Assert(repeating == 2, "Repeating elapsed work must schedule its next deadline in the same monotonic unit.");
+        Assert(MonotonicClockMath.ToClockTicks(TimeSpan.MaxValue, long.MaxValue) == long.MaxValue,
+            "Large elapsed delays must saturate instead of overflowing their clock deadline.");
+    }
+
+    private static void BackgroundWorkIsBoundedAndActivationOwned()
+    {
+        var scheduler = new PluginSchedulerHost(maximumScheduledWorkPerPlugin: 4, maximumBackgroundWorkPerPlugin: 1);
+        using var scope = new PluginResourceScope();
+        PluginManifest manifest = CreateManifest();
+        IPluginScheduler service = scheduler.CreateService(manifest, scope, new PluginDispatcherHost(8, TimeSpan.FromSeconds(1)).CreateService(manifest, scope), new TestLogger());
+        var started = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        IPluginRegistration active = service.RunBackground("held", _ => Task.Run(() => { started.Set(); release.Wait(); }));
+        Assert(started.Wait(TimeSpan.FromSeconds(1)), "Background work must retain and start its owned task.");
+        Assert(scheduler.GetBackgroundWorkCount(manifest.Id) == 1, "The background quota must count an in-flight callback exactly once.");
+        AssertThrows<InvalidOperationException>(() => service.RunBackground("over-limit", _ => Task.CompletedTask));
+        active.Dispose();
+        Assert(scheduler.GetBackgroundWorkCount(manifest.Id) == 1, "Disposing a still-running callback must not free its physical quota slot early.");
+        AssertThrows<InvalidOperationException>(() => service.RunBackground("disposed-but-running", _ => Task.CompletedTask));
+        release.Set();
+        Assert(scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(1)).GetAwaiter().GetResult(),
+            "Scheduler shutdown must observe completion after a non-cooperative background callback is allowed to finish.");
+        Assert(scheduler.GetBackgroundWorkCount(manifest.Id) == 0, "Background capacity must return exactly once after completion.");
+
+        var completedScheduler = new PluginSchedulerHost(maximumBackgroundWorkPerPlugin: 1);
+        using var completedScope = new PluginResourceScope();
+        IPluginScheduler completed = completedScheduler.CreateService(manifest, completedScope, new PluginDispatcherHost(8, TimeSpan.FromSeconds(1)).CreateService(manifest, completedScope), new TestLogger());
+        var normalCompletion = new ManualResetEventSlim();
+        completed.RunBackground("complete", _ => { normalCompletion.Set(); return Task.CompletedTask; });
+        Assert(normalCompletion.Wait(TimeSpan.FromSeconds(1)), "Normal background work must complete successfully.");
+        Assert(SpinWait.SpinUntil(() => completedScheduler.GetBackgroundWorkCount(manifest.Id) == 0, TimeSpan.FromSeconds(1)), "Normal completion must release the active background quota.");
+        completed.RunBackground("reused-capacity", _ => Task.CompletedTask).Dispose();
+
+        var cancelledScheduler = new PluginSchedulerHost(maximumBackgroundWorkPerPlugin: 1);
+        using var cancelledScope = new PluginResourceScope();
+        IPluginScheduler cancelled = cancelledScheduler.CreateService(manifest, cancelledScope, new PluginDispatcherHost(8, TimeSpan.FromSeconds(1)).CreateService(manifest, cancelledScope), new TestLogger());
+        var cancellationStarted = new ManualResetEventSlim();
+        var cancellationObserved = new ManualResetEventSlim();
+        cancelled.RunBackground("cancellable", token => Task.Run(() => { cancellationStarted.Set(); try { token.WaitHandle.WaitOne(); } finally { cancellationObserved.Set(); } }));
+        Assert(cancellationStarted.Wait(TimeSpan.FromSeconds(1)), "The cancellation test callback must begin before activation teardown.");
+        cancelledScope.Dispose();
+        Assert(cancellationObserved.Wait(TimeSpan.FromSeconds(1)), "Activation teardown must cancel owned background work.");
+        Assert(cancelledScheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(1)).GetAwaiter().GetResult(),
+            "Cancelled background work must be drained without leaving unobserved tasks.");
+        AssertThrows<ObjectDisposedException>(() => cancelled.RunBackground("stale", _ => Task.CompletedTask));
+
+        var failingScheduler = new PluginSchedulerHost(maximumBackgroundWorkPerPlugin: 1);
+        using var failingScope = new PluginResourceScope();
+        var logger = new TestLogger();
+        IPluginScheduler failing = failingScheduler.CreateService(manifest, failingScope, new PluginDispatcherHost(8, TimeSpan.FromSeconds(1)).CreateService(manifest, failingScope), logger);
+        var faultStarted = new ManualResetEventSlim();
+        failing.RunBackground("fault", _ => { faultStarted.Set(); return Task.FromException(new InvalidOperationException("expected background failure")); });
+        Assert(faultStarted.Wait(TimeSpan.FromSeconds(1)), "The failing background callback must begin before drain observation is tested.");
+        Assert(failingScheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(1)).GetAwaiter().GetResult(), "Faulted background work must still be observed and drained.");
+        Assert(logger.ContainsError("fault") && logger.ContainsError(manifest.Id.Value), "Unexpected background failures must remain attributed to the owning plugin logger.");
+    }
+
     private static void ChatDecoratorOwnershipDoesNotRequireAnEditor()
     {
         var manifest = new PluginManifest(new PluginId("decorator.only"), "Decorator only", new Version(1, 0), "Tests", "Decorator only", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
@@ -1905,6 +1992,21 @@ internal static class Program
             "Compatibility validation must identify the mismatched component before any assembly load is attempted.");
 
         PluginCompatibilityValidator.EnsureSupported(CreateManifest());
+    }
+
+    private static void PackageCompatibilityDiagnosesHostAndBridgeRequirements()
+    {
+        PluginManifest hostStale = new PluginManifest(new PluginId("stale.host"), "Stale host", new Version(1, 0), "Tests", "Host compatibility test", new[] { "1.4.5.6" },
+            compatibility: new PluginCompatibilityRequirements(AlacrityCompatibility.PluginSdk, 1, AlacrityCompatibility.BridgeAbi));
+        PluginCompatibilityException host = AssertThrows<PluginCompatibilityException>(() => PluginCompatibilityValidator.EnsureSupported(hostStale));
+        Assert(host.Component == "Core host" && host.Expected == 1 && host.Actual == AlacrityCompatibility.Host,
+            "Host compatibility validation must identify a stale Core participant before assembly load.");
+
+        PluginManifest bridgeStale = new PluginManifest(new PluginId("stale.bridge"), "Stale bridge", new Version(1, 0), "Tests", "Bridge compatibility test", new[] { "1.4.5.6" },
+            compatibility: new PluginCompatibilityRequirements(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, 1));
+        PluginCompatibilityException bridge = AssertThrows<PluginCompatibilityException>(() => PluginCompatibilityValidator.EnsureSupported(bridgeStale));
+        Assert(bridge.Component == "Terraria bridge ABI" && bridge.Expected == 1 && bridge.Actual == AlacrityCompatibility.BridgeAbi,
+            "Bridge compatibility validation must identify a stale ABI participant before assembly load.");
     }
 
     private static void IncompatibleGameVersionNeverLoadsAssembly()
@@ -2622,10 +2724,26 @@ internal static class Program
 
     private sealed class TestLogger : IPluginLogger
     {
+        private readonly object gate = new object();
+        private readonly List<string> errors = new List<string>();
         public void Debug(string message) { }
         public void Info(string message) { }
         public void Warn(string message) { }
-        public void Error(string message, Exception? exception = null) { }
+        public void Error(string message, Exception? exception = null) { lock (gate) errors.Add(message); }
+        public bool ContainsError(string text) { lock (gate) return errors.Any(error => error.Contains(text)); }
+    }
+
+    private sealed class ManualMonotonicClock : IMonotonicClock
+    {
+        private long timestamp;
+
+        public ManualMonotonicClock(long frequency) => Frequency = frequency;
+
+        public long Frequency { get; }
+
+        public long GetTimestamp() => Interlocked.Read(ref timestamp);
+
+        public void Advance(long amount) => Interlocked.Add(ref timestamp, amount);
     }
 
     private interface IExampleService { }
