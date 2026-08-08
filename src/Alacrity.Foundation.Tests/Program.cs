@@ -124,6 +124,9 @@ internal static class Program
             SchedulerUsesDispatcherAndActivationCleanup();
             SchedulerElapsedWorkUsesMonotonicClockUnits();
             BackgroundWorkIsBoundedAndActivationOwned();
+            TransientSchedulerAndDispatcherResourcesAreReleased();
+            LifecycleDrainsActivationBackgroundWorkBeforeDisableAndReenable();
+            AsyncLifecycleDrainsActivationBackgroundWorkBeforeDisable();
             ChatDecoratorOwnershipDoesNotRequireAnEditor();
             DistinctTypedSettingDefinitionsAreRejected();
             PackageCatalogReadsManifestWithoutAssemblyLoad();
@@ -1945,6 +1948,57 @@ internal static class Program
         Assert(logger.ContainsError("fault") && logger.ContainsError(manifest.Id.Value), "Unexpected background failures must remain attributed to the owning plugin logger.");
     }
 
+    private static void TransientSchedulerAndDispatcherResourcesAreReleased()
+    {
+        var dispatcher = new PluginDispatcherHost(128, TimeSpan.FromSeconds(1), 128, 128);
+        var scheduler = new PluginSchedulerHost(128, 8);
+        using var scope = new PluginResourceScope();
+        PluginManifest manifest = CreateManifest();
+        IPluginDispatcher dispatch = dispatcher.CreateService(manifest, scope, new TestLogger());
+        IPluginScheduler service = scheduler.CreateService(manifest, scope, dispatch, new TestLogger());
+        int baseline = scope.ResourceCount;
+        int callbacks = 0;
+        for (int index = 0; index < 64; index++) service.NextUpdate("transient-" + index, () => callbacks++);
+        scheduler.Tick(1);
+        dispatcher.Drain();
+        Assert(callbacks == 64, "Every owned one-shot scheduled callback must execute exactly once.");
+        Assert(scope.ResourceCount == baseline, "Completed scheduler and dispatcher registrations must release their scope ownership instead of accumulating for the activation lifetime.");
+    }
+
+    private static void LifecycleDrainsActivationBackgroundWorkBeforeDisableAndReenable()
+    {
+        using var host = new FakePluginHost();
+        PluginManifest manifest = CreateBundledTestManifest("activation.background.sync");
+        var plugin = new ActivationBackgroundPlugin();
+        using var controller = new PluginLifecycleController(plugin, host.Create(manifest), () => host.Create(manifest), TimeSpan.FromSeconds(1));
+        controller.Validate();
+        controller.Initialize();
+        controller.Enable();
+        Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The activation-owned background callback must start before disable is tested.");
+        controller.Disable();
+        Assert(plugin.DisableObservedDrain, "Synchronous disable must not invoke the plugin callback while its activation background work remains active.");
+
+        controller.Initialize();
+        controller.Enable();
+        Assert(plugin.StartCount == 2, "Re-enable must create a fresh activation that admits new background work independently.");
+        controller.Disable();
+        Assert(plugin.DisableCount == 2, "Each activation disable must drain only that activation's background work.");
+    }
+
+    private static void AsyncLifecycleDrainsActivationBackgroundWorkBeforeDisable()
+    {
+        using var host = new FakePluginHost();
+        PluginManifest manifest = CreateBundledTestManifest("activation.background.async");
+        var plugin = new AsyncActivationBackgroundPlugin();
+        using var controller = new PluginLifecycleController(plugin, host.Create(manifest), () => host.Create(manifest), TimeSpan.FromSeconds(1));
+        controller.Validate();
+        controller.InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        controller.EnableAsync(CancellationToken.None).GetAwaiter().GetResult();
+        Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The async activation-owned background callback must start before disable is tested.");
+        controller.DisableAsync(CancellationToken.None).GetAwaiter().GetResult();
+        Assert(plugin.DisableObservedDrain, "Asynchronous disable must drain the activation background work before its lifecycle callback.");
+    }
+
     private static void ChatDecoratorOwnershipDoesNotRequireAnEditor()
     {
         var manifest = new PluginManifest(new PluginId("decorator.only"), "Decorator only", new Version(1, 0), "Tests", "Decorator only", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface, permissions: PluginPermission.DrawUserInterface);
@@ -2317,6 +2371,69 @@ internal static class Program
     {
         public static int Counter;
         public static void Draw(int value) { Counter = value; }
+    }
+
+    private sealed class ActivationBackgroundPlugin : IAlacrityPlugin
+    {
+        private readonly ManualResetEventSlim started = new ManualResetEventSlim();
+        private readonly ManualResetEventSlim finished = new ManualResetEventSlim();
+
+        public ManualResetEventSlim Started => started;
+        public int StartCount { get; private set; }
+        public int DisableCount { get; private set; }
+        public bool DisableObservedDrain { get; private set; }
+
+        public void Initialize(IPluginContext context)
+        {
+            StartCount++;
+            context.Scheduler.RunBackground("activation-background", async token =>
+            {
+                started.Set();
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false); }
+                finally { finished.Set(); }
+            });
+        }
+
+        public void Enable() { }
+
+        public void Disable()
+        {
+            DisableCount++;
+            DisableObservedDrain = finished.IsSet;
+            started.Reset();
+            finished.Reset();
+        }
+
+        public void Shutdown() { }
+    }
+
+    private sealed class AsyncActivationBackgroundPlugin : IAsyncAlacrityPlugin
+    {
+        private readonly ManualResetEventSlim finished = new ManualResetEventSlim();
+
+        public ManualResetEventSlim Started { get; } = new ManualResetEventSlim();
+        public bool DisableObservedDrain { get; private set; }
+
+        public Task InitializeAsync(IPluginContext context, CancellationToken cancellationToken)
+        {
+            context.Scheduler.RunBackground("async-activation-background", async token =>
+            {
+                Started.Set();
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false); }
+                finally { finished.Set(); }
+            });
+            return Task.CompletedTask;
+        }
+
+        public Task EnableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task DisableAsync(CancellationToken cancellationToken)
+        {
+            DisableObservedDrain = finished.IsSet;
+            return Task.CompletedTask;
+        }
+
+        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class TestContext : IPluginContext

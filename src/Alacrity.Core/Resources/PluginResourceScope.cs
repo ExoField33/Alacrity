@@ -26,6 +26,12 @@ public sealed class PluginResourceScope : IPluginResourceScope
         get { lock (gate) return state; }
     }
 
+    /// <summary>Test diagnostic for retained activation resources.</summary>
+    internal int ResourceCount
+    {
+        get { lock (gate) return resources.Count; }
+    }
+
     /// <summary>Failures from the most recently completed release operation.</summary>
     public IReadOnlyList<PluginResourceReleaseFailure> LastReleaseFailures
     {

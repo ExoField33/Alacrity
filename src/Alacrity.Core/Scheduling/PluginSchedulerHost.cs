@@ -48,9 +48,19 @@ public sealed class PluginSchedulerHost
         if (logger == null) throw new ArgumentNullException(nameof(logger));
         ThrowIfStopping();
         var guard = new ScopeGuard();
-        try { resources.Own("scheduler", PluginResourceKind.BackgroundTask, guard); }
-        catch { guard.Dispose(); throw; }
-        return new ScopedScheduler(this, manifest.Id, resources, dispatcher, logger, guard);
+        var activation = new BackgroundActivation();
+        try
+        {
+            resources.Own("scheduler-background-activation", PluginResourceKind.BackgroundTask, activation);
+            resources.Own("scheduler", PluginResourceKind.BackgroundTask, guard);
+        }
+        catch
+        {
+            guard.Dispose();
+            activation.Dispose();
+            throw;
+        }
+        return new ScopedScheduler(this, manifest.Id, resources, dispatcher, logger, guard, activation);
     }
 
     /// <summary>Stops future scheduling and background admission during host shutdown.</summary>
@@ -66,6 +76,31 @@ public sealed class PluginSchedulerHost
         StopAcceptingWork();
         BackgroundRegistration[] active;
         lock (gate) active = background.ToArray();
+        for (int index = 0; index < active.Length; index++) active[index].RequestCancellation();
+        if (active.Length == 0) return true;
+
+        var completions = new Task[active.Length];
+        for (int index = 0; index < active.Length; index++) completions[index] = active[index].Completion;
+        Task all = Task.WhenAll(completions);
+        using var timeoutCancellation = new CancellationTokenSource();
+        Task timeoutTask = Task.Delay(timeout, timeoutCancellation.Token);
+        if (await Task.WhenAny(all, timeoutTask).ConfigureAwait(false) != all)
+            return false;
+        timeoutCancellation.Cancel();
+        await all.ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<bool> DrainActivationBackgroundWorkAsync(BackgroundActivation activation, TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+        activation.StopAcceptingWork();
+        BackgroundRegistration[] active;
+        lock (gate)
+        {
+            active = background.FindAll(registration => ReferenceEquals(registration.Activation, activation)).ToArray();
+        }
+
         for (int index = 0; index < active.Length; index++) active[index].RequestCancellation();
         if (active.Length == 0) return true;
 
@@ -156,39 +191,60 @@ public sealed class PluginSchedulerHost
         ThrowIfUnavailable(guard);
         long elapsedDelayTicks = elapsedDelay.HasValue ? MonotonicClockMath.ToClockTicks(elapsedDelay.Value, clock.Frequency) : 0;
         var work = new ScheduledWork(this, owner, name, dispatcher, logger, guard, updateDelay, elapsedDelayTicks, repeat, callback, clock.GetTimestamp(), 0);
-        lock (gate)
+        try
         {
-            ThrowIfUnavailable(guard);
-            int owned = 0;
-            for (int index = 0; index < scheduled.Count; index++) if (scheduled[index].Owner == owner && !scheduled[index].IsReleased) owned++;
-            if (owned >= maximumScheduledWorkPerPlugin) throw new InvalidOperationException("The scheduled-work limit was reached for plugin '" + owner.Value + "'.");
-            work.SetInitialUpdateDue(latestUpdateVersion);
-            scheduled.Add(work);
+            IPluginResourceHandle ownership = resources.Own("scheduled:" + name, PluginResourceKind.BackgroundTask, work);
+            work.AttachOwnership(ownership);
         }
-        try { resources.Own("scheduled:" + name, PluginResourceKind.BackgroundTask, work); }
+        catch { work.Dispose(); throw; }
+
+        try
+        {
+            lock (gate)
+            {
+                ThrowIfUnavailable(guard);
+                if (work.IsReleased) throw new ObjectDisposedException("IPluginScheduler", "The owning plugin activation has ended.");
+                int owned = 0;
+                for (int index = 0; index < scheduled.Count; index++) if (scheduled[index].Owner == owner && !scheduled[index].IsReleased) owned++;
+                if (owned >= maximumScheduledWorkPerPlugin) throw new InvalidOperationException("The scheduled-work limit was reached for plugin '" + owner.Value + "'.");
+                work.SetInitialUpdateDue(latestUpdateVersion);
+                scheduled.Add(work);
+            }
+        }
         catch { work.Dispose(); throw; }
         return work;
     }
 
-    private IPluginRegistration StartBackground(PluginId owner, IPluginResourceScope resources, IPluginLogger logger, ScopeGuard guard, string name, Func<CancellationToken, Task> callback)
+    private IPluginRegistration StartBackground(PluginId owner, IPluginResourceScope resources, IPluginLogger logger, ScopeGuard guard, BackgroundActivation activation, string name, Func<CancellationToken, Task> callback)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A diagnostic name is required.", nameof(name));
         if (callback == null) throw new ArgumentNullException(nameof(callback));
         ThrowIfUnavailable(guard);
-        BackgroundRegistration registration;
-        lock (gate)
+        if (activation.IsStopped) throw new ObjectDisposedException("IPluginScheduler", "The owning plugin activation has ended.");
+        var registration = new BackgroundRegistration(this, owner, name, logger, guard, activation, callback);
+        try
         {
-            ThrowIfUnavailable(guard);
-            backgroundCounts.TryGetValue(owner, out int activeCount);
-            if (activeCount >= maximumBackgroundWorkPerPlugin)
-                throw new InvalidOperationException("The background-work limit was reached for plugin '" + owner.Value + "'.");
-            registration = new BackgroundRegistration(this, owner, name, logger, guard, callback);
-            background.Add(registration);
-            backgroundCounts[owner] = activeCount + 1;
+            IPluginResourceHandle ownership = resources.Own("background:" + name, PluginResourceKind.BackgroundTask, registration);
+            registration.AttachOwnership(ownership);
         }
-        try { resources.Own("background:" + name, PluginResourceKind.BackgroundTask, registration); }
         catch { registration.Dispose(); throw; }
-        registration.Start();
+
+        try
+        {
+            lock (gate)
+            {
+                ThrowIfUnavailable(guard);
+                if (activation.IsStopped || registration.IsReleased)
+                    throw new ObjectDisposedException("IPluginScheduler", "The owning plugin activation has ended.");
+                backgroundCounts.TryGetValue(owner, out int activeCount);
+                if (activeCount >= maximumBackgroundWorkPerPlugin)
+                    throw new InvalidOperationException("The background-work limit was reached for plugin '" + owner.Value + "'.");
+                background.Add(registration);
+                backgroundCounts[owner] = activeCount + 1;
+            }
+            registration.Start();
+        }
+        catch { registration.Dispose(); throw; }
         return registration;
     }
 
@@ -226,16 +282,17 @@ public sealed class PluginSchedulerHost
         if (Volatile.Read(ref stopping) != 0) throw new ObjectDisposedException("PluginSchedulerHost", "The scheduler is shutting down.");
     }
 
-    private sealed class ScopedScheduler : IPluginScheduler
+    private sealed class ScopedScheduler : IPluginScheduler, IActivationBackgroundWork
     {
-        private readonly PluginSchedulerHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly IPluginDispatcher dispatcher; private readonly IPluginLogger logger; private readonly ScopeGuard guard;
-        public ScopedScheduler(PluginSchedulerHost host, PluginId owner, IPluginResourceScope resources, IPluginDispatcher dispatcher, IPluginLogger logger, ScopeGuard guard) { this.host = host; this.owner = owner; this.resources = resources; this.dispatcher = dispatcher; this.logger = logger; this.guard = guard; }
+        private readonly PluginSchedulerHost host; private readonly PluginId owner; private readonly IPluginResourceScope resources; private readonly IPluginDispatcher dispatcher; private readonly IPluginLogger logger; private readonly ScopeGuard guard; private readonly BackgroundActivation activation;
+        public ScopedScheduler(PluginSchedulerHost host, PluginId owner, IPluginResourceScope resources, IPluginDispatcher dispatcher, IPluginLogger logger, ScopeGuard guard, BackgroundActivation activation) { this.host = host; this.owner = owner; this.resources = resources; this.dispatcher = dispatcher; this.logger = logger; this.guard = guard; this.activation = activation; }
         public IPluginRegistration NextUpdate(string name, Action callback) => host.Schedule(owner, resources, dispatcher, logger, guard, name, 1, null, false, callback);
         public IPluginRegistration AfterUpdates(string name, uint updateCount, Action callback) { if (updateCount == 0) throw new ArgumentOutOfRangeException(nameof(updateCount)); return host.Schedule(owner, resources, dispatcher, logger, guard, name, updateCount, null, false, callback); }
         public IPluginRegistration EveryUpdates(string name, uint updateInterval, Action callback) { if (updateInterval == 0) throw new ArgumentOutOfRangeException(nameof(updateInterval)); return host.Schedule(owner, resources, dispatcher, logger, guard, name, updateInterval, null, true, callback); }
         public IPluginRegistration After(string name, TimeSpan delay, Action callback) { if (delay <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(delay)); return host.Schedule(owner, resources, dispatcher, logger, guard, name, null, delay, false, callback); }
         public IPluginRegistration Every(string name, TimeSpan interval, Action callback) { if (interval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(interval)); return host.Schedule(owner, resources, dispatcher, logger, guard, name, null, interval, true, callback); }
-        public IPluginRegistration RunBackground(string name, Func<CancellationToken, Task> callback) => host.StartBackground(owner, resources, logger, guard, name, callback);
+        public IPluginRegistration RunBackground(string name, Func<CancellationToken, Task> callback) => host.StartBackground(owner, resources, logger, guard, activation, name, callback);
+        public Task<bool> StopAndDrainBackgroundWorkAsync(TimeSpan timeout) => host.DrainActivationBackgroundWorkAsync(activation, timeout);
     }
 
     private sealed class ScopeGuard : IDisposable
@@ -249,31 +306,81 @@ public sealed class PluginSchedulerHost
         public void Dispose() { lock (gate) released = true; }
     }
 
+    /// <summary>Separates one context's background admission from the process-wide scheduler.</summary>
+    private sealed class BackgroundActivation : IDisposable
+    {
+        private int stopped;
+
+        public bool IsStopped => Volatile.Read(ref stopped) != 0;
+
+        public void StopAcceptingWork() => Interlocked.Exchange(ref stopped, 1);
+
+        public void Dispose() => StopAcceptingWork();
+    }
+
     private sealed class ScheduledWork : IPluginRegistration
     {
         private readonly PluginSchedulerHost host;
+        private readonly object ownershipGate = new object();
         private int released;
+        private IPluginResourceHandle? ownership;
         private long dueElapsedTicks;
         private uint dueUpdate;
         public ScheduledWork(PluginSchedulerHost host, PluginId owner, string name, IPluginDispatcher dispatcher, IPluginLogger logger, ScopeGuard guard, uint? updateDelay, long elapsedDelayTicks, bool repeat, Action callback, long now, uint initialUpdateVersion)
         { this.host = host; Owner = owner; Name = name; Dispatcher = dispatcher; Logger = logger; Guard = guard; UpdateDelay = updateDelay; ElapsedDelayTicks = elapsedDelayTicks; Repeat = repeat; Callback = callback; dueUpdate = unchecked(initialUpdateVersion + updateDelay.GetValueOrDefault()); dueElapsedTicks = updateDelay.HasValue ? long.MaxValue : MonotonicClockMath.SaturatingAdd(now, elapsedDelayTicks); }
         public PluginId Owner { get; } public string Name { get; } public IPluginDispatcher Dispatcher { get; } public IPluginLogger Logger { get; } public ScopeGuard Guard { get; } public uint? UpdateDelay { get; } public long ElapsedDelayTicks { get; } public bool Repeat { get; } public Action Callback { get; } public bool InFlight { get; set; }
         public bool IsReleased => Volatile.Read(ref released) != 0;
+        internal void AttachOwnership(IPluginResourceHandle resource)
+        {
+            if (resource == null) throw new ArgumentNullException(nameof(resource));
+            bool releaseNow;
+            lock (ownershipGate)
+            {
+                releaseNow = IsReleased;
+                if (!releaseNow) ownership = resource;
+            }
+            if (releaseNow) resource.Dispose();
+        }
         public bool IsDue(uint updateVersion, long elapsedTicks) => UpdateDelay.HasValue ? updateVersion >= dueUpdate : elapsedTicks >= dueElapsedTicks;
         public void SetInitialUpdateDue(uint updateVersion) { if (UpdateDelay.HasValue) dueUpdate = unchecked(updateVersion + UpdateDelay.Value); }
         public void ScheduleNext(uint updateVersion, long elapsedTicks) { if (UpdateDelay.HasValue) dueUpdate = unchecked(updateVersion + UpdateDelay.Value); else dueElapsedTicks = MonotonicClockMath.SaturatingAdd(elapsedTicks, ElapsedDelayTicks); }
-        public void Dispose() { if (Interlocked.Exchange(ref released, 1) == 0) host.Remove(this); }
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            host.Remove(this);
+            ReleaseOwnership();
+        }
+
+        private void ReleaseOwnership()
+        {
+            IPluginResourceHandle? resource;
+            lock (ownershipGate) { resource = ownership; ownership = null; }
+            resource?.Dispose();
+        }
     }
 
     private sealed class BackgroundRegistration : IPluginRegistration
     {
-        private readonly PluginSchedulerHost host; private readonly IPluginLogger logger; private readonly ScopeGuard guard; private readonly Func<CancellationToken, Task> callback; private readonly CancellationTokenSource cancellation = new CancellationTokenSource(); private readonly object startGate = new object();
-        private Task? task; private int released; private int completed;
-        internal BackgroundRegistration(PluginSchedulerHost host, PluginId owner, string name, IPluginLogger logger, ScopeGuard guard, Func<CancellationToken, Task> callback) { this.host = host; Owner = owner; Name = name; this.logger = logger; this.guard = guard; this.callback = callback; }
+        private readonly PluginSchedulerHost host; private readonly IPluginLogger logger; private readonly ScopeGuard guard; private readonly BackgroundActivation activation; private readonly Func<CancellationToken, Task> callback; private readonly CancellationTokenSource cancellation = new CancellationTokenSource(); private readonly object startGate = new object(); private readonly object ownershipGate = new object();
+        private Task? task; private int released; private int completed; private IPluginResourceHandle? ownership;
+        internal BackgroundRegistration(PluginSchedulerHost host, PluginId owner, string name, IPluginLogger logger, ScopeGuard guard, BackgroundActivation activation, Func<CancellationToken, Task> callback) { this.host = host; Owner = owner; Name = name; this.logger = logger; this.guard = guard; this.activation = activation; this.callback = callback; }
         internal PluginId Owner { get; }
+        internal BackgroundActivation Activation => activation;
         public string Name { get; }
         public bool IsReleased => Volatile.Read(ref released) != 0;
         internal Task Completion { get { lock (startGate) return task ?? Task.CompletedTask; } }
+
+        internal void AttachOwnership(IPluginResourceHandle resource)
+        {
+            if (resource == null) throw new ArgumentNullException(nameof(resource));
+            bool releaseNow;
+            lock (ownershipGate)
+            {
+                releaseNow = IsReleased;
+                if (!releaseNow) ownership = resource;
+            }
+            if (releaseNow) resource.Dispose();
+        }
 
         internal void Start()
         {
@@ -281,7 +388,7 @@ public sealed class PluginSchedulerHost
             lock (startGate)
             {
                 if (task != null) return;
-                if (IsReleased || guard.IsReleased) completeWithoutStarting = true;
+                if (IsReleased || guard.IsReleased || activation.IsStopped) completeWithoutStarting = true;
                 else task = Task.Run(RunAsync);
             }
             if (completeWithoutStarting) Complete();
@@ -297,7 +404,7 @@ public sealed class PluginSchedulerHost
             bool entered = guard.TryEnterCallback();
             try
             {
-                if (!entered || IsReleased || cancellation.IsCancellationRequested) return;
+                if (!entered || IsReleased || activation.IsStopped || cancellation.IsCancellationRequested) return;
                 await callback(cancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested || guard.IsReleased)
@@ -319,6 +426,7 @@ public sealed class PluginSchedulerHost
         {
             if (Interlocked.Exchange(ref released, 1) != 0) return;
             RequestCancellation();
+            ReleaseOwnership();
             bool completeWithoutStarting;
             lock (startGate) completeWithoutStarting = task == null;
             if (completeWithoutStarting) Complete();
@@ -328,7 +436,15 @@ public sealed class PluginSchedulerHost
         {
             if (Interlocked.Exchange(ref completed, 1) != 0) return;
             host.CompleteBackground(this);
+            ReleaseOwnership();
             cancellation.Dispose();
+        }
+
+        private void ReleaseOwnership()
+        {
+            IPluginResourceHandle? resource;
+            lock (ownershipGate) { resource = ownership; ownership = null; }
+            resource?.Dispose();
         }
     }
 }

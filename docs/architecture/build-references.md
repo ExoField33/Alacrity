@@ -13,8 +13,17 @@ Provide every external reference through a local `Directory.Build.props.user` im
 </Project>
 ```
 
+Build the managed runtime through the staging project. It rebuilds the core bridge as
+`Alacrity.PluginUiCoreBridge.dll`, the injected facade, and the bootstrap runtime, then stages
+the precise DLL set the client loads. The default destination is the client directory; use
+`AlacrityRuntimeStageDirectory` for a disposable validation destination.
+
 ```powershell
-dotnet build src\Alacrity.TerrariaIntegration\Alacrity.TerrariaIntegration.csproj -c Release -p:AlacrityTerrariaAssemblyPath=C:\Games\Terraria\Terraria.exe -p:AlacrityXnaReferenceDirectory=C:\Windows\Microsoft.NET\assembly\GAC_32
+dotnet build src\Alacrity.TerrariaIntegration\Alacrity.RuntimeStaging.csproj -c Release -p:AlacrityTerrariaAssemblyPath=C:\Games\Terraria\Terraria.exe -p:AlacrityXnaReferenceDirectory=C:\Windows\Microsoft.NET\assembly\GAC_32
+```
+
+```powershell
+dotnet build src\Alacrity.TerrariaIntegration\Alacrity.RuntimeStaging.csproj -c Release -p:AlacrityTerrariaAssemblyPath=C:\Games\Terraria\Terraria.exe -p:AlacrityXnaReferenceDirectory=C:\Windows\Microsoft.NET\assembly\GAC_32 -p:AlacrityRuntimeStageDirectory=C:\Temp\Alacrity-stage
 ```
 
 `Directory.Build.targets` validates every required external reference before resolving assemblies and reports whether a required property was not configured or its configured path is missing.

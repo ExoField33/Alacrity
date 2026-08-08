@@ -51,6 +51,7 @@ internal static class Program
             VerifyPresentationStateTransitions();
             VerifyBridgeHandshakeParsing();
             VerifyBridgeAbiContract();
+            VerifyStagedRuntimeArtifacts();
             Console.WriteLine("Terraria integration tests passed." + (Array.IndexOf(args, "--graphics") >= 0 ? string.Empty : " Graphics-device validation is opt-in: rerun with --graphics in an interactive desktop session."));
             return 0;
         }
@@ -177,8 +178,8 @@ internal static class Program
 
     private static void VerifyBridgeAbiContract()
     {
-        string path = Path.Combine(Directory.GetCurrentDirectory(), "src", "Alacrity.TerrariaIntegration", "bin", "Release", "net472", "Alacrity.TerrariaIntegration.dll");
-        Assert(File.Exists(path), "The built Terraria integration assembly must be available for bridge ABI verification.");
+        string path = GetStagedBridgePath();
+        Assert(File.Exists(path), "The staged Terraria bridge assembly must be available for ABI verification.");
         Assembly bridgeAssembly = Assembly.LoadFrom(path);
         Type bridge = bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", true);
 
@@ -194,6 +195,46 @@ internal static class Program
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
         Assert((string)handshake.Invoke(null, null) == "2|2|2|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
+        Assert((string)handshake.Invoke(null, null) == string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi),
+            "The self-contained bridge handshake must remain synchronized with the SDK compatibility constants.");
+    }
+
+    private static void VerifyStagedRuntimeArtifacts()
+    {
+        string root = Directory.GetCurrentDirectory();
+        string bridgePath = GetStagedBridgePath();
+        string facadePath = Path.Combine(root, "Alacrity.PluginUiRuntime.dll");
+        string bootstrapPath = Path.Combine(root, "AlacrityBootstrapRuntime.dll");
+
+        Assert(File.Exists(bridgePath), "Runtime staging must copy the exact bridge DLL loaded by the facade.");
+        Assert(File.Exists(facadePath), "Runtime staging must copy the injected PluginUiRuntime facade.");
+        Assert(File.Exists(bootstrapPath), "Runtime staging must copy the bootstrap runtime assembly.");
+        Assert(AssemblyName.GetAssemblyName(bridgePath).Name == "Alacrity.PluginUiCoreBridge", "The staged bridge file must carry the assembly identity expected by the runtime facade.");
+
+        Assembly facade = Assembly.LoadFrom(facadePath);
+        foreach (AssemblyName reference in facade.GetReferencedAssemblies())
+        {
+            Assert(reference.Name != "Alacrity.PluginSdk", "The injected facade must not require PluginSdk just to validate a stale bridge handshake.");
+        }
+        Type facadeRuntime = facade.GetType("AlacrityTerraria.PluginUiRuntime", true);
+        FieldInfo expectedCompatibility = facadeRuntime.GetField("ExpectedBridgeCompatibility", BindingFlags.NonPublic | BindingFlags.Static);
+        object expected = expectedCompatibility.GetValue(null);
+        MethodInfo formatHandshake = expected.GetType().GetMethod("ToHandshake", BindingFlags.Public | BindingFlags.Instance);
+        Assert((string)formatHandshake.Invoke(expected, null) == "2|2|2|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
+
+        Assembly bootstrap = Assembly.LoadFrom(bootstrapPath);
+        Type runtime = bootstrap.GetType("AlacrityTerraria.AlacrityBootstrapRuntime", true);
+        MethodInfo load = runtime.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
+        PropertyInfo isReady = runtime.GetProperty("IsReady", BindingFlags.Public | BindingFlags.Static);
+        Assert(load != null, "The staged bootstrap runtime must expose Load.");
+        Assert(isReady != null, "The staged bootstrap runtime must expose IsReady.");
+        load.Invoke(null, null);
+        Assert((bool)isReady.GetValue(null), "The staged bootstrap runtime must load the staged Core and PluginSdk assemblies.");
+    }
+
+    private static string GetStagedBridgePath()
+    {
+        return Path.Combine(Directory.GetCurrentDirectory(), "bin", "Alacrity.PluginUiCoreBridge.dll");
     }
 
     private static void VerifyBridgeHandshakeParsing()

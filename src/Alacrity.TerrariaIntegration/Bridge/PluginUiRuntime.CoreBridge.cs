@@ -32,7 +32,12 @@ namespace AlacrityTerraria
     public static partial class PluginUiRuntime
     {
         /// <summary>Exact bridge ABI handshake consumed by the injected runtime before plugin bootstrap.</summary>
-        public static string GetBridgeHandshake() => new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6").ToHandshake();
+        /// <remarks>
+        /// This entry point deliberately uses only locally compiled constants and BCL string formatting.
+        /// A stale PluginSdk must not make the compatibility diagnostic itself uncallable.
+        /// Integration tests assert these values remain synchronized with <see cref="AlacrityCompatibility"/>.
+        /// </remarks>
+        public static string GetBridgeHandshake() => "2|2|2|1.4.5.6";
         private static PluginManagerRuntime _runtime;
         private static PluginManagementMenu _menu;
         private static PluginNotificationCenter _notifications;

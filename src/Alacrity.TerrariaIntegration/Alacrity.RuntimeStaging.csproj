@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AssemblyName>Alacrity.RuntimeStaging</AssemblyName>
+    <!-- Override for a disposable staging location; the default is the client directory. -->
+    <AlacrityRuntimeStageDirectory Condition="'$(AlacrityRuntimeStageDirectory)' == ''">$(MSBuildThisFileDirectory)..\..</AlacrityRuntimeStageDirectory>
+    <AlacrityPluginBridgeStageDirectory>$(AlacrityRuntimeStageDirectory)\bin</AlacrityPluginBridgeStageDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="RuntimeStagingMarker.cs" />
+    <ProjectReference Include="Alacrity.TerrariaIntegration.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="Alacrity.PluginUiRuntime.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="AlacrityBootstrapRuntime.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Target Name="StageAlacrityRuntime" AfterTargets="Build">
+    <PropertyGroup>
+      <_IntegrationOutput>$(MSBuildThisFileDirectory)bin\$(Configuration)\net472\Alacrity.PluginUiCoreBridge.dll</_IntegrationOutput>
+      <_FacadeOutput>$(MSBuildThisFileDirectory)bin\$(Configuration)\net472\Alacrity.PluginUiRuntime.dll</_FacadeOutput>
+      <_BootstrapOutput>$(MSBuildThisFileDirectory)bin\$(Configuration)\net472\AlacrityBootstrapRuntime.dll</_BootstrapOutput>
+      <_SdkOutput>$(MSBuildThisFileDirectory)..\Alacrity.PluginSdk\bin\$(Configuration)\netstandard2.0\Alacrity.PluginSdk.dll</_SdkOutput>
+      <_CoreOutput>$(MSBuildThisFileDirectory)..\Alacrity.Core\bin\$(Configuration)\netstandard2.0\Alacrity.Core.dll</_CoreOutput>
+      <_AppOutput>$(MSBuildThisFileDirectory)..\Alacrity.App\bin\$(Configuration)\netstandard2.0\Alacrity.App.dll</_AppOutput>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_IntegrationOutput)') Or !Exists('$(_FacadeOutput)') Or !Exists('$(_BootstrapOutput)') Or !Exists('$(_SdkOutput)') Or !Exists('$(_CoreOutput)') Or !Exists('$(_AppOutput)')" Text="Alacrity runtime staging requires all managed bridge outputs. Build failed before staging completed." />
+    <MakeDir Directories="$(AlacrityRuntimeStageDirectory);$(AlacrityPluginBridgeStageDirectory)" />
+    <Delete Files="$(AlacrityPluginBridgeStageDirectory)\Alacrity.PluginUiCoreBridge.dll;$(AlacrityRuntimeStageDirectory)\Alacrity.PluginUiRuntime.dll;$(AlacrityRuntimeStageDirectory)\AlacrityBootstrapRuntime.dll" />
+    <ItemGroup>
+      <_BridgeFiles Include="$(_IntegrationOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
+      <_RootFiles Include="$(_IntegrationOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput);$(_FacadeOutput);$(_BootstrapOutput)" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_BridgeFiles)" DestinationFolder="$(AlacrityPluginBridgeStageDirectory)" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="@(_RootFiles)" DestinationFolder="$(AlacrityRuntimeStageDirectory)" SkipUnchangedFiles="false" />
+  </Target>
+</Project>

@@ -16,7 +16,7 @@
     <ProjectReference Include="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\Alacrity.TerrariaIntegration\BridgeReflectionContracts.cs" Link="BridgeReflectionContracts.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Bridge\BridgeReflectionResolver.cs" Link="BridgeReflectionResolver.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\TileStorage.cs" Link="TileStorage.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Projection\TerrariaWorldProjectionMath.cs" Link="TerrariaWorldProjectionMath.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Projection\TerrariaWorldProjectionVerifier.cs" Link="TerrariaWorldProjectionVerifier.cs" />

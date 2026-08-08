@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
     <ProjectReference Include="..\Alacrity.Core\Alacrity.Core.csproj" />
+    <ProjectReference Include="..\Alacrity.TerrariaIntegration\Alacrity.RuntimeStaging.csproj" ReferenceOutputAssembly="false" />
     <Reference Include="Terraria"><HintPath>$(AlacrityTerrariaAssemblyPath)</HintPath><Private>true</Private></Reference>
     <!-- Test-only copies allow the executable harness to exercise a real GraphicsDevice without
          changing production's external-reference deployment policy. -->

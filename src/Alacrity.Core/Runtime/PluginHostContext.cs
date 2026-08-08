@@ -1,10 +1,11 @@
 using System;
+using System.Threading.Tasks;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
 
 /// <summary>Concrete host context assembled from verified package metadata and scope-owned services.</summary>
-public sealed class PluginHostContext : IPluginContext
+public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWorkContext
 {
     internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginDispatcher dispatcher, IPluginScheduler scheduler, IPluginNotificationService notifications, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginOverlayService overlays, IPluginHudService hud, IPluginUserInteractionService userInteraction, ITerrariaServices terraria, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
     {
@@ -45,6 +46,13 @@ public sealed class PluginHostContext : IPluginContext
     public ITerrariaServices Terraria { get; }
     public IPluginServiceRegistry Services { get; }
     public IMultiplayerSession Multiplayer { get; }
+
+    Task<bool> IActivationBackgroundWorkContext.StopAndDrainBackgroundWorkAsync(TimeSpan timeout)
+    {
+        return Scheduler is IActivationBackgroundWork activation
+            ? activation.StopAndDrainBackgroundWorkAsync(timeout)
+            : Task.FromResult(true);
+    }
 }
 
 /// <summary>Host factory that creates exactly one resource scope and service set for a plugin enable cycle.</summary>

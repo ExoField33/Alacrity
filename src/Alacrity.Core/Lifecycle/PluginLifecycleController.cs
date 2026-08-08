@@ -156,6 +156,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
 
+        var cleanupFailures = DrainBackgroundWork();
         Exception? callbackFailure = null;
         try
         {
@@ -166,7 +167,7 @@ public sealed class PluginLifecycleController : IDisposable
             callbackFailure = exception;
         }
 
-        var cleanupFailures = ForceReleaseResources();
+        cleanupFailures.AddRange(ForceReleaseResources());
         initialized = false;
         State = callbackFailure == null && cleanupFailures.Count == 0
             ? PluginLifecycleState.Disabled
@@ -179,7 +180,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         EnsureSynchronousLifecycle();
         EnsureNotShutdown();
-        var cleanupFailures = new List<PluginCleanupFailure>();
+        var cleanupFailures = DrainBackgroundWork();
         Exception? callbackFailure = null;
         State = PluginLifecycleState.Uninstalling;
 
@@ -210,7 +211,7 @@ public sealed class PluginLifecycleController : IDisposable
             return;
         }
 
-        var cleanupFailures = new List<PluginCleanupFailure>();
+        var cleanupFailures = DrainBackgroundWork();
         Exception? callbackFailure = null;
         try
         {
@@ -245,6 +246,41 @@ public sealed class PluginLifecycleController : IDisposable
         catch (Exception exception)
         {
             return new List<PluginCleanupFailure> { new PluginCleanupFailure("Release resources", exception) };
+        }
+    }
+
+    /// <summary>
+    /// Stops the current activation's background admission before lifecycle callbacks can begin
+    /// final teardown. Old work is bounded and observed; a timeout is retained as cleanup
+    /// diagnostics rather than allowing a non-cooperative plugin to hang Terraria indefinitely.
+    /// </summary>
+    private List<PluginCleanupFailure> DrainBackgroundWork()
+    {
+        try
+        {
+            if (context is not IActivationBackgroundWorkContext activation ||
+                activation.StopAndDrainBackgroundWorkAsync(asyncCallbackTimeout).GetAwaiter().GetResult())
+                return new List<PluginCleanupFailure>();
+            return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", new TimeoutException("Activation background work did not stop before the host timeout.")) };
+        }
+        catch (Exception exception)
+        {
+            return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", exception) };
+        }
+    }
+
+    private async Task<List<PluginCleanupFailure>> DrainBackgroundWorkAsync()
+    {
+        try
+        {
+            if (context is not IActivationBackgroundWorkContext activation ||
+                await activation.StopAndDrainBackgroundWorkAsync(asyncCallbackTimeout).ConfigureAwait(false))
+                return new List<PluginCleanupFailure>();
+            return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", new TimeoutException("Activation background work did not stop before the host timeout.")) };
+        }
+        catch (Exception exception)
+        {
+            return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", exception) };
         }
     }
 
@@ -340,11 +376,12 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureNotShutdown();
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
+        var cleanupFailures = await DrainBackgroundWorkAsync().ConfigureAwait(false);
         Exception? callbackFailure = null;
         try { await InvokeAsync("Disable", token => asyncPlugin!.DisableAsync(token), cancellationToken).ConfigureAwait(false); }
         catch (Exception exception) { callbackFailure = exception; }
 
-        var cleanupFailures = ForceReleaseResources();
+        cleanupFailures.AddRange(ForceReleaseResources());
         initialized = false;
         State = callbackFailure == null && cleanupFailures.Count == 0 ? PluginLifecycleState.Disabled : PluginLifecycleState.Faulted;
         Record("Disable", callbackFailure, cleanupFailures);
@@ -356,7 +393,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         if (!UsesAsyncLifecycle) { Dispose(); return; }
         if (shutdown) return;
-        var cleanupFailures = new List<PluginCleanupFailure>();
+        var cleanupFailures = await DrainBackgroundWorkAsync().ConfigureAwait(false);
         Exception? callbackFailure = null;
         try
         {
@@ -393,7 +430,7 @@ public sealed class PluginLifecycleController : IDisposable
         if (!UsesAsyncLifecycle) { Uninstall(); return; }
         EnsureNotShutdown();
         State = PluginLifecycleState.Uninstalling;
-        var cleanupFailures = new List<PluginCleanupFailure>();
+        var cleanupFailures = await DrainBackgroundWorkAsync().ConfigureAwait(false);
         Exception? callbackFailure = null;
         try
         {

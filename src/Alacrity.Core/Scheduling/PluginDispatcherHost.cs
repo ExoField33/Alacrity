@@ -82,11 +82,15 @@ public sealed class PluginDispatcherHost
         if (guard.IsReleased) throw new ObjectDisposedException("IPluginDispatcher", "The owning plugin scope has been released.");
         ReserveQueueSlot(owner);
         var registration = new WorkRegistration();
-        try { resources.Own("dispatcher-work", PluginResourceKind.BackgroundTask, registration); }
+        try
+        {
+            IPluginResourceHandle ownership = resources.Own("dispatcher-work", PluginResourceKind.BackgroundTask, registration);
+            registration.AttachOwnership(ownership);
+        }
         catch { registration.Dispose(); ReleaseQueueSlot(owner); throw; }
         lock (gate)
         {
-            if (guard.IsReleased)
+            if (guard.IsReleased || registration.IsReleased)
             {
                 registration.Dispose();
                 ReleaseQueueSlotUnderLock(owner);
@@ -158,6 +162,34 @@ public sealed class PluginDispatcherHost
     }
 
     private sealed class WorkItem { public WorkItem(Action callback, WorkRegistration registration, ScopeGuard scope, PluginId owner, IPluginLogger? logger) { Callback = callback; Registration = registration; Scope = scope; Owner = owner; Logger = logger; } public Action Callback { get; } public WorkRegistration Registration { get; } public ScopeGuard Scope { get; } public PluginId Owner { get; } public IPluginLogger? Logger { get; } public string Name => Registration.Name; }
-    private sealed class WorkRegistration : IPluginRegistration { private int released; public string Name => "dispatcher-work"; public bool IsReleased => Volatile.Read(ref released) != 0; public void Dispose() { Interlocked.Exchange(ref released, 1); } }
+    private sealed class WorkRegistration : IPluginRegistration
+    {
+        private readonly object ownershipGate = new object();
+        private int released;
+        private IPluginResourceHandle? ownership;
+
+        public string Name => "dispatcher-work";
+        public bool IsReleased => Volatile.Read(ref released) != 0;
+
+        internal void AttachOwnership(IPluginResourceHandle resource)
+        {
+            if (resource == null) throw new ArgumentNullException(nameof(resource));
+            bool releaseNow;
+            lock (ownershipGate)
+            {
+                releaseNow = IsReleased;
+                if (!releaseNow) ownership = resource;
+            }
+            if (releaseNow) resource.Dispose();
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            IPluginResourceHandle? resource;
+            lock (ownershipGate) { resource = ownership; ownership = null; }
+            resource?.Dispose();
+        }
+    }
     private sealed class ScopeGuard : IDisposable { private readonly PluginDispatcherHost host; private int released; public ScopeGuard(PluginDispatcherHost host) { this.host = host; } public bool IsReleased => Volatile.Read(ref released) != 0; public void Dispose() { if (Interlocked.Exchange(ref released, 1) == 0) host.CancelAndRemove(this); } }
 }
