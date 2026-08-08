@@ -76,6 +76,33 @@
       <_PluginPackage Include="$(_HitboxesOutput)">
         <PluginId>alacrity.hitboxes</PluginId>
       </_PluginPackage>
+      <_PluginManifest Include="..\Alacrity.BetterChat\plugin.json">
+        <PluginId>alacrity.better-chat</PluginId>
+      </_PluginManifest>
+      <_PluginManifest Include="..\Alacrity.PlayerList\plugin.json">
+        <PluginId>alacrity.player-list</PluginId>
+      </_PluginManifest>
+      <_PluginManifest Include="..\Alacrity.DustGoreToggle\plugin.json">
+        <PluginId>alacrity.dust-gore-toggle</PluginId>
+      </_PluginManifest>
+      <_PluginManifest Include="..\Alacrity.Hitboxes\plugin.json">
+        <PluginId>alacrity.hitboxes</PluginId>
+      </_PluginManifest>
+      <_RuntimeFile Include="@(_RuntimeAssembly)">
+        <RelativePath>%(_RuntimeAssembly.Filename)%(_RuntimeAssembly.Extension)</RelativePath>
+      </_RuntimeFile>
+      <_RuntimeFile Include="@(_BridgeAssembly)">
+        <RelativePath>bin\%(_BridgeAssembly.Filename)%(_BridgeAssembly.Extension)</RelativePath>
+      </_RuntimeFile>
+      <_RuntimeFile Include="@(_PluginPackage)">
+        <RelativePath>plugins\%(_PluginPackage.PluginId)\%(_PluginPackage.Filename)%(_PluginPackage.Extension)</RelativePath>
+      </_RuntimeFile>
+      <_RuntimeFile Include="@(_PluginManifest)">
+        <RelativePath>plugins\%(_PluginManifest.PluginId)\plugin.json</RelativePath>
+      </_RuntimeFile>
+      <_RuntimeFile Include="@(_RuntimeMetadata)">
+        <RelativePath>VERSION</RelativePath>
+      </_RuntimeFile>
     </ItemGroup>
     <Error Condition="'@(_RuntimeAssembly)' == '' Or !Exists('$(_BridgeOutput)') Or !Exists('$(_FacadeOutput)') Or !Exists('$(_BootstrapOutput)') Or !Exists('$(_SdkOutput)') Or !Exists('$(_CoreOutput)') Or !Exists('$(_AppOutput)') Or !Exists('$(MSBuildThisFileDirectory)..\..\VERSION')" Text="Alacrity runtime staging requires every managed assembly and the current VERSION file from this build." />
 
@@ -87,13 +114,10 @@
     <Copy SourceFiles="@(_RuntimeMetadata)" DestinationFolder="$(AlacrityRuntimeArtifactDirectory)" SkipUnchangedFiles="false" />
     <MakeDir Directories="@(_PluginPackage->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)')" />
     <Copy SourceFiles="@(_PluginPackage)" DestinationFiles="@(_PluginPackage->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)\%(Filename)%(Extension)')" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="..\Alacrity.BetterChat\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.better-chat\plugin.json" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="..\Alacrity.PlayerList\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.player-list\plugin.json" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="..\Alacrity.DustGoreToggle\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.dust-gore-toggle\plugin.json" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="..\Alacrity.Hitboxes\plugin.json" DestinationFiles="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.hitboxes\plugin.json" SkipUnchangedFiles="false" />
-    <GetFileHash Files="@(_RuntimeAssembly);@(_BridgeAssembly);@(_PluginPackage);@(_RuntimeMetadata)" Algorithm="SHA256">
+    <Copy SourceFiles="@(_PluginManifest)" DestinationFiles="@(_PluginManifest->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)\plugin.json')" SkipUnchangedFiles="false" />
+    <GetFileHash Files="@(_RuntimeFile)" Algorithm="SHA256">
       <Output TaskParameter="Items" ItemName="_RuntimeHash" />
     </GetFileHash>
-    <WriteLinesToFile File="$(AlacrityRuntimeArtifactDirectory)\runtime-manifest.txt" Lines="Configuration=$(Configuration);@(_RuntimeHash->'%(Filename)%(Extension)|%(FileHash)')" Overwrite="true" />
+    <WriteLinesToFile File="$(AlacrityRuntimeArtifactDirectory)\runtime-manifest.txt" Lines="Configuration=$(Configuration);@(_RuntimeHash->'%(RelativePath)|%(FileHash)')" Overwrite="true" />
   </Target>
 </Project>

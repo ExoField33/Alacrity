@@ -55,29 +55,30 @@ if exist "%REPO_DIR%\assets\Alacrity-Logo.png" (
 )
 
 echo [2/5] Building one coherent Alacrity runtime stage...
-dotnet build "%REPO_DIR%\src\Alacrity.TerrariaIntegration\Alacrity.RuntimeStaging.csproj" -c Release -p:AlacrityTerrariaAssemblyPath="%TERRARIA_DIR%\Terraria.exe" -p:AlacrityXnaReferenceDirectory="%XNA_DIR%"
+dotnet build "%REPO_DIR%\src\Alacrity.TerrariaIntegration\Alacrity.RuntimeStaging.csproj" -c Release -p:GenerateDocumentationFile=false -p:AlacrityTerrariaAssemblyPath="%TERRARIA_DIR%\Terraria.exe" -p:AlacrityXnaReferenceDirectory="%XNA_DIR%"
 if errorlevel 1 (
     set "EXIT_CODE=%ERRORLEVEL%"
     goto :Finish
 )
 
-echo [3/5] Deploying runtime assemblies and bundled plugins...
-dotnet msbuild "%REPO_DIR%\src\Alacrity.TerrariaIntegration\Alacrity.RuntimeDeployment.csproj" -t:DeployAlacrityRuntime -p:AlacrityRuntimeDeployDirectory="%CLIENT_DIR%"
-if errorlevel 1 (
-    set "EXIT_CODE=%ERRORLEVEL%"
-    goto :Finish
-)
-
-echo [4/5] Building the version-locked Terraria patch tool...
+echo [3/5] Building the authoritative version-locked client builder...
 dotnet build "%REPO_DIR%\tools\Alacrity.ClientBuilder\Alacrity.ClientBuilder.csproj" -c Release
 if errorlevel 1 (
     set "EXIT_CODE=%ERRORLEVEL%"
     goto :Finish
 )
 
-echo [5/5] Creating Alacrity.exe from the copied vanilla executable...
+echo [4/5] Validating the clean vanilla Terraria executable...
 set "ALACRITY_XNA_REFERENCE_DIRECTORY=%XNA_DIR%"
-dotnet run --project "%REPO_DIR%\tools\Alacrity.ClientBuilder\Alacrity.ClientBuilder.csproj" -c Release --no-build -- patch-alacrity "%CLIENT_DIR%\Terraria.exe"
+dotnet run --project "%REPO_DIR%\tools\Alacrity.ClientBuilder\Alacrity.ClientBuilder.csproj" -c Release --no-build -- validate --source "%TERRARIA_DIR%\Terraria.exe"
+if errorlevel 1 (
+    set "EXIT_CODE=%ERRORLEVEL%"
+    goto :Finish
+)
+
+echo [5/5] Validating the staged runtime and creating Alacrity.exe...
+set "ALACRITY_XNA_REFERENCE_DIRECTORY=%XNA_DIR%"
+dotnet run --project "%REPO_DIR%\tools\Alacrity.ClientBuilder\Alacrity.ClientBuilder.csproj" -c Release --no-build -- generate --source "%TERRARIA_DIR%\Terraria.exe" --runtime "%REPO_DIR%\artifacts\runtime" --output "%CLIENT_DIR%" --deploy --verbose
 if errorlevel 1 (
     set "EXIT_CODE=%ERRORLEVEL%"
     goto :Finish

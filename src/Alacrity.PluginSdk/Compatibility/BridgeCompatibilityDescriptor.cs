@@ -104,12 +104,13 @@ public sealed class BridgeCompatibilityDescriptor
 
     private static bool TryParseTerrariaVersion(string value, out Version version)
     {
-        if (!Version.TryParse(value, out version) || version.Build < 0 || version.Revision < 0)
+        if (!Version.TryParse(value, out var parsed) || parsed == null || parsed.Build < 0 || parsed.Revision < 0)
         {
             version = null!;
             return false;
         }
 
+        version = parsed;
         return true;
     }
 }

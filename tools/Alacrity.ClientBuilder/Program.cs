@@ -3,116 +3,16 @@ using Mono.Cecil.Cil;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
-internal static class Program
+internal static partial class Program
 {
-    private const string Terraria1456ReferenceSha256 = "A89A24C6531D88A972662821044ACF1B3B5817621DD6C81D4BD7523BC4BBDDA9";
+    private static int Main(string[] args) => ClientBuilderCommandLine.Run(args);
 
-    private static int Main(string[] args)
+    internal static DefaultAssemblyResolver CreateResolver(string executablePath)
     {
-        if (args.Length < 2)
-        {
-            Console.Error.WriteLine("Usage: Alacrity.ClientBuilder patch-alacrity <path-to-vanilla-Terraria.exe>");
-            return 1;
-        }
-
-        var command = args[0];
-        var exePath = Path.GetFullPath(args[^1]);
-        if (!File.Exists(exePath))
-        {
-            Console.Error.WriteLine($"Terraria executable not found: {exePath}");
-            return 1;
-        }
-
         var resolver = new DefaultAssemblyResolver();
-        resolver.AddSearchDirectory(Path.GetDirectoryName(exePath)!);
+        resolver.AddSearchDirectory(Path.GetDirectoryName(executablePath)!);
         AddXnaSearchDirectories(resolver);
-        using var module = ModuleDefinition.ReadModule(exePath, new ReaderParameters
-        {
-            AssemblyResolver = resolver,
-            ReadSymbols = false,
-            ReadingMode = ReadingMode.Deferred
-        });
-
-        if (args.Length >= 1 && command.Equals("refs", StringComparison.OrdinalIgnoreCase))
-        {
-            DumpReferences(module);
-            return 0;
-        }
-
-        if (args.Length >= 1 && command.Equals("patch", StringComparison.OrdinalIgnoreCase))
-        {
-            PatchTerraria(module, exePath);
-            return 0;
-        }
-
-        if (args.Length >= 1 && command.Equals("patch-plugin-ui", StringComparison.OrdinalIgnoreCase))
-        {
-            PatchPluginUiDemo(module, exePath);
-            return 0;
-        }
-
-        if (args.Length >= 1 && command.Equals("patch-alacrity", StringComparison.OrdinalIgnoreCase))
-        {
-            PatchPluginUiDemo(module, exePath, includeBetterChat: true);
-            return 0;
-        }
-
-        if (args.Length >= 1 && command.Equals("patch-plugin-core", StringComparison.OrdinalIgnoreCase))
-        {
-            PatchPluginCoreDemo(module, exePath);
-            return 0;
-        }
-
-        if (args.Length >= 1 && command.Equals("patch-better-chat", StringComparison.OrdinalIgnoreCase))
-        {
-            PatchBetterChat(module, exePath);
-            return 0;
-        }
-
-        if (args.Length >= 3 && command.Equals("dump", StringComparison.OrdinalIgnoreCase))
-        {
-            DumpMethod(module, args[1], args[2]);
-            return 0;
-        }
-
-        if (args.Length >= 2 && command.Equals("fields", StringComparison.OrdinalIgnoreCase))
-        {
-            DumpFields(module, args[1]);
-            return 0;
-        }
-
-        if (args.Length >= 2 && command.Equals("methods", StringComparison.OrdinalIgnoreCase))
-        {
-            DumpMethods(module, args[1]);
-            return 0;
-        }
-
-        if (args.Length >= 3 && command.Equals("fieldrefs", StringComparison.OrdinalIgnoreCase))
-        {
-            DumpFieldReferences(module, args[1], args[2]);
-            return 0;
-        }
-
-        if (args.Length >= 3 && command.Equals("strings", StringComparison.OrdinalIgnoreCase))
-        {
-            DumpStrings(module, args[1], args[2]);
-            return 0;
-        }
-
-        Console.WriteLine($"{module.Assembly.Name.Name} {module.Assembly.Name.Version}");
-        Console.WriteLine($"Runtime: {module.Runtime}, Architecture: {module.Architecture}");
-        Console.WriteLine();
-
-        foreach (var type in module.Types.SelectMany(Flatten).Where(IsInterestingType).OrderBy(t => t.FullName))
-        {
-            Console.WriteLine(type.FullName);
-            foreach (var method in type.Methods.Where(IsInterestingMethod).OrderBy(m => m.Name))
-            {
-                Console.WriteLine($"  {method.ReturnType.FullName} {method.Name}({string.Join(", ", method.Parameters.Select(p => p.ParameterType.FullName + " " + p.Name))})");
-            }
-        }
-
-        return 0;
+        return resolver;
     }
 
     private static void AddXnaSearchDirectories(DefaultAssemblyResolver resolver)
@@ -295,6 +195,132 @@ internal static class Program
 
     private static void PatchPluginUiDemo(ModuleDefinition module, string exePath, bool includeBetterChat = false)
     {
+        ApplyPluginUiPatches(module, exePath, includeBetterChat);
+
+        var outputPath = Path.Combine(Path.GetDirectoryName(exePath)!, "Alacrity.exe");
+        module.Write(outputPath);
+        Console.WriteLine($"Wrote {outputPath}");
+    }
+
+    /// <summary>
+    /// Applies the audited permanent 1.4.5.6 transformation set without choosing an output path.
+    /// The authoritative client builder owns staging, validation, and publication of the result.
+    /// </summary>
+    internal static void ApplyPermanentAlacrityPatches(ModuleDefinition module, string sourceExecutablePath)
+    {
+        ApplyPermanentStartupAndMenu(module, sourceExecutablePath);
+        ApplyPermanentInputAndKeybinds(module, sourceExecutablePath);
+        ApplyPermanentRenderingAndCombat(module, sourceExecutablePath);
+        ApplyPermanentVisualEffects(module, sourceExecutablePath);
+        ApplyPermanentChatInputAndCommands(module, sourceExecutablePath);
+        ApplyPermanentChatDisplayAndInteraction(module, sourceExecutablePath);
+    }
+
+    internal static void ApplyPermanentStartupAndMenu(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        var ingameOptionsType = CecilPatchPrimitives.RequireType(module, "Terraria.IngameOptions");
+        PatchTerrariaVersionLabels(mainType);
+        PatchPluginMenuEntry(module, mainType, ImportRuntimeMethod(module, sourceExecutablePath, "OpenPluginManager", "System.Void"));
+        PatchIngamePluginSettings(
+            module,
+            ingameOptionsType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "OpenIngamePluginSettings", "System.Void"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawIngamePluginSettings", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch"));
+        PatchAlacrityVersionDraw(
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawAlacrityVersion", "System.Void", "Microsoft.Xna.Framework.Color", "System.Single", "System.String"),
+            ReadAlacrityVersion(sourceExecutablePath));
+    }
+
+    internal static void ApplyPermanentInputAndKeybinds(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        PatchPluginDemoInput(
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "HandleInput", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "UpdatePluginKeybinds", "System.Void"));
+        PatchPluginKeybindStateShape(module, ImportRuntimeMethod(module, sourceExecutablePath, "EnsurePluginKeybindStateShape", "System.Void"));
+        PatchPluginKeybindControls(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "AppendPluginKeybindControls", "System.Void", "Terraria.GameContent.UI.States.UIManageControls"));
+    }
+
+    internal static void ApplyPermanentRenderingAndCombat(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        PatchPluginRuntimeDraw(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "DrawNotifications", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch"));
+        PatchHitboxWorldOverlay(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "DrawHitboxes", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch"));
+        PatchSwingHitboxCapture(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "CaptureSwingHitbox", "System.Void", "Terraria.Player", "System.Boolean", "Microsoft.Xna.Framework.Rectangle"));
+    }
+
+    internal static void ApplyPermanentVisualEffects(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        PatchVisualEffects(
+            module,
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldRunDustSystem", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldCreateDust", "System.Boolean", "System.Int32"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldUpdateDustInstance", "System.Boolean", "Terraria.Dust"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawDustInstance", "System.Boolean", "Terraria.Dust"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldRunGoreSystem", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentChatInputAndCommands(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        var programType = CecilPatchPrimitives.RequireType(module, "Terraria.Program");
+        PatchBetterChatInput(
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsBetterChatActive", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ProcessPlayerChatInput", "System.String", "System.String", "System.Boolean"));
+        PatchPluginChatCommands(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "TryHandlePluginChatCommand", "System.Boolean", "System.String"));
+        PatchBetterChatStartup(programType, ImportRuntimeMethod(module, sourceExecutablePath, "BootstrapPluginRuntime", "System.Void"));
+        PatchBetterChatDraw(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "FormatPlayerChatText", "System.String", "System.String"));
+    }
+
+    internal static void ApplyPermanentChatDisplayAndInteraction(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var snippets = CecilPatchPrimitives.RequireType(module, "Terraria.UI.Chat.TextSnippet");
+        var chatManager = CecilPatchPrimitives.RequireType(module, "Terraria.UI.Chat.ChatManager");
+        PatchBetterChatSnippet(
+            snippets,
+            chatManager,
+            ImportRuntimeMethod(module, sourceExecutablePath, "HandleChatSnippetHover", "System.Void", "System.Object"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "HandleChatSnippetClick", "System.Boolean", "System.Object"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "GetChatSnippetVisibleColor", "Microsoft.Xna.Framework.Color", "System.Object", "Microsoft.Xna.Framework.Color"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "CopyChatSnippetContext", "System.Void", "System.Object", "System.Object"));
+        PatchBetterChatParse(chatManager, ImportRuntimeMethod(module, sourceExecutablePath, "DecorateChatMessage", "System.Object", "System.Object", "Microsoft.Xna.Framework.Color", "System.String"));
+        PatchBetterChatVisibility(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDisplayNetworkChatMessage", "System.Boolean", "System.Byte"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDisplayLocalChatMessage", "System.Boolean"));
+    }
+
+    private static MethodReference ImportRuntimeMethod(ModuleDefinition module, string sourceExecutablePath, string name, string returnType, params string[] parameterTypes)
+    {
+        var facadePath = Path.Combine(Path.GetDirectoryName(sourceExecutablePath)!, "bin", "Alacrity.PluginUiRuntime.dll");
+        if (!File.Exists(facadePath))
+        {
+            throw new ClientBuildException("Required staged ABI facade was not found: " + facadePath);
+        }
+
+        using var facade = ModuleDefinition.ReadModule(facadePath);
+        var bridgeType = CecilPatchPrimitives.RequireType(facade, "AlacrityTerraria.PluginUiRuntime");
+        var method = CecilPatchPrimitives.RequireMethod(bridgeType, name, returnType, parameterTypes);
+        if (!method.IsPublic || !method.IsStatic || method.GenericParameters.Count != 0)
+        {
+            throw new ClientBuildException("Required staged bridge method is not a public non-generic static ABI method: " + method.FullName);
+        }
+
+        return module.ImportReference(method);
+    }
+
+    private static void ApplyPluginUiPatches(ModuleDefinition module, string exePath, bool includeBetterChat)
+    {
         if (module.Assembly.Name.Version?.ToString() != "1.4.5.6")
             throw new InvalidOperationException($"Expected Terraria 1.4.5.6, got {module.Assembly.Name.Version}.");
         VerifyTerraria1456ReferenceHash(exePath);
@@ -343,9 +369,6 @@ internal static class Program
         if (includeBetterChat)
             ApplyBetterChatHooks(module, exePath);
 
-        var outputPath = Path.Combine(Path.GetDirectoryName(exePath)!, "Alacrity.exe");
-        module.Write(outputPath);
-        Console.WriteLine($"Wrote {outputPath}");
     }
 
     private static void PatchPluginKeybindControls(ModuleDefinition module, MethodReference appendPluginKeybindControls)
@@ -357,8 +380,11 @@ internal static class Program
         var finalReturn = initialize.Body.Instructions.LastOrDefault(instruction => instruction.OpCode == OpCodes.Ret)
             ?? throw new InvalidOperationException("Terraria 1.4.5.6 UIManageControls.OnInitialize has no return instruction.");
         var il = initialize.Body.GetILProcessor();
-        il.InsertBefore(finalReturn, il.Create(OpCodes.Ldarg_0));
-        il.InsertBefore(finalReturn, il.Create(OpCodes.Call, appendPluginKeybindControls));
+        CecilPatchPrimitives.InsertBefore(
+            il,
+            finalReturn,
+            il.Create(OpCodes.Ldarg_0),
+            il.Create(OpCodes.Call, appendPluginKeybindControls));
     }
 
     private static void VerifyTerraria1456ReferenceHash(string exePath)
@@ -366,8 +392,8 @@ internal static class Program
         using var stream = File.OpenRead(exePath);
         using var hasher = SHA256.Create();
         string actualHash = Convert.ToHexString(hasher.ComputeHash(stream));
-        if (!string.Equals(actualHash, Terraria1456ReferenceSha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"Terraria.exe hash mismatch. Expected {Terraria1456ReferenceSha256}, got {actualHash}.");
+        if (!string.Equals(actualHash, SupportedTerrariaBuildCatalog.Terraria1456Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Terraria.exe hash mismatch. Expected {SupportedTerrariaBuildCatalog.Terraria1456Sha256}, got {actualHash}.");
     }
 
     private static string ReadAlacrityVersion(string exePath)

@@ -13,4 +13,10 @@
       <Private>true</Private>
     </Reference>
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The builder validates the same compatibility identity exposed by the patch-facing facade. -->
+    <Compile Include="..\..\src\Alacrity.PluginSdk\Compatibility\AlacrityCompatibility.cs" Link="Compatibility\AlacrityCompatibility.cs" />
+    <Compile Include="..\..\src\Alacrity.PluginSdk\Compatibility\BridgeCompatibilityDescriptor.cs" Link="Compatibility\BridgeCompatibilityDescriptor.cs" />
+  </ItemGroup>
 </Project>
