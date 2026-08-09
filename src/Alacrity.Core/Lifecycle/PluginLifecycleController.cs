@@ -23,6 +23,7 @@ public sealed class PluginLifecycleController : IDisposable
     private bool shutdownCalled;
     private bool shutdown;
     private int asynchronousDisposeStarted;
+    private int synchronousQuiescencePending;
 
     public PluginLifecycleController(IAlacrityPlugin plugin, IPluginContext context)
         : this((object)plugin, context, default(TimeSpan?), null)
@@ -157,7 +158,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
 
-        var cleanupFailures = RequestBackgroundDrain();
+        Task<bool>? backgroundDrain = BeginBackgroundDrain(out var cleanupFailures);
         Exception? callbackFailure = null;
         try
         {
@@ -170,9 +171,22 @@ public sealed class PluginLifecycleController : IDisposable
 
         cleanupFailures.AddRange(ForceReleaseResources());
         initialized = false;
-        State = callbackFailure == null && cleanupFailures.Count == 0
-            ? PluginLifecycleState.Disabled
-            : PluginLifecycleState.Faulted;
+        if (callbackFailure != null || cleanupFailures.Count != 0)
+        {
+            State = PluginLifecycleState.Faulted;
+        }
+        else if (backgroundDrain == null)
+        {
+            State = PluginLifecycleState.Disabled;
+        }
+        else
+        {
+            // The activation is already closed to new work, but the plugin object cannot be reused
+            // until worker code that entered before cancellation has actually left.
+            Interlocked.Exchange(ref synchronousQuiescencePending, 1);
+            ObserveSynchronousQuiescence(backgroundDrain);
+        }
+
         Record("Disable", callbackFailure, cleanupFailures);
         Rethrow(callbackFailure, cleanupFailures);
     }
@@ -307,6 +321,65 @@ public sealed class PluginLifecycleController : IDisposable
         catch (Exception exception)
         {
             return new List<PluginCleanupFailure> { new PluginCleanupFailure("Drain activation background work", exception) };
+        }
+    }
+
+    private Task<bool>? BeginBackgroundDrain(out List<PluginCleanupFailure> cleanupFailures)
+    {
+        cleanupFailures = new List<PluginCleanupFailure>();
+        try
+        {
+            if (context is not IActivationBackgroundWorkContext activation)
+            {
+                return null;
+            }
+
+            return activation.StopAndDrainBackgroundWorkAsync(asyncCallbackTimeout);
+        }
+        catch (Exception exception)
+        {
+            cleanupFailures.Add(new PluginCleanupFailure("Drain activation background work", exception));
+            return null;
+        }
+    }
+
+    private void ObserveSynchronousQuiescence(Task<bool> drain)
+    {
+        _ = CompleteSynchronousQuiescenceAsync(drain);
+    }
+
+    private async Task CompleteSynchronousQuiescenceAsync(Task<bool> drain)
+    {
+        try
+        {
+            bool quiesced = await drain.ConfigureAwait(false);
+            if (State != PluginLifecycleState.Disabling || Interlocked.Exchange(ref synchronousQuiescencePending, 0) == 0)
+            {
+                return;
+            }
+
+            if (quiesced)
+            {
+                State = PluginLifecycleState.Disabled;
+                Record("Disable quiescence", null, null);
+                return;
+            }
+
+            var timeout = new TimeoutException("Activation background work did not stop before the host timeout. The plugin instance cannot be reactivated in this process.");
+            State = PluginLifecycleState.Faulted;
+            Record("Disable quiescence", timeout, null);
+            context.Logger.Warn(timeout.Message);
+        }
+        catch (Exception exception)
+        {
+            if (State != PluginLifecycleState.Disabling || Interlocked.Exchange(ref synchronousQuiescencePending, 0) == 0)
+            {
+                return;
+            }
+
+            State = PluginLifecycleState.Faulted;
+            Record("Disable quiescence", exception, null);
+            context.Logger.Error("Activation background work failed while completing synchronous plugin teardown.", exception);
         }
     }
 

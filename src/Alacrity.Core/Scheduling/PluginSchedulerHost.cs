@@ -13,6 +13,8 @@ namespace Alacrity.Core;
 /// </summary>
 public sealed class PluginSchedulerHost
 {
+    // Modular deadline ordering is unambiguous only within half of the uint range.
+    private const uint MaximumUpdateInterval = int.MaxValue;
     private readonly object gate = new object();
     private readonly List<ScheduledWork> scheduled = new List<ScheduledWork>();
     private readonly List<BackgroundRegistration> background = new List<BackgroundRegistration>();
@@ -211,6 +213,11 @@ public sealed class PluginSchedulerHost
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A diagnostic name is required.", nameof(name));
         if (callback == null) throw new ArgumentNullException(nameof(callback));
+        if (updateDelay.HasValue && updateDelay.Value > MaximumUpdateInterval)
+        {
+            throw new ArgumentOutOfRangeException(nameof(updateDelay), "Update intervals must not exceed " + MaximumUpdateInterval + " ticks.");
+        }
+
         ThrowIfUnavailable(guard);
         long elapsedDelayTicks = elapsedDelay.HasValue ? MonotonicClockMath.ToClockTicks(elapsedDelay.Value, clock.Frequency) : 0;
         var work = new ScheduledWork(this, owner, name, dispatcher, logger, guard, updateDelay, elapsedDelayTicks, repeat, callback, clock.GetTimestamp(), 0);
@@ -454,7 +461,7 @@ public sealed class PluginSchedulerHost
         {
             ownership.Attach(resource);
         }
-        public bool IsDue(uint updateVersion, long elapsedTicks) => UpdateDelay.HasValue ? updateVersion >= dueUpdate : elapsedTicks >= dueElapsedTicks;
+        public bool IsDue(uint updateVersion, long elapsedTicks) => UpdateDelay.HasValue ? IsUpdateDeadlineReached(updateVersion, dueUpdate) : elapsedTicks >= dueElapsedTicks;
         public void SetInitialUpdateDue(uint updateVersion)
         {
             if (UpdateDelay.HasValue) dueUpdate = unchecked(updateVersion + UpdateDelay.Value);
@@ -472,6 +479,12 @@ public sealed class PluginSchedulerHost
                 host.Remove(this);
             }
         }
+    }
+
+    /// <summary>Compares modular update counters without failing when <see cref="uint"/> wraps.</summary>
+    internal static bool IsUpdateDeadlineReached(uint current, uint due)
+    {
+        return unchecked((int)(current - due)) >= 0;
     }
 
     private sealed class BackgroundRegistration : IPluginRegistration

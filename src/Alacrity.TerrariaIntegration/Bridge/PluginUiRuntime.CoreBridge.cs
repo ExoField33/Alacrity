@@ -38,7 +38,8 @@ namespace AlacrityTerraria
         /// Integration tests assert these values remain synchronized with <see cref="AlacrityCompatibility"/>.
         /// </remarks>
         public static string GetBridgeHandshake() => "2|2|2|1.4.5.6";
-        private static PluginUiRuntimeState runtimeState;
+        private static readonly PluginUiRuntimeHost RuntimeHost = new PluginUiRuntimeHost();
+        private static PluginUiRuntimeState runtimeState => RuntimeHost.State;
         private static PluginManagerRuntime _runtime => runtimeState == null ? null : runtimeState.Runtime;
         private static PluginManagementMenu _menu => runtimeState == null ? null : runtimeState.Menu;
         private static PluginNotificationCenter _notifications => runtimeState == null ? null : runtimeState.Notifications;
@@ -148,10 +149,7 @@ namespace AlacrityTerraria
             set => BridgeState.IngameHoveredSettingId = value;
         }
         private static TerrariaPluginEnabledStateStore _enabledStateStore => runtimeState == null ? null : runtimeState.EnabledStateStore;
-        private static readonly object RuntimeGate = new object();
         private static TerrariaVisualEffectsAdapter _visualEffects => runtimeState == null ? null : runtimeState.VisualEffects;
-        private static bool _runtimeBootstrapped;
-        private static bool _runtimeShuttingDown;
         private static TerrariaPluginOperationCoordinator _pluginOperations => runtimeState == null ? null : runtimeState.Operations;
         private static TerrariaKeybindRuntime _keybindRuntime => runtimeState == null ? null : runtimeState.KeybindRuntime;
         private static uint _iconInteractionInputTick
@@ -181,68 +179,75 @@ namespace AlacrityTerraria
         /// <summary>Creates and starts the package runtime once during normal Terraria startup.</summary>
         public static void BootstrapPluginRuntime()
         {
-            if (Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown))
-                return;
-            lock (RuntimeGate)
+            if (!RuntimeHost.TryBeginBootstrap())
             {
-                if (Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown))
-                    return;
+                return;
+            }
+
+            try
+            {
                 EnsurePluginManager();
                 RefreshPluginCatalog();
                 _extensions?.Publish(new ClientStartedEvent(TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency)));
-                Volatile.Write(ref _runtimeBootstrapped, true);
+                RuntimeHost.CompleteBootstrap();
+            }
+            catch (Exception exception)
+            {
+                ReportOptionalUiFailure("Plugin runtime bootstrap", exception);
+            }
+            finally
+            {
+                RuntimeHost.EndBootstrap();
             }
         }
 
         /// <summary>Best-effort process-exit cleanup. Individual plugin failures never block Terraria shutdown.</summary>
         public static void ShutdownPluginRuntime()
         {
-            if (Volatile.Read(ref _runtimeShuttingDown))
-                return;
-            lock (RuntimeGate)
+            if (!RuntimeHost.TryBeginShutdown())
             {
-                if (Volatile.Read(ref _runtimeShuttingDown))
-                    return;
-                Volatile.Write(ref _runtimeShuttingDown, true);
-                _extensions?.Publish(new ClientShuttingDownEvent(TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency)));
-                // Stop new activation-owned work before lifecycle operations begin their teardown.
-                _scheduler?.StopAcceptingWork();
-                if (_pluginOperations != null)
-                {
-                    ObserveShutdownTask(
-                        "Plugin lifecycle operation shutdown",
-                        _pluginOperations.CancelAllAsync(TimeSpan.FromSeconds(6)));
-                }
-                if (_runtime != null)
-                {
-                    foreach (var record in GetShutdownOrder())
-                    {
-                        if (_pluginOperations != null && _pluginOperations.IsPending(record.Manifest.Id))
-                        {
-                            ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, new TimeoutException("A lifecycle operation did not stop before the shutdown timeout."));
-                            continue;
-                        }
-                        try
-                        {
-                            if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
-                                BeginAsyncControllerShutdown(record.Manifest.Id, record.Controller);
-                            else
-                                record.Controller?.Dispose();
-                        }
-                        catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
-                    }
-                }
-                if (_scheduler != null)
-                {
-                    ObserveShutdownTask(
-                        "Plugin background shutdown",
-                        _scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(3)));
-                }
-                _drawAdapter?.Dispose();
-                _ingameBlankTexture?.Dispose();
-                _ingameBlankTexture = null;
-                _ingameBlankTextureDevice = null;
+                return;
             }
+
+            // Do not hold the runtime host admission gate while publishing events, invoking lifecycle callbacks, or
+            // coordinating workers: every one of those paths may execute plugin-controlled code.
+            _extensions?.Publish(new ClientShuttingDownEvent(TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency)));
+            _scheduler?.StopAcceptingWork();
+            if (_pluginOperations != null)
+            {
+                ObserveShutdownTask(
+                    "Plugin lifecycle operation shutdown",
+                    _pluginOperations.CancelAllAsync(TimeSpan.FromSeconds(6)));
+            }
+            if (_runtime != null)
+            {
+                foreach (var record in GetShutdownOrder())
+                {
+                    if (_pluginOperations != null && _pluginOperations.IsPending(record.Manifest.Id))
+                    {
+                        ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, new TimeoutException("A lifecycle operation did not stop before the shutdown timeout."));
+                        continue;
+                    }
+                    try
+                    {
+                        if (record.Controller != null && record.Controller.UsesAsyncLifecycle)
+                            BeginAsyncControllerShutdown(record.Manifest.Id, record.Controller);
+                        else
+                            record.Controller?.Dispose();
+                    }
+                    catch (Exception exception) { ReportOptionalUiFailure("Plugin shutdown: " + record.Manifest.Id, exception); }
+                }
+            }
+            if (_scheduler != null)
+            {
+                ObserveShutdownTask(
+                    "Plugin background shutdown",
+                    _scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(3)));
+            }
+            _drawAdapter?.Dispose();
+            _ingameBlankTexture?.Dispose();
+            _ingameBlankTexture = null;
+            _ingameBlankTextureDevice = null;
         }
 
         private static void BeginAsyncControllerShutdown(PluginId pluginId, PluginLifecycleController controller)
@@ -416,7 +421,7 @@ namespace AlacrityTerraria
         /// </summary>
         public static void AppendPluginKeybindControls(UIManageControls controls)
         {
-            if (Volatile.Read(ref _runtimeBootstrapped) && controls != null) _keybindRuntime?.AppendControls(controls);
+            if (RuntimeHost.IsBootstrapped && controls != null) _keybindRuntime?.AppendControls(controls);
         }
 
         /// <summary>
@@ -425,7 +430,7 @@ namespace AlacrityTerraria
         /// </summary>
         public static void UpdatePluginKeybinds()
         {
-            if (!Volatile.Read(ref _runtimeBootstrapped) || Volatile.Read(ref _runtimeShuttingDown) || _extensions == null)
+            if (!RuntimeHost.IsBootstrapped || RuntimeHost.IsShuttingDown || _extensions == null)
                 return;
             try
             {
@@ -457,7 +462,7 @@ namespace AlacrityTerraria
         /// </summary>
         public static void EnsurePluginKeybindStateShape()
         {
-            if (!Volatile.Read(ref _runtimeBootstrapped) || _keybindRuntime == null)
+            if (!RuntimeHost.IsBootstrapped || _keybindRuntime == null)
                 return;
 
             _keybindRuntime.EnsureNativeStateShape();

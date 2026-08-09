@@ -34,7 +34,7 @@ sharedServices:
 plugins:
   - id: better-chat
     name: Better Chat
-    description: Local chat editing, link interaction, and outgoing prefix convenience.
+    description: Local chat editing, link interaction, and global local chat visibility.
     dependencies: [patch-runtime, configuration]
     features:
       - chat-caret-navigation
@@ -42,7 +42,7 @@ plugins:
       - chat-word-editing
       - clickable-chat-links
       - chat-link-hover-state
-      - chat-prefix
+      - global-chat-visibility
     multiplayer:
       multiplayerSafety: client-presentation-and-input
       requiresServerSupport: false
@@ -51,6 +51,15 @@ plugins:
       competitiveImpact: low
       serverPolicyScopes: [client-ui]
     confidence: high
+
+  - id: outgoing-chat-prefix
+    name: Outgoing Chat Prefix
+    description: Deferred legacy convenience feature that prefixes outgoing messages.
+    dependencies: [patch-runtime, configuration]
+    features: [chat-prefix]
+    status: deferred
+    notes:
+      - Deliberately excluded from Better Chat because it changes outgoing input handling.
 
   - id: chat-moderation-ui
     name: Player Visibility Controls
@@ -137,9 +146,6 @@ plugins:
     description: Optional visual and safe draw-only performance controls.
     dependencies: [patch-runtime, configuration]
     features:
-      - dust-rendering-and-simulation-controls
-      - dust-render-exceptions
-      - gore-rendering-and-simulation-controls
       - damage-number-visibility
       - entity-screen-culling
       - dust-screen-culling
@@ -157,12 +163,31 @@ plugins:
       - Draw-black remains optional and benchmark/snapshot gated.
     confidence: high
 
+  - id: dust-gore-toggle
+    name: Dust & Gore Toggle
+    description: Client-local Dust and Gore simulation/rendering controls with bounded Dust ID exceptions.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - dust-rendering-and-simulation-controls
+      - dust-render-exceptions
+      - gore-rendering-and-simulation-controls
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: low
+      serverPolicyScopes: [client-visuals]
+    notes:
+      - When Dust Effects are disabled with no exceptions, Terraria's Dust update and draw loops return before iteration.
+      - Dust exceptions are local ID filters managed through /de; no packet or gameplay state is changed.
+    confidence: high
+
   - id: diagnostics-overlay
     name: Diagnostics Overlay
     description: Client-only overlays for state inspection and performance debugging.
     dependencies: [patch-runtime, configuration]
     features:
-      - npc-player-projectile-hitboxes
       - npc-target-indicator
       - npc-target-line
       - tile-section-overlay
@@ -174,6 +199,29 @@ plugins:
       networkCapabilities: none
       competitiveImpact: review-required
       serverPolicyScopes: [client-diagnostics]
+    confidence: high
+
+  - id: hitboxes
+    name: Hitboxes
+    description: Client-only player, NPC, projectile, and melee collision geometry overlays.
+    dependencies: [patch-runtime, configuration]
+    features:
+      - player-hitboxes
+      - npc-hitboxes
+      - friendly-projectile-hitboxes
+      - hostile-projectile-hitboxes
+      - melee-swing-hitboxes
+      - whip-collision-control-points
+    multiplayer:
+      multiplayerSafety: client-presentation-only
+      requiresServerSupport: false
+      vanillaServerBehavior: unchanged
+      networkCapabilities: none
+      competitiveImpact: review-required
+      serverPolicyScopes: [client-diagnostics]
+    notes:
+      - Uses already-computed vanilla melee collision rectangles and read-only projectile collision geometry.
+      - Does not alter hit detection, physics, packets, or simulation.
     confidence: high
 
   - id: ui-inspector

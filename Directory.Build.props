@@ -1,0 +1,7 @@
+<Project>
+  <!-- Terraria and XNA remain external, user-supplied references. Override these properties in
+       Directory.Build.props.user or on the MSBuild command line; do not commit game binaries. -->
+  <!-- Local reference paths stay out of source control. Integration builds require explicit
+       properties so a developer never compiles against an unintended Terraria or XNA install. -->
+  <Import Project="$(MSBuildThisFileDirectory)Directory.Build.props.user" Condition="Exists('$(MSBuildThisFileDirectory)Directory.Build.props.user')" />
+</Project>

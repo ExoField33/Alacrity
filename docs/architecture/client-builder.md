@@ -1,6 +1,6 @@
 # Client Builder
 
-`BuildAlacrityClient.bat` invokes the repository-owned `Alacrity.ClientBuilder` to turn a clone inside a vanilla Terraria 1.4.5.6 installation into an Alacrity client.
+`BuildAlacrityClient.bat` invokes the repository-owned `Alacrity.ClientBuilder` to turn a clone inside a vanilla Terraria 1.4.5.6 installation into a separate generated Alacrity client.
 
 ## Layout
 
@@ -9,16 +9,18 @@ Clone the repository directly inside the folder containing the vanilla `Terraria
 ```text
 Terraria\
   Terraria.exe                 # vanilla; never modified
-  Alacrity\                    # this repository and generated Alacrity client
+  Alacrity\                    # this repository only
     BuildAlacrityClient.bat
+  AlacrityClient\              # generated client; ignored/pipeline-owned
 ```
 
-Run `Alacrity\BuildAlacrityClient.bat`. It copies the vanilla runtime dependencies into the clone, then creates the generated client there:
+Run `Alacrity\BuildAlacrityClient.bat`. It copies the vanilla runtime dependencies into the separate generated client directory:
 
 ```text
 Terraria\
   Terraria.exe                 # untouched
-  Alacrity\                    # source clone and generated client
+  Alacrity\                    # source clone
+  AlacrityClient\              # generated client
     Alacrity.exe               # version-locked patched copy
     Terraria.exe               # copied vanilla input retained for rebuilds
     bin\                       # staged bridge, Core, SDK, App, bootstrap, and facade assemblies
@@ -26,7 +28,7 @@ Terraria\
     data\                      # client-owned runtime data
 ```
 
-The script accepts no output-directory argument; its output is always the clone folder. For an unusual local layout, set `ALACRITY_TERRARIA_DIRECTORY` to the vanilla installation before running the script. The normal clone-inside-Terraria layout needs no environment variables.
+The script accepts no output-directory argument; its output is always the sibling `AlacrityClient` folder. For an unusual local layout, set `ALACRITY_TERRARIA_DIRECTORY` to the vanilla installation before running the script. The normal clone-inside-Terraria layout needs no environment variables.
 
 ## Prerequisites
 
@@ -34,9 +36,15 @@ The script accepts no output-directory argument; its output is always the clone 
 - Terraria 1.4.5.6 with the Microsoft XNA Framework 4.0 runtime installed.
 - When XNA is not in the standard Windows GAC location, set `ALACRITY_XNA_REFERENCE_DIRECTORY` to the directory containing the `Microsoft.Xna.Framework` GAC subdirectories.
 
-The script copies the vanilla client dependencies into the clone, builds `artifacts/runtime/` from the current sources, then asks `Alacrity.ClientBuilder` to validate the clean source, validate the staged runtime hashes and bridge ABI, patch a temporary copy, and atomically deploy only pipeline-owned outputs. It never writes to the original `Terraria.exe`. Generated runtime files remain ignored by Git, so source remains authoritative.
+The script copies the vanilla client dependencies into `AlacrityClient`, builds `artifacts/runtime/` from the current sources, then asks `Alacrity.ClientBuilder` to validate the clean source, validate the staged runtime hashes and bridge ABI, patch a temporary copy, and atomically deploy only pipeline-owned outputs. It never writes to the original `Terraria.exe` or the source clone. Generated runtime files remain ignored by Git, so source remains authoritative.
 
 The patch tool verifies the audited Terraria 1.4.5.6 assembly identity and SHA-256 before it creates `Alacrity.exe`. A different game executable fails closed rather than producing a partially patched client.
+
+For an explicit deployment into an existing generated client directory, the builder reads and validates
+the previous ownership manifest before copying any new files. It then removes only old
+pipeline-owned runtime files that are absent from the new stage and publishes the new manifest last.
+Malformed manifests and paths outside the generated client root fail closed; saves, configuration,
+and user-installed files are never treated as builder-owned output.
 
 ## Direct builder use
 

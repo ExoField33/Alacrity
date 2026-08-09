@@ -2114,7 +2114,8 @@ public static class FoundationScenarioSuite
         controller.Enable();
         Assert(plugin.Started.Wait(TimeSpan.FromSeconds(1)), "The activation-owned background callback must start before disable is tested.");
         controller.Disable();
-        Assert(controller.State == PluginLifecycleState.Disabled, "Synchronous disable must close the activation without waiting for worker completion.");
+        Assert(controller.State == PluginLifecycleState.Disabling, "Synchronous disable must keep the instance non-reusable until its prior activation background work quiesces.");
+        Assert(SpinWait.SpinUntil(() => controller.State == PluginLifecycleState.Disabled, TimeSpan.FromSeconds(1)), "Cooperative activation background work must eventually make the plugin reusable.");
 
         controller.Initialize();
         controller.Enable();
@@ -2152,7 +2153,10 @@ public static class FoundationScenarioSuite
         controller.Disable();
         stopwatch.Stop();
         Assert(stopwatch.Elapsed < TimeSpan.FromMilliseconds(250), "Synchronous plugin disable must not block the caller waiting for ignored background cancellation.");
+        Assert(controller.State == PluginLifecycleState.Disabling, "A non-cooperative activation must not be reusable while its old worker is still running.");
+        AssertThrows<InvalidOperationException>(() => controller.Initialize());
         plugin.Release();
+        Assert(SpinWait.SpinUntil(() => controller.State == PluginLifecycleState.Disabled, TimeSpan.FromSeconds(1)), "The controller must become reusable after the old worker finishes cooperatively.");
     }
 
     private static void ChatDecoratorOwnershipDoesNotRequireAnEditor()

@@ -95,6 +95,64 @@ public sealed class CecilPatchPrimitiveTests : IDisposable
         Assert.Equal(1, CountPingCalls(module));
     }
 
+    [Fact]
+    public void PatchPostconditionRejectsBridgeCallsInsertedIntoAnUnrelatedTarget()
+    {
+        var path = CreateFixture();
+        using var module = ModuleDefinition.ReadModule(path);
+        var target = new ClientPatchTarget("fixture.run", "Fixture.Container/Nested", "Run(System.Int32)", "return", "insert Ping", "Ping");
+        var operation = new ClientPatchOperation("fixture.targeted", "Fixture.Container/Nested", "targeted fixture", new[] { target }, "Ping");
+        var definition = new ClientPatchDefinition(
+            "fixture.targeted.patch",
+            (assembly, _) =>
+            {
+                var unrelated = new TypeDefinition("Fixture", "Unrelated", TypeAttributes.Public | TypeAttributes.Class, assembly.TypeSystem.Object);
+                assembly.Types.Add(unrelated);
+                var method = new MethodDefinition("Run", MethodAttributes.Public | MethodAttributes.Static, assembly.TypeSystem.Void);
+                unrelated.Methods.Add(method);
+                var facade = new AssemblyNameReference(BridgeAbiContractCatalog.FacadeAssemblyName, new Version(1, 0));
+                assembly.AssemblyReferences.Add(facade);
+                var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", assembly, facade);
+                var ping = new MethodReference("Ping", assembly.TypeSystem.Void, bridgeType) { HasThis = false };
+                method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, ping));
+                method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            },
+            assembly => CountPingCalls(assembly) > 0,
+            new[] { operation });
+
+        var exception = Assert.Throws<ClientBuildException>(() => PermanentPatchCatalog.ApplyDefinitions(module, path, new[] { definition }));
+        Assert.Contains("fixture.run", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PatchPostconditionRejectsBridgeCallsInTheWrongOverload()
+    {
+        var path = CreateFixture();
+        using var module = ModuleDefinition.ReadModule(path);
+        var nested = CecilPatchPrimitives.RequireType(module, "Fixture.Container/Nested");
+        var wrongOverload = new MethodDefinition("Run", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.Void);
+        wrongOverload.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+        nested.Methods.Add(wrongOverload);
+
+        var target = new ClientPatchTarget("fixture.run", "Fixture.Container/Nested", "Run(System.Int32)", "return", "insert Ping", "Ping");
+        var operation = new ClientPatchOperation("fixture.targeted", "Fixture.Container/Nested", "targeted fixture", new[] { target }, "Ping");
+        var definition = new ClientPatchDefinition(
+            "fixture.targeted.patch",
+            (assembly, _) =>
+            {
+                var facade = new AssemblyNameReference(BridgeAbiContractCatalog.FacadeAssemblyName, new Version(1, 0));
+                assembly.AssemblyReferences.Add(facade);
+                var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", assembly, facade);
+                var ping = new MethodReference("Ping", assembly.TypeSystem.Void, bridgeType) { HasThis = false };
+                wrongOverload.Body.GetILProcessor().InsertBefore(wrongOverload.Body.Instructions[0], Instruction.Create(OpCodes.Call, ping));
+            },
+            assembly => CountPingCalls(assembly) > 0,
+            new[] { operation });
+
+        var exception = Assert.Throws<ClientBuildException>(() => PermanentPatchCatalog.ApplyDefinitions(module, path, new[] { definition }));
+        Assert.Contains("fixture.run", exception.Message, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory))

@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <AlacrityTerrariaFacingProject Condition="'$(MSBuildProjectName)' == 'Alacrity.TerrariaIntegration' Or '$(MSBuildProjectName)' == 'Alacrity.PluginUiRuntime' Or '$(MSBuildProjectName)' == 'Alacrity.TerrariaIntegration.Tests'">true</AlacrityTerrariaFacingProject>
+  </PropertyGroup>
+  <Target Name="ValidateAlacrityTerrariaReferences" BeforeTargets="ResolveReferences" Condition="'$(AlacrityTerrariaFacingProject)' == 'true'">
+    <Error Condition="'$(AlacrityTerrariaAssemblyPath)' == ''" Text="AlacrityTerrariaAssemblyPath is not configured. Set it to the verified Terraria.exe for this client build." />
+    <Error Condition="'$(AlacrityXnaReferenceDirectory)' == ''" Text="AlacrityXnaReferenceDirectory is not configured. Set it to the directory containing the Microsoft.Xna.Framework GAC subdirectories." />
+    <Error Condition="!Exists('$(AlacrityTerrariaAssemblyPath)')" Text="Terraria reference is missing. Set AlacrityTerrariaAssemblyPath to the verified Terraria.exe for this client build." />
+    <Error Condition="!Exists('$(AlacrityXnaReferenceDirectory)\Microsoft.Xna.Framework\v4.0_4.0.0.0__842cf8be1de50553\Microsoft.Xna.Framework.dll')" Text="XNA reference is missing. Set AlacrityXnaReferenceDirectory to the folder containing the Microsoft.Xna.Framework GAC subdirectories." />
+    <Error Condition="!Exists('$(AlacrityXnaReferenceDirectory)\Microsoft.Xna.Framework.Graphics\v4.0_4.0.0.0__842cf8be1de50553\Microsoft.Xna.Framework.Graphics.dll')" Text="XNA Graphics reference is missing. Set AlacrityXnaReferenceDirectory to the folder containing the Microsoft.Xna.Framework.Graphics GAC subdirectory." />
+    <Error Condition="!Exists('$(AlacrityXnaReferenceDirectory)\Microsoft.Xna.Framework.Game\v4.0_4.0.0.0__842cf8be1de50553\Microsoft.Xna.Framework.Game.dll')" Text="XNA Game reference is missing. Set AlacrityXnaReferenceDirectory to the folder containing the Microsoft.Xna.Framework.Game GAC subdirectory." />
+  </Target>
+</Project>

@@ -2,7 +2,7 @@
 setlocal EnableExtensions DisableDelayedExpansion
 set "EXIT_CODE=0"
 
-rem Builds Alacrity directly inside this cloned repository folder.
+rem Builds the generated Alacrity client beside this source clone.
 rem The cloned repository is expected to be directly inside the Terraria folder.
 
 set "REPO_DIR=%~dp0"
@@ -13,7 +13,7 @@ if "%ALACRITY_TERRARIA_DIRECTORY%"=="" (
     for %%I in ("%ALACRITY_TERRARIA_DIRECTORY%") do set "TERRARIA_DIR=%%~fI"
 )
 
-set "CLIENT_DIR=%REPO_DIR%"
+set "CLIENT_DIR=%TERRARIA_DIR%\AlacrityClient"
 
 if not exist "%TERRARIA_DIR%\Terraria.exe" (
     echo ERROR: Terraria.exe was not found beside this clone.
@@ -23,7 +23,7 @@ if not exist "%TERRARIA_DIR%\Terraria.exe" (
 )
 
 if not "%~1"=="" (
-    echo ERROR: This builder always deploys into the folder containing BuildAlacrityClient.bat.
+    echo ERROR: This builder does not accept an output argument. It creates AlacrityClient beside the source clone.
     set "EXIT_CODE=1"
     goto :Finish
 )
@@ -41,7 +41,8 @@ if not exist "%XNA_DIR%\Microsoft.Xna.Framework\v4.0_4.0.0.0__842cf8be1de50553\M
 echo.
 echo [1/5] Copying vanilla Terraria files into:
 echo         %CLIENT_DIR%
-robocopy "%TERRARIA_DIR%" "%CLIENT_DIR%" /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD "%REPO_DIR%" "%TERRARIA_DIR%\AlacrityClient"
+if not exist "%CLIENT_DIR%" mkdir "%CLIENT_DIR%"
+robocopy "%TERRARIA_DIR%" "%CLIENT_DIR%" /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD "%REPO_DIR%" "%CLIENT_DIR%"
 set "ROBOCOPY_EXIT=%ERRORLEVEL%"
 if %ROBOCOPY_EXIT% GEQ 8 (
     echo ERROR: Robocopy failed with exit code %ROBOCOPY_EXIT%.

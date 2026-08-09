@@ -57,7 +57,7 @@ internal sealed class RuntimeStage
                 continue;
             }
 
-            var relativePath = lines[index].Substring(0, separator).Replace('\\', '/');
+            var relativePath = ClientBuildPaths.NormalizeRelativePath(lines[index].Substring(0, separator), "Runtime stage manifest path");
             var hash = lines[index].Substring(separator + 1);
             if (declaredHashes.ContainsKey(relativePath))
             {
@@ -96,6 +96,8 @@ internal sealed class RuntimeStage
             throw new ClientBuildException("Runtime stage manifest declares files that are missing from the staged directory.");
         }
 
+        ValidateIntentionalRootAndBinDuplicates(files);
+
         files.Sort((left, right) => StringComparer.Ordinal.Compare(left.Path, right.Path));
         if (string.IsNullOrWhiteSpace(buildConfiguration))
         {
@@ -105,13 +107,46 @@ internal sealed class RuntimeStage
         return new RuntimeStage(directory, buildConfiguration, files);
     }
 
+    private static void ValidateIntentionalRootAndBinDuplicates(IReadOnlyList<ClientBuildFile> files)
+    {
+        var rootFiles = new Dictionary<string, ClientBuildFile>(StringComparer.OrdinalIgnoreCase);
+        for (int index = 0; index < files.Count; index++)
+        {
+            ClientBuildFile file = files[index];
+            if (file.Path.IndexOf('/') < 0)
+            {
+                rootFiles[file.Path] = file;
+            }
+        }
+
+        for (int index = 0; index < files.Count; index++)
+        {
+            ClientBuildFile file = files[index];
+            if (!file.Path.StartsWith("bin/", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string name = file.Path.Substring("bin/".Length);
+            if (name.IndexOf('/') >= 0 || !rootFiles.TryGetValue(name, out ClientBuildFile? rootFile))
+            {
+                continue;
+            }
+
+            if (!string.Equals(rootFile.Sha256, file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ClientBuildException("Runtime stage contains different root and bin copies of " + name + ". Rebuild the complete runtime stage.");
+            }
+        }
+    }
+
     internal void CopyTo(string targetDirectory)
     {
         for (var index = 0; index < files.Count; index++)
         {
             var relativePath = files[index].Path.Replace('/', Path.DirectorySeparatorChar);
-            var sourcePath = Path.Combine(Directory, relativePath);
-            var targetPath = Path.Combine(targetDirectory, relativePath);
+            var sourcePath = ClientBuildPaths.ResolveUnderRoot(Directory, relativePath, "Runtime stage file path");
+            var targetPath = ClientBuildPaths.ResolveUnderRoot(targetDirectory, relativePath, "Runtime stage file path");
             var targetParent = Path.GetDirectoryName(targetPath)!;
             System.IO.Directory.CreateDirectory(targetParent);
             File.Copy(sourcePath, targetPath, overwrite: true);

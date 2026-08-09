@@ -73,6 +73,17 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     }
 
     [Fact]
+    public void RuntimeStageRejectsDifferentRootAndBinCopiesOfTheSameAssembly()
+    {
+        CreateRuntimeStage("2|2|2|1.4.5.6");
+        File.WriteAllText(Path.Combine(directory, "bin", "Alacrity.Core.dll"), "different core");
+        WriteStageManifest();
+
+        var exception = Assert.Throws<ClientBuildException>(() => RuntimeStage.Load(directory));
+        Assert.Contains("different root and bin copies", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BridgeFacadeRejectsAnIncompatibleHandshake()
     {
         CreateRuntimeStage("2|2|1|1.4.5.6");
@@ -116,7 +127,9 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
             module.Types.Add(type);
             var method = new MethodDefinition("Call", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.Void);
             type.Methods.Add(method);
-            var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", module, module.TypeSystem.CoreLibrary);
+            var facadeAssembly = new AssemblyNameReference(BridgeAbiContractCatalog.FacadeAssemblyName, new Version(1, 0));
+            module.AssemblyReferences.Add(facadeAssembly);
+            var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", module, facadeAssembly);
             var bridgeCall = new MethodReference("BootstrapPluginRuntime", module.TypeSystem.Void, bridgeType)
             {
                 HasThis = false
@@ -131,6 +144,77 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
 
         Assert.Single(methods);
         Assert.Contains("BootstrapPluginRuntime", methods[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PatchedExecutableRejectsAFacadeLookalikeFromTheWrongAssembly()
+    {
+        CreateRuntimeStage("2|2|2|1.4.5.6");
+        var executablePath = Path.Combine(directory, "wrong-scope.exe");
+        using (var module = ModuleDefinition.CreateModule("Fixture", ModuleKind.Console))
+        {
+            var type = new TypeDefinition("Fixture", "Entry", TypeAttributes.Public | TypeAttributes.Class, module.TypeSystem.Object);
+            module.Types.Add(type);
+            var method = new MethodDefinition("Call", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.Void);
+            type.Methods.Add(method);
+            var wrongAssembly = new AssemblyNameReference("Wrong.PluginUiRuntime", new Version(1, 0));
+            module.AssemblyReferences.Add(wrongAssembly);
+            var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", module, wrongAssembly);
+            var bridgeCall = new MethodReference("BootstrapPluginRuntime", module.TypeSystem.Void, bridgeType)
+            {
+                HasThis = false
+            };
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, bridgeCall));
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            module.Write(executablePath);
+        }
+
+        using var patched = ModuleDefinition.ReadModule(executablePath);
+        var exception = Assert.Throws<ClientBuildException>(() => BridgeAbiCatalog.ValidatePatchedExecutable(patched, directory));
+        Assert.Contains("Wrong.PluginUiRuntime", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("return")]
+    [InlineData("parameter")]
+    [InlineData("generic")]
+    [InlineData("instance")]
+    [InlineData("missing")]
+    public void PatchedExecutableRejectsEveryChangedAbiSignatureShape(string variation)
+    {
+        CreateRuntimeStage("2|2|2|1.4.5.6");
+        string executablePath = Path.Combine(directory, variation + ".exe");
+        using (var module = ModuleDefinition.CreateModule("Fixture", ModuleKind.Console))
+        {
+            var type = new TypeDefinition("Fixture", "Entry", TypeAttributes.Public | TypeAttributes.Class, module.TypeSystem.Object);
+            module.Types.Add(type);
+            var method = new MethodDefinition("Call", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.Void);
+            type.Methods.Add(method);
+            var facadeAssembly = new AssemblyNameReference(BridgeAbiContractCatalog.FacadeAssemblyName, new Version(1, 0));
+            module.AssemblyReferences.Add(facadeAssembly);
+            var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", module, facadeAssembly);
+            var bridgeCall = new MethodReference(
+                variation == "missing" ? "NotAnAbiMethod" : "BootstrapPluginRuntime",
+                variation == "return" ? module.TypeSystem.String : module.TypeSystem.Void,
+                bridgeType)
+            {
+                HasThis = variation == "instance"
+            };
+            if (variation == "parameter")
+            {
+                bridgeCall.Parameters.Add(new ParameterDefinition(module.TypeSystem.Int32));
+            }
+            if (variation == "generic")
+            {
+                bridgeCall.GenericParameters.Add(new GenericParameter("T", bridgeCall));
+            }
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, bridgeCall));
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            module.Write(executablePath);
+        }
+
+        using var patched = ModuleDefinition.ReadModule(executablePath);
+        Assert.Throws<ClientBuildException>(() => BridgeAbiCatalog.ValidatePatchedExecutable(patched, directory));
     }
 
     [Fact]
@@ -160,6 +244,93 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         Assert.False(File.Exists(stalePlugin));
         Assert.False(File.Exists(staleBridge));
         Assert.True(File.Exists(unrelated));
+    }
+
+    [Fact]
+    public void DeploymentReadsPriorOwnershipBeforeItPublishesTheNewManifest()
+    {
+        string output = Path.Combine(directory, "client");
+        string temporary = Path.Combine(directory, "temporary");
+        Directory.CreateDirectory(Path.Combine(output, "bin"));
+        Directory.CreateDirectory(Path.Combine(output, "plugins", "removed-plugin"));
+        Directory.CreateDirectory(Path.Combine(temporary, "bin"));
+        File.WriteAllText(Path.Combine(output, "bin", "OldBridge.dll"), "old bridge");
+        File.WriteAllText(Path.Combine(output, "plugins", "removed-plugin", "RemovedPlugin.dll"), "old plugin");
+        File.WriteAllText(Path.Combine(output, "user-extension.dll"), "user file");
+        File.WriteAllText(Path.Combine(temporary, "Alacrity.exe"), "new executable");
+        File.WriteAllText(Path.Combine(temporary, "bin", "NewBridge.dll"), "new bridge");
+
+        var previous = new ClientBuildManifest
+        {
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/OldBridge.dll", Sha256 = "old" },
+                new ClientBuildFile { Path = "plugins/removed-plugin/RemovedPlugin.dll", Sha256 = "old" }
+            }
+        };
+        File.WriteAllText(Path.Combine(output, "alacrity-client-manifest.json"), System.Text.Json.JsonSerializer.Serialize(previous));
+        var current = new ClientBuildManifest
+        {
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/NewBridge.dll", Sha256 = "new" }
+            }
+        };
+
+        ClientBuildPipeline.PublishDeployment(temporary, output, current);
+
+        Assert.False(File.Exists(Path.Combine(output, "bin", "OldBridge.dll")));
+        Assert.False(File.Exists(Path.Combine(output, "plugins", "removed-plugin", "RemovedPlugin.dll")));
+        Assert.True(File.Exists(Path.Combine(output, "user-extension.dll")));
+        Assert.True(File.Exists(Path.Combine(output, "Alacrity.exe")));
+        Assert.True(File.Exists(Path.Combine(output, "bin", "NewBridge.dll")));
+        var published = System.Text.Json.JsonSerializer.Deserialize<ClientBuildManifest>(File.ReadAllText(Path.Combine(output, "alacrity-client-manifest.json")));
+        Assert.NotNull(published);
+        Assert.Single(published!.RuntimeFiles);
+        Assert.Equal("bin/NewBridge.dll", published.RuntimeFiles[0].Path);
+    }
+
+    [Fact]
+    public void FailedDeploymentKeepsThePreviousOwnershipManifest()
+    {
+        string output = Path.Combine(directory, "client");
+        string temporary = Path.Combine(directory, "temporary");
+        Directory.CreateDirectory(output);
+        Directory.CreateDirectory(temporary);
+        var previous = new ClientBuildManifest
+        {
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/OldBridge.dll", Sha256 = "old" }
+            }
+        };
+        string manifestPath = Path.Combine(output, "alacrity-client-manifest.json");
+        string previousJson = System.Text.Json.JsonSerializer.Serialize(previous);
+        File.WriteAllText(manifestPath, previousJson);
+
+        var invalid = new ClientBuildManifest
+        {
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "../outside.dll", Sha256 = "bad" }
+            }
+        };
+
+        Assert.Throws<ClientBuildException>(() => ClientBuildPipeline.PublishDeployment(temporary, output, invalid));
+        Assert.Equal(previousJson, File.ReadAllText(manifestPath));
+    }
+
+    [Theory]
+    [InlineData("../outside.dll")]
+    [InlineData("../../outside.dll")]
+    [InlineData("C:\\outside.dll")]
+    [InlineData("\\\\server\\share\\outside.dll")]
+    public void ManifestPathsCannotEscapeTheirStageOrDeploymentRoot(string path)
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "stage"));
+        File.WriteAllText(Path.Combine(directory, "stage", "runtime-manifest.txt"), "Configuration=Release\n" + path + "|hash");
+
+        Assert.Throws<ClientBuildException>(() => RuntimeStage.Load(Path.Combine(directory, "stage")));
     }
 
     public void Dispose()

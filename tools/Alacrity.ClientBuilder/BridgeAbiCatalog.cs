@@ -150,6 +150,11 @@ internal static class BridgeAbiCatalog
                     continue;
                 }
 
+                if (!ReferencesFacadeAssembly(reference))
+                {
+                    throw new ClientBuildException("Patched method " + method.FullName + " references " + BridgeTypeName + " from assembly scope '" + reference.DeclaringType.Scope.Name + "', expected '" + BridgeAbiContractCatalog.FacadeAssemblyName + "'.");
+                }
+
                 if (!HasExactFacadeMethod(bridgeType, reference))
                 {
                     throw new ClientBuildException("Patched method " + method.FullName + " references an ABI member absent from the staged facade: " + reference.FullName + ".");
@@ -204,7 +209,9 @@ internal static class BridgeAbiCatalog
 
     private static bool MatchesContract(MethodReference method, BridgeAbiContract contract)
     {
-        if (!string.Equals(method.ReturnType.FullName, contract.ReturnType, StringComparison.Ordinal) || method.Parameters.Count != contract.ParameterTypes.Count)
+        if (method.HasThis || method.ExplicitThis || method.GenericParameters.Count != 0 ||
+            !string.Equals(method.ReturnType.FullName, contract.ReturnType, StringComparison.Ordinal) ||
+            method.Parameters.Count != contract.ParameterTypes.Count)
         {
             return false;
         }
@@ -218,6 +225,16 @@ internal static class BridgeAbiCatalog
         }
 
         return true;
+    }
+
+    private static bool ReferencesFacadeAssembly(MethodReference reference)
+    {
+        if (reference.DeclaringType.Scope is not AssemblyNameReference assembly)
+        {
+            return false;
+        }
+
+        return string.Equals(assembly.Name, BridgeAbiContractCatalog.FacadeAssemblyName, StringComparison.Ordinal);
     }
 
     private static string Describe(BridgeAbiContract contract)

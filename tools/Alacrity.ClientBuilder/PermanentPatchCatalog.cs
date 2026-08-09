@@ -128,7 +128,7 @@ internal static class PermanentPatchCatalog
             "Main-menu insertion, in-game settings replacement, and version labels",
             new ClientPatchTarget("menu.version-labels", "Terraria.Main", ".cctor()", "the exact v1.4.5.6 assignments to versionNumber and versionNumber2", "replace string literals with Terraria v1.4.5.6"),
             new ClientPatchTarget("menu.main-entry", "Terraria.Main", "DrawMenu(Microsoft.Xna.Framework.GameTime)", "SocialAPI.Workshop load following the verified seven-row count and locals 27/9/45", "insert a native Plugins row and call", "OpenPluginManager"),
-            new ClientPatchTarget("menu.ingame-settings", "Terraria.IngameOptions", "Draw(Microsoft.Xna.Framework.Graphics.SpriteBatch, Microsoft.Xna.Framework.GameTime)", "Lang.menu[118] Close Menu label/action and final Main.DrawThickCursor call", "replace Close Menu action and insert draw callback", "OpenIngamePluginSettings", "DrawIngamePluginSettings"),
+            new ClientPatchTarget("menu.ingame-settings", "Terraria.IngameOptions", "Draw(Terraria.Main, Microsoft.Xna.Framework.Graphics.SpriteBatch)", "Lang.menu[118] Close Menu label/action and final Main.DrawThickCursor call", "replace Close Menu action and insert draw callback", "OpenIngamePluginSettings", "DrawIngamePluginSettings"),
             new ClientPatchTarget("menu.version-draw", "Terraria.Main", "DrawMenu(Microsoft.Xna.Framework.GameTime)", "Main.DrawVersionNumber(Color, Single) using verified locals 3 and 31", "insert after version draw", "DrawAlacrityVersion")),
         CreateDefinition(
             "patch.runtime.input-and-keybinds",
@@ -359,13 +359,131 @@ internal static class PermanentPatchCatalog
 
     private static void ValidateOperationPostcondition(ModuleDefinition module, ClientPatchOperation operation)
     {
-        for (var methodIndex = 0; methodIndex < operation.BridgeMethods.Count; methodIndex++)
+        for (int targetIndex = 0; targetIndex < operation.Targets.Count; targetIndex++)
         {
-            if (!HasBridgeMethodCall(module, operation.BridgeMethods[methodIndex]))
+            ClientPatchTarget target = operation.Targets[targetIndex];
+            if (target.BridgeMethods.Count == 0)
             {
-                throw new ClientBuildException("Patch operation " + operation.Id + " did not inject its expected bridge method " + operation.BridgeMethods[methodIndex] + ". Target: " + operation.TargetType + " (" + operation.TargetDescription + ").");
+                continue;
+            }
+
+            TypeDefinition type = CecilPatchPrimitives.RequireType(module, target.TypeName);
+            IReadOnlyList<MethodDefinition> targetMethods = ResolveTargetMethods(type, target);
+            for (int bridgeIndex = 0; bridgeIndex < target.BridgeMethods.Count; bridgeIndex++)
+            {
+                string bridgeMethod = target.BridgeMethods[bridgeIndex];
+                if (!HasBridgeMethodCall(targetMethods, bridgeMethod))
+                {
+                    throw new ClientBuildException(
+                        "Patch target " + target.Id + " did not inject its expected bridge method " + bridgeMethod +
+                        " into " + target.TypeName + "::" + target.MemberSignature + ".");
+                }
             }
         }
+    }
+
+    private static IReadOnlyList<MethodDefinition> ResolveTargetMethods(TypeDefinition type, ClientPatchTarget target)
+    {
+        var methods = new List<MethodDefinition>();
+        string[] alternatives = target.MemberSignature.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int index = 0; index < alternatives.Length; index++)
+        {
+            string candidate = alternatives[index].Trim();
+            int argumentStart = candidate.IndexOf('(');
+            int argumentEnd = candidate.LastIndexOf(')');
+            if (argumentStart <= 0 || argumentEnd != candidate.Length - 1)
+            {
+                throw new ClientBuildException("Patch target " + target.Id + " has an invalid member signature: " + target.MemberSignature + ".");
+            }
+
+            string name = candidate.Substring(0, argumentStart).Trim();
+            if (name.Length == 0)
+            {
+                throw new ClientBuildException("Patch target " + target.Id + " has an invalid member signature: " + target.MemberSignature + ".");
+            }
+
+            string parameters = candidate.Substring(argumentStart + 1, argumentEnd - argumentStart - 1).Trim();
+            bool usesEllipsis = parameters.IndexOf("...", StringComparison.Ordinal) >= 0;
+            string[] parameterTypes = usesEllipsis || parameters.Length == 0
+                ? Array.Empty<string>()
+                : parameters.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+            MethodDefinition? match = null;
+            for (int methodIndex = 0; methodIndex < type.Methods.Count; methodIndex++)
+            {
+                MethodDefinition method = type.Methods[methodIndex];
+                if (!method.HasBody || !string.Equals(method.Name, name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!usesEllipsis && !MatchesTargetParameters(method, parameterTypes))
+                {
+                    continue;
+                }
+
+                if (match != null)
+                {
+                    throw new ClientBuildException("Patch target " + target.Id + " resolves ambiguously to multiple methods in " + type.FullName + ".");
+                }
+
+                match = method;
+            }
+
+            if (match == null)
+            {
+                throw new ClientBuildException("Patch target " + target.Id + " could not resolve " + type.FullName + "::" + candidate + ".");
+            }
+
+            methods.Add(match);
+        }
+
+        if (methods.Count == 0)
+        {
+            throw new ClientBuildException("Patch target " + target.Id + " does not identify a target member.");
+        }
+
+        return methods;
+    }
+
+    private static bool MatchesTargetParameters(MethodDefinition method, IReadOnlyList<string> expectedTypes)
+    {
+        if (method.Parameters.Count != expectedTypes.Count)
+        {
+            return false;
+        }
+
+        for (int parameterIndex = 0; parameterIndex < expectedTypes.Count; parameterIndex++)
+        {
+            string expected = expectedTypes[parameterIndex].Trim();
+            string actual = method.Parameters[parameterIndex].ParameterType.FullName;
+            if (!string.Equals(actual, expected, StringComparison.Ordinal) &&
+                !actual.EndsWith("." + expected, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasBridgeMethodCall(IReadOnlyList<MethodDefinition> targetMethods, string bridgeMethod)
+    {
+        for (int methodIndex = 0; methodIndex < targetMethods.Count; methodIndex++)
+        {
+            MethodDefinition method = targetMethods[methodIndex];
+            for (int instructionIndex = 0; instructionIndex < method.Body.Instructions.Count; instructionIndex++)
+            {
+                if (method.Body.Instructions[instructionIndex].Operand is MethodReference reference &&
+                    string.Equals(reference.DeclaringType.FullName, BridgeAbiContractCatalog.FacadeTypeName, StringComparison.Ordinal) &&
+                    string.Equals(reference.Name, bridgeMethod, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static bool HasBridgeMethodCall(ModuleDefinition module, string methodName)

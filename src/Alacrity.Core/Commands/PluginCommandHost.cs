@@ -19,20 +19,44 @@ public sealed class PluginCommandHost
     /// <summary>Creates an activation-scoped command service with owner-attributed diagnostics.</summary>
     public IPluginCommandService CreateService(PluginManifest? manifest, IPluginResourceScope resources, IPluginLogger? logger)
     {
-        if (resources == null) throw new ArgumentNullException(nameof(resources));
+        if (resources == null)
+        {
+            throw new ArgumentNullException(nameof(resources));
+        }
+
         var guard = new ScopeGuard();
-        try { resources.Own("commands", PluginResourceKind.Command, guard); }
-        catch { guard.Dispose(); throw; }
+        try
+        {
+            resources.Own("commands", PluginResourceKind.Command, guard);
+        }
+        catch
+        {
+            guard.Dispose();
+            throw;
+        }
+
         return new ScopedService(this, resources, guard, manifest?.Id ?? default, logger);
     }
 
     /// <summary>Dispatches a parsed command invocation with explicit consumed/failure semantics.</summary>
     public PluginCommandDispatchResult Dispatch(string id, IReadOnlyList<string> arguments, Action<string>? reply = null, IPluginLogger? diagnostics = null)
     {
-        if (string.IsNullOrWhiteSpace(id)) return PluginCommandDispatchResult.NotFound;
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return PluginCommandDispatchResult.NotFound;
+        }
+
         CommandRegistration? registration;
-        lock (gate) commands.TryGetValue(id, out registration);
-        if (registration == null) return PluginCommandDispatchResult.NotFound;
+        lock (gate)
+        {
+            commands.TryGetValue(id, out registration);
+        }
+
+        if (registration == null)
+        {
+            return PluginCommandDispatchResult.NotFound;
+        }
+
         try
         {
             registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>(), reply));
@@ -52,46 +76,170 @@ public sealed class PluginCommandHost
         return Dispatch(id, arguments, reply) != PluginCommandDispatchResult.NotFound;
     }
 
+    /// <summary>Returns whether a primary command ID or alias is currently owned by this host.</summary>
+    public bool IsRegistered(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        lock (gate)
+        {
+            return commands.ContainsKey(id);
+        }
+    }
+
     private IPluginRegistration Register(IPluginResourceScope resources, PluginId owner, IPluginLogger? logger, PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler)
     {
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (handler == null) throw new ArgumentNullException(nameof(handler));
         CommandRegistration registration;
+        var names = CreateNames(descriptor);
         lock (gate)
         {
-            if (commands.ContainsKey(descriptor.Id)) throw new InvalidOperationException("A command with this ID is already registered: " + descriptor.Id);
-            registration = new CommandRegistration(owner, logger, descriptor, handler, Remove);
-            commands.Add(descriptor.Id, registration);
+            for (int index = 0; index < names.Length; index++)
+            {
+                if (commands.ContainsKey(names[index]))
+                {
+                    throw new InvalidOperationException("A command with this ID or alias is already registered: " + names[index]);
+                }
+            }
+
+            registration = new CommandRegistration(owner, logger, descriptor, names, handler, Remove);
+            for (int index = 0; index < names.Length; index++)
+            {
+                commands.Add(names[index], registration);
+            }
         }
-        try { resources.Own(registration.Name, PluginResourceKind.Command, registration); return registration; }
-        catch { registration.Dispose(); throw; }
+        try
+        {
+            resources.Own(registration.Name, PluginResourceKind.Command, registration);
+            return registration;
+        }
+        catch
+        {
+            registration.Dispose();
+            throw;
+        }
+    }
+
+    private static string[] CreateNames(PluginCommandDescriptor descriptor)
+    {
+        var names = new string[descriptor.Aliases.Count + 1];
+        names[0] = descriptor.Id;
+        for (int index = 0; index < descriptor.Aliases.Count; index++)
+        {
+            names[index + 1] = descriptor.Aliases[index];
+        }
+
+        return names;
     }
 
     private void Remove(CommandRegistration registration)
     {
         lock (gate)
-            if (commands.TryGetValue(registration.Descriptor.Id, out var current) && ReferenceEquals(current, registration)) commands.Remove(registration.Descriptor.Id);
+        {
+            for (int index = 0; index < registration.Names.Count; index++)
+            {
+                string name = registration.Names[index];
+                if (commands.TryGetValue(name, out var current) && ReferenceEquals(current, registration))
+                {
+                    commands.Remove(name);
+                }
+            }
+        }
     }
 
     private sealed class ScopedService : IPluginCommandService
     {
-        private readonly PluginCommandHost host; private readonly IPluginResourceScope resources; private readonly ScopeGuard guard; private readonly PluginId owner; private readonly IPluginLogger? logger;
-        public ScopedService(PluginCommandHost host, IPluginResourceScope resources, ScopeGuard guard, PluginId owner, IPluginLogger? logger) { this.host = host; this.resources = resources; this.guard = guard; this.owner = owner; this.logger = logger; }
+        private readonly PluginCommandHost host;
+        private readonly IPluginResourceScope resources;
+        private readonly ScopeGuard guard;
+        private readonly PluginId owner;
+        private readonly IPluginLogger? logger;
+
+        public ScopedService(PluginCommandHost host, IPluginResourceScope resources, ScopeGuard guard, PluginId owner, IPluginLogger? logger)
+        {
+            this.host = host;
+            this.resources = resources;
+            this.guard = guard;
+            this.owner = owner;
+            this.logger = logger;
+        }
+
         public IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler)
         {
-            if (guard.IsReleased) throw new ObjectDisposedException("IPluginCommandService", "The owning plugin scope has been released.");
+            if (guard.IsReleased)
+            {
+                throw new ObjectDisposedException("IPluginCommandService", "The owning plugin scope has been released.");
+            }
+
             return host.Register(resources, owner, logger, descriptor, handler);
         }
     }
+
     private sealed class CommandRegistration : IPluginRegistration
     {
-        private readonly Action<CommandRegistration> remove; private bool released;
-        public CommandRegistration(PluginId owner, IPluginLogger? logger, PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler, Action<CommandRegistration> remove) { Owner = owner; Logger = logger; Descriptor = descriptor; Handler = handler; this.remove = remove; }
-        public PluginId Owner { get; } public IPluginLogger? Logger { get; }
-        public PluginCommandDescriptor Descriptor { get; } public Action<PluginCommandInvocation> Handler { get; }
-        public string Name => "command:" + Descriptor.Id; public bool IsReleased => released;
-        public void Invoke(PluginCommandInvocation invocation) => Handler(invocation);
-        public void Dispose() { if (released) return; released = true; remove(this); }
+        private readonly Action<CommandRegistration> remove;
+        private bool released;
+
+        public CommandRegistration(
+            PluginId owner,
+            IPluginLogger? logger,
+            PluginCommandDescriptor descriptor,
+            IReadOnlyList<string> names,
+            Action<PluginCommandInvocation> handler,
+            Action<CommandRegistration> remove)
+        {
+            Owner = owner;
+            Logger = logger;
+            Descriptor = descriptor;
+            Names = names;
+            Handler = handler;
+            this.remove = remove;
+        }
+
+        public PluginId Owner { get; }
+
+        public IPluginLogger? Logger { get; }
+
+        public PluginCommandDescriptor Descriptor { get; }
+
+        public IReadOnlyList<string> Names { get; }
+
+        public Action<PluginCommandInvocation> Handler { get; }
+
+        public string Name => "command:" + Descriptor.Id;
+
+        public bool IsReleased => released;
+
+        public void Invoke(PluginCommandInvocation invocation)
+        {
+            Handler(invocation);
+        }
+
+        public void Dispose()
+        {
+            if (released)
+            {
+                return;
+            }
+
+            released = true;
+            remove(this);
+        }
     }
-    private sealed class ScopeGuard : IDisposable { private int released; internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0; public void Dispose() { System.Threading.Interlocked.Exchange(ref released, 1); } }
+
+    private sealed class ScopeGuard : IDisposable
+    {
+        private int released;
+
+        internal bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+
+        public void Dispose()
+        {
+            System.Threading.Interlocked.Exchange(ref released, 1);
+        }
+    }
 }

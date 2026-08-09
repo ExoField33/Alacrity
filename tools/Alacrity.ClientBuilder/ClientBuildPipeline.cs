@@ -166,45 +166,85 @@ internal static class ClientBuildPipeline
             return;
         }
 
-        CopyPipelineFiles(temporaryDirectory, options.OutputDirectory, manifest);
-        RemovePreviouslyOwnedFiles(options.OutputDirectory, manifest);
-        System.IO.Directory.CreateDirectory(Path.Combine(options.OutputDirectory, "data"));
+        PublishDeployment(temporaryDirectory, options.OutputDirectory, manifest);
+    }
+
+    /// <summary>Publishes a validated temporary client into an explicit existing deployment directory.</summary>
+    internal static void PublishDeployment(string temporaryDirectory, string outputDirectory, ClientBuildManifest manifest)
+    {
+        if (manifest == null)
+        {
+            throw new ArgumentNullException(nameof(manifest));
+        }
+
+        // Snapshot and validate the old ownership before the new manifest can overwrite it.
+        ClientBuildManifest? previousManifest = ReadPreviousDeploymentManifest(outputDirectory);
+        ValidateManifestPaths(outputDirectory, manifest, "New deployment manifest");
+        CopyPipelineFiles(temporaryDirectory, outputDirectory, manifest);
+        RemovePreviouslyOwnedFiles(outputDirectory, previousManifest, manifest);
+        WriteClientManifest(outputDirectory, manifest);
+        System.IO.Directory.CreateDirectory(Path.Combine(outputDirectory, "data"));
     }
 
     internal static void RemovePreviouslyOwnedFiles(string outputDirectory, ClientBuildManifest currentManifest)
     {
-        var previousManifestPath = Path.Combine(outputDirectory, ClientManifestName);
+        RemovePreviouslyOwnedFiles(outputDirectory, ReadPreviousDeploymentManifest(outputDirectory), currentManifest);
+    }
+
+    private static ClientBuildManifest? ReadPreviousDeploymentManifest(string outputDirectory)
+    {
+        string previousManifestPath = Path.Combine(outputDirectory, ClientManifestName);
         if (!File.Exists(previousManifestPath))
         {
-            return;
+            return null;
         }
 
         try
         {
-            var previous = JsonSerializer.Deserialize<ClientBuildManifest>(File.ReadAllText(previousManifestPath));
-            if (previous?.RuntimeFiles == null)
+            ClientBuildManifest? previous = JsonSerializer.Deserialize<ClientBuildManifest>(File.ReadAllText(previousManifestPath));
+            if (previous == null || previous.RuntimeFiles == null)
             {
-                return;
+                throw new ClientBuildException("Existing deployment manifest is missing its runtime-file ownership list. Remove only alacrity-client-manifest.json after checking the client directory.");
             }
 
-            for (var index = 0; index < previous.RuntimeFiles.Count; index++)
-            {
-                var relativePath = previous.RuntimeFiles[index].Path.Replace('/', Path.DirectorySeparatorChar);
-                if (!IsPipelineOwnedRuntimePath(relativePath) || ContainsRuntimeFile(currentManifest, relativePath))
-                {
-                    continue;
-                }
+            ValidateManifestPaths(outputDirectory, previous, "Existing deployment manifest");
+            return previous;
+        }
+        catch (JsonException exception)
+        {
+            throw new ClientBuildException("Existing deployment manifest is malformed. Remove only alacrity-client-manifest.json after checking the client directory. " + exception.Message);
+        }
+    }
 
-                var candidate = Path.GetFullPath(Path.Combine(outputDirectory, relativePath));
-                if (IsSubdirectory(candidate, outputDirectory) && File.Exists(candidate))
-                {
-                    File.Delete(candidate);
-                }
+    private static void RemovePreviouslyOwnedFiles(string outputDirectory, ClientBuildManifest? previousManifest, ClientBuildManifest currentManifest)
+    {
+        if (previousManifest == null)
+        {
+            return;
+        }
+
+        ValidateManifestPaths(outputDirectory, currentManifest, "New deployment manifest");
+        for (int index = 0; index < previousManifest.RuntimeFiles.Count; index++)
+        {
+            string relativePath = ClientBuildPaths.NormalizeRelativePath(previousManifest.RuntimeFiles[index].Path, "Existing deployment manifest path");
+            if (!IsPipelineOwnedRuntimePath(relativePath) || ContainsRuntimeFile(currentManifest, relativePath))
+            {
+                continue;
+            }
+
+            string candidate = ClientBuildPaths.ResolveUnderRoot(outputDirectory, relativePath, "Existing deployment manifest path");
+            if (File.Exists(candidate))
+            {
+                File.Delete(candidate);
             }
         }
-        catch (JsonException)
+    }
+
+    private static void ValidateManifestPaths(string rootDirectory, ClientBuildManifest manifest, string description)
+    {
+        for (int index = 0; index < manifest.RuntimeFiles.Count; index++)
         {
-            throw new ClientBuildException("Existing deployment manifest is malformed. Remove only alacrity-client-manifest.json after checking the client directory.");
+            ClientBuildPaths.ResolveUnderRoot(rootDirectory, manifest.RuntimeFiles[index].Path, description + " path");
         }
     }
 
@@ -212,7 +252,8 @@ internal static class ClientBuildPipeline
     {
         for (var index = 0; index < manifest.RuntimeFiles.Count; index++)
         {
-            if (string.Equals(manifest.RuntimeFiles[index].Path.Replace('/', Path.DirectorySeparatorChar), relativePath, StringComparison.OrdinalIgnoreCase))
+            string current = ClientBuildPaths.NormalizeRelativePath(manifest.RuntimeFiles[index].Path, "New deployment manifest path");
+            if (string.Equals(current, relativePath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -223,20 +264,21 @@ internal static class ClientBuildPipeline
 
     private static bool IsPipelineOwnedRuntimePath(string relativePath)
     {
-        if (relativePath.StartsWith("bin" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-            relativePath.StartsWith("plugins" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        string normalized = relativePath.Replace('\\', '/');
+        if (normalized.StartsWith("bin/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("plugins/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        return relativePath.StartsWith("Alacrity.", StringComparison.OrdinalIgnoreCase) &&
-            relativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(relativePath, "AlacrityBootstrapRuntime.dll", StringComparison.OrdinalIgnoreCase);
+        return normalized.StartsWith("Alacrity.", StringComparison.OrdinalIgnoreCase) &&
+            normalized.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "AlacrityBootstrapRuntime.dll", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void CopyPipelineFiles(string temporaryDirectory, string outputDirectory, ClientBuildManifest manifest)
     {
-        var files = new List<string> { "Alacrity.exe", ClientManifestName };
+        var files = new List<string> { "Alacrity.exe" };
         for (var index = 0; index < manifest.RuntimeFiles.Count; index++)
         {
             files.Add(manifest.RuntimeFiles[index].Path.Replace('/', Path.DirectorySeparatorChar));
@@ -244,9 +286,9 @@ internal static class ClientBuildPipeline
 
         for (var index = 0; index < files.Count; index++)
         {
-            var relativePath = files[index];
-            var sourcePath = Path.Combine(temporaryDirectory, relativePath);
-            var targetPath = Path.Combine(outputDirectory, relativePath);
+            string relativePath = ClientBuildPaths.NormalizeRelativePath(files[index], "Pipeline output path");
+            string sourcePath = ClientBuildPaths.ResolveUnderRoot(temporaryDirectory, relativePath, "Pipeline output path");
+            string targetPath = ClientBuildPaths.ResolveUnderRoot(outputDirectory, relativePath, "Pipeline output path");
             System.IO.Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
             File.Copy(sourcePath, targetPath, overwrite: true);
         }
@@ -255,7 +297,27 @@ internal static class ClientBuildPipeline
     private static void WriteClientManifest(string directory, ClientBuildManifest manifest)
     {
         var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText(Path.Combine(directory, ClientManifestName), JsonSerializer.Serialize(manifest, options));
+        string path = Path.Combine(directory, ClientManifestName);
+        string temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(manifest, options));
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Replace(temporaryPath, path, null);
+            }
+            else
+            {
+                File.Move(temporaryPath, path);
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     private static string? GetSourceRevision()

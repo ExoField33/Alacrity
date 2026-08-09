@@ -16,17 +16,17 @@ namespace AlacrityTerraria
     {
         private static void EnsurePluginManager()
         {
-            if (runtimeState != null)
+            if (RuntimeHost.State != null)
                 return;
 
             string root = AppDomain.CurrentDomain.BaseDirectory;
-            runtimeState = PluginUiRuntimeState.Create(
+            RuntimeHost.SetState(PluginUiRuntimeState.Create(
                 root,
                 EnsureChatRuntime,
                 GetActiveChatUserInteraction,
                 ReportOptionalUiFailure,
                 PersistEnabledPlugins,
-                PublishPluginOperationNotification);
+                PublishPluginOperationNotification));
         }
 
         private static IPluginUserInteractionService GetActiveChatUserInteraction()

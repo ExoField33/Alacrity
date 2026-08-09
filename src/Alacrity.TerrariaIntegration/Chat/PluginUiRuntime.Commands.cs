@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using Terraria;
@@ -18,12 +19,44 @@ namespace AlacrityTerraria
                 BootstrapPluginRuntime();
                 if (_commands == null)
                     return false;
-                string[] parts = text.Substring(1).Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 0)
+
+                int commandStart = 1;
+                int commandEnd = commandStart;
+                while (commandEnd < text.Length && !char.IsWhiteSpace(text[commandEnd]))
+                {
+                    commandEnd++;
+                }
+
+                if (commandEnd == commandStart)
+                {
                     return false;
-                var arguments = new string[Math.Max(0, parts.Length - 1)];
+                }
+
+                string commandId = text.Substring(commandStart, commandEnd - commandStart);
+                if (!_commands.IsRegistered(commandId))
+                {
+                    // Leave all unknown slash input, including malformed server commands, to vanilla.
+                    return false;
+                }
+
+                if (!PluginCommandTokenizer.TryTokenize(text.Substring(1), out IReadOnlyList<string> parts, out string parseError))
+                {
+                    ShowPluginCommandReply(parseError!);
+                    return true;
+                }
+
+                if (parts.Count == 0)
+                    return false;
+
+                var arguments = new string[Math.Max(0, parts.Count - 1)];
                 if (arguments.Length > 0)
-                    Array.Copy(parts, 1, arguments, 0, arguments.Length);
+                {
+                    for (int index = 0; index < arguments.Length; index++)
+                    {
+                        arguments[index] = parts[index + 1];
+                    }
+                }
+
                 return _commands.Dispatch(parts[0], arguments, ShowPluginCommandReply) != PluginCommandDispatchResult.NotFound;
             }
             catch (Exception exception)

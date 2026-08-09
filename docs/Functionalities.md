@@ -17,7 +17,7 @@ whether an existing context service can be extended without duplicating a host b
 | `context.Settings` | Typed persisted settings, validation, migration, subscriptions, and reset. |
 | `context.Storage` | Path-confined per-plugin persistent data. |
 | `context.Events` | Typed, ordered, scope-owned event subscriptions. |
-| `context.Commands` | Scope-owned command registration and dispatch. |
+| `context.Commands` | Scope-owned explicit command registration and optional fluent typed command binding with aliases, normalized help metadata, validation, and quoted arguments. |
 | `context.Keybinds` | Native Terraria controls-menu keybind registration and runtime dispatch. |
 | `context.Ui` | Retained settings pages/controls and reusable icon interactions. |
 | `context.Overlays` | Bounded world, HUD, and menu overlay callbacks without raw XNA access. |

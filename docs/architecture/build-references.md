@@ -46,4 +46,4 @@ dotnet run --project tools\Alacrity.ClientBuilder\Alacrity.ClientBuilder.csproj 
 
 `Directory.Build.targets` validates every required external reference before resolving assemblies and reports whether a required property was not configured or its configured path is missing.
 
-For a generated client inside the clone, use the repository-root `BuildAlacrityClient.bat` helper described in [client-builder.md](client-builder.md). It copies vanilla Terraria dependencies into the clone, stages the managed runtime, creates `plugins` and `data`, and invokes the repository-owned version-locked patch tool to create `Alacrity.exe` without modifying the original executable.
+For a generated client beside the clone, use the repository-root `BuildAlacrityClient.bat` helper described in [client-builder.md](client-builder.md). It copies vanilla Terraria dependencies into a sibling `AlacrityClient` directory, stages the managed runtime, creates `plugins` and `data`, and invokes the repository-owned version-locked patch tool to create `Alacrity.exe` without modifying the original executable or the source clone.
