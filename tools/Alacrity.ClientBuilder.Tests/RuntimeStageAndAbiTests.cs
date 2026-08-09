@@ -40,6 +40,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 "patch.runtime.startup-and-menu",
                 "patch.runtime.input-and-keybinds",
                 "patch.runtime.rendering-and-combat",
+                "patch.runtime.render-culling",
                 "patch.runtime.visual-effects",
                 "patch.runtime.chat-input-and-commands",
                 "patch.runtime.chat-display-and-interaction"
@@ -51,6 +52,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 "runtime.startup-and-menu",
                 "runtime.input-and-keybinds",
                 "runtime.rendering-and-combat",
+                "render.culling",
                 "runtime.visual-effects",
                 "runtime.chat-input-and-commands",
                 "runtime.chat-display-and-interaction"

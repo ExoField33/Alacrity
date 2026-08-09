@@ -264,12 +264,14 @@ public static class TerrariaIntegrationScenarioSuite
         AssertBundledPluginPackage(root, "alacrity.dust-gore-toggle", "Alacrity.DustGoreToggle.dll");
         AssertBundledPluginPackage(root, "alacrity.hitboxes", "Alacrity.Hitboxes.dll");
         AssertBundledPluginPackage(root, "alacrity.visual-diagnostics", "Alacrity.VisualDiagnostics.dll");
+        AssertBundledPluginPackage(root, "alacrity.off-screen-culling", "Alacrity.OffScreenCulling.dll");
         string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
         Assert(manifest.Contains("Alacrity.BetterChat.dll"), "The stage manifest must identify the BetterChat package assembly from this build.");
         Assert(manifest.Contains("Alacrity.PlayerList.dll"), "The stage manifest must identify the Player List package assembly from this build.");
         Assert(manifest.Contains("Alacrity.DustGoreToggle.dll"), "The stage manifest must identify the Dust/Gore package assembly from this build.");
         Assert(manifest.Contains("Alacrity.Hitboxes.dll"), "The stage manifest must identify the Hitboxes package assembly from this build.");
         Assert(manifest.Contains("Alacrity.VisualDiagnostics.dll"), "The stage manifest must identify the Visual Diagnostics package assembly from this build.");
+        Assert(manifest.Contains("Alacrity.OffScreenCulling.dll"), "The stage manifest must identify the Off-screen Culling package assembly from this build.");
         Assert(AssemblyName.GetAssemblyName(bridgePath).Name == "Alacrity.PluginUiCoreBridge", "The staged bridge file must carry the assembly identity expected by the runtime facade.");
 
         Assembly facade = Assembly.LoadFrom(facadePath);

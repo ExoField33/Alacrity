@@ -9,6 +9,7 @@ using Microsoft.Xna.Framework.Graphics;
 using Terraria.Audio;
 using Terraria;
 using Terraria.GameContent.UI.States;
+using Terraria.Graphics.Renderers;
 
 namespace AlacrityTerraria
 {
@@ -268,6 +269,9 @@ namespace AlacrityTerraria
         public static bool ShouldCreateDust(int dustType) => EnsureRuntimeCapabilities() && State.ShouldCreateDust != null ? State.ShouldCreateDust(dustType) : true;
         public static bool ShouldUpdateDustInstance(Dust dust) => EnsureRuntimeCapabilities() && State.ShouldUpdateDustInstance != null ? State.ShouldUpdateDustInstance(dust) : true;
         public static bool ShouldDrawDustInstance(Dust dust) => EnsureRuntimeCapabilities() && State.ShouldDrawDustInstance != null ? State.ShouldDrawDustInstance(dust) : true;
+        public static bool ShouldDrawWorldPlayer(Player player) => EnsureRuntimeCapabilities() && State.ShouldDrawWorldPlayer != null ? State.ShouldDrawWorldPlayer(player) : true;
+        public static bool ShouldDrawWorldItem(int itemIndex) => EnsureRuntimeCapabilities() && State.ShouldDrawWorldItem != null ? State.ShouldDrawWorldItem(itemIndex) : true;
+        public static bool ShouldDrawWorldParticle(ParticleRenderer renderer, IParticle particle) => EnsureRuntimeCapabilities() && State.ShouldDrawWorldParticle != null ? State.ShouldDrawWorldParticle(renderer, particle) : true;
         public static bool ShouldRunGoreSystem() => EnsureRuntimeCapabilities() && State.ShouldRunGoreSystem != null ? State.ShouldRunGoreSystem() : true;
 
         public static bool TryHandlePluginChatCommand(string text)
@@ -545,6 +549,9 @@ namespace AlacrityTerraria
             if (TryResolveOptionalCapability(bridgeType, "dust-create", "ShouldCreateDust", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) State.ShouldCreateDust = (Func<int, bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "dust-update", "ShouldUpdateDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) State.ShouldUpdateDustInstance = (Func<Dust, bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "dust-draw", "ShouldDrawDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) State.ShouldDrawDustInstance = (Func<Dust, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "world-player-culling", "ShouldDrawWorldPlayer", typeof(Func<Player, bool>), typeof(bool), new[] { typeof(Player) }, out callback)) State.ShouldDrawWorldPlayer = (Func<Player, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "world-item-culling", "ShouldDrawWorldItem", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) State.ShouldDrawWorldItem = (Func<int, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "world-particle-culling", "ShouldDrawWorldParticle", typeof(Func<ParticleRenderer, IParticle, bool>), typeof(bool), new[] { typeof(ParticleRenderer), typeof(IParticle) }, out callback)) State.ShouldDrawWorldParticle = (Func<ParticleRenderer, IParticle, bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "gore-system", "ShouldRunGoreSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.ShouldRunGoreSystem = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) State.TryHandlePluginChatCommand = (Func<string, bool>)callback;
         }
@@ -641,6 +648,9 @@ namespace AlacrityTerraria
             State.ShouldCreateDust = null;
             State.ShouldUpdateDustInstance = null;
             State.ShouldDrawDustInstance = null;
+            State.ShouldDrawWorldPlayer = null;
+            State.ShouldDrawWorldItem = null;
+            State.ShouldDrawWorldParticle = null;
             State.ShouldRunGoreSystem = null;
             State.TryHandlePluginChatCommand = null;
             State.BootstrapPluginRuntime = null;

@@ -12,9 +12,6 @@ namespace AlacrityTerraria
         /// <summary>Per-instance Dust update gate used only when exceptions require the Dust loop to run.</summary>
         public static bool ShouldUpdateDustInstance(Dust dust) => _visualEffects == null || _visualEffects.ShouldUpdateDustInstance(dust);
 
-        /// <summary>Per-instance Dust draw gate used only when exceptions require DrawDust to run.</summary>
-        public static bool ShouldDrawDustInstance(Dust dust) => _visualEffects == null || _visualEffects.ShouldUpdateDustInstance(dust);
-
         /// <summary>Whole-system Gore gate. Gore has no exception path.</summary>
         public static bool ShouldRunGoreSystem() => _visualEffects == null || _visualEffects.ShouldRunGoreSystem;
 

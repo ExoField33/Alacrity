@@ -4,7 +4,7 @@
   "name": "Dust & Gore Toggle",
   "version": "0.1.0",
   "publisher": "ExoField",
-  "description": "Locally toggles Dust and Gore effects for lower visual overhead.\nIf you want to ensure a certain dust/particle remains visible even with dust disabled, you can add an exception for it:\n\n-/de (dust id) to add a dust exception.\n-/de list to list all exceptions.\n-/de clear to clear all exceptions.",
+  "description": "Toggles Dust and Gore effects for lower visual overhead.\nIf you want to ensure a certain dust/particle remains visible even with dust disabled, you can add an exception for it:\n\n-/de (dust id) to add a dust exception.\n-/de list to list all exceptions.\n-/de clear to clear all exceptions.",
   "supportedGameVersions": [ "1.4.5.6" ],
   "pluginSdkCompatibilityVersion": 2,
   "hostCompatibilityVersion": 2,

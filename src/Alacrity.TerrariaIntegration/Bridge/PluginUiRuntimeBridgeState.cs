@@ -6,6 +6,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria;
 using Terraria.GameContent.UI.States;
+using Terraria.Graphics.Renderers;
 
 namespace AlacrityTerraria
 {
@@ -42,6 +43,9 @@ namespace AlacrityTerraria
         internal Func<int, bool> ShouldCreateDust;
         internal Func<Dust, bool> ShouldUpdateDustInstance;
         internal Func<Dust, bool> ShouldDrawDustInstance;
+        internal Func<Player, bool> ShouldDrawWorldPlayer;
+        internal Func<int, bool> ShouldDrawWorldItem;
+        internal Func<ParticleRenderer, IParticle, bool> ShouldDrawWorldParticle;
         internal Func<bool> ShouldRunGoreSystem;
         internal Func<string, bool> TryHandlePluginChatCommand;
         internal Func<bool> HandlePluginMenuInput;

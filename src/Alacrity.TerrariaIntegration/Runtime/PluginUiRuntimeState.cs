@@ -1,6 +1,7 @@
 using System;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
+using AlacrityTerraria.Rendering.Culling;
 
 namespace AlacrityTerraria.Runtime;
 
@@ -35,6 +36,7 @@ internal sealed class PluginUiRuntimeState
         DrawAdapter = new TerrariaPluginDrawAdapter(services.Rendering.Notifications, services.Rendering.Overlays, services.Rendering.Hud, services.Rendering.HudAdapter, services.GameState.Entities, reportFailure);
         ChatAdapter = new TerrariaPluginChatAdapter(Chat, ensureChatRuntime, getActiveChatInteraction, reportFailure);
         VisualEffects = new TerrariaVisualEffectsAdapter(services.VisualEffects.Policies, reportFailure);
+        RenderCulling = new TerrariaRenderCullingAdapter(services.RenderCulling.Policies, reportFailure);
         EnabledStateStore = new TerrariaPluginEnabledStateStore(root);
         KeybindRuntime = new TerrariaKeybindRuntime(root, Extensions, Notifications, reportFailure);
         Operations = new TerrariaPluginOperationCoordinator(Runtime, persistEnabledState, publishNotification);
@@ -57,6 +59,7 @@ internal sealed class PluginUiRuntimeState
     internal TerrariaPluginChatAdapter ChatAdapter { get; }
     internal PluginUserInteractionHost UserInteraction { get; }
     internal TerrariaVisualEffectsAdapter VisualEffects { get; }
+    internal TerrariaRenderCullingAdapter RenderCulling { get; }
     internal TerrariaPluginEnabledStateStore EnabledStateStore { get; }
     internal TerrariaPluginOperationCoordinator Operations { get; }
     internal TerrariaKeybindRuntime KeybindRuntime { get; }

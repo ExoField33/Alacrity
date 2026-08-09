@@ -78,9 +78,10 @@ public sealed class PluginHostContextFactory
     private readonly PluginDispatcherHost dispatcher;
     private readonly PluginSchedulerHost scheduler;
     private readonly PluginVisualEffectsHost visualEffects;
+    private readonly PluginRenderCullingHost renderCulling;
     private readonly Func<PluginManifest, IPluginResourceScope, IPluginChatService, ITerrariaServices>? terrariaServicesFactory;
 
-    public PluginHostContextFactory(string alacrityRoot, PluginServiceHub services, PluginExtensionHost extensions, PluginCommandHost commands, PluginOverlayHost? overlays = null, PluginChatHost? chat = null, PluginUserInteractionHost? userInteraction = null, PluginNotificationCenter? notifications = null, Func<PluginManifest, IPluginResourceScope, IPluginChatService, ITerrariaServices>? terrariaServicesFactory = null, PluginDispatcherHost? dispatcher = null, PluginVisualEffectsHost? visualEffects = null, PluginHudHost? hud = null, PluginSchedulerHost? scheduler = null)
+    public PluginHostContextFactory(string alacrityRoot, PluginServiceHub services, PluginExtensionHost extensions, PluginCommandHost commands, PluginOverlayHost? overlays = null, PluginChatHost? chat = null, PluginUserInteractionHost? userInteraction = null, PluginNotificationCenter? notifications = null, Func<PluginManifest, IPluginResourceScope, IPluginChatService, ITerrariaServices>? terrariaServicesFactory = null, PluginDispatcherHost? dispatcher = null, PluginVisualEffectsHost? visualEffects = null, PluginHudHost? hud = null, PluginSchedulerHost? scheduler = null, PluginRenderCullingHost? renderCulling = null)
     {
         if (string.IsNullOrWhiteSpace(alacrityRoot)) throw new ArgumentException("An Alacrity root is required.", nameof(alacrityRoot));
         this.alacrityRoot = alacrityRoot;
@@ -94,6 +95,7 @@ public sealed class PluginHostContextFactory
         this.dispatcher = dispatcher ?? new PluginDispatcherHost();
         this.scheduler = scheduler ?? new PluginSchedulerHost();
         this.visualEffects = visualEffects ?? new PluginVisualEffectsHost();
+        this.renderCulling = renderCulling ?? new PluginRenderCullingHost();
         this.hud = hud ?? new PluginHudHost();
         this.terrariaServicesFactory = terrariaServicesFactory;
     }
@@ -108,7 +110,7 @@ public sealed class PluginHostContextFactory
         IPluginUserInteractionService scopedUserInteraction = userInteraction.CreateService(manifest, resources);
         IPluginChatService chatService = chat.CreateService(manifest, resources, scopedUserInteraction);
         ITerrariaServices terraria = terrariaServicesFactory == null
-            ? new PluginTerrariaServices(chatService, null, visualEffects.CreateService(manifest, resources))
+            ? new PluginTerrariaServices(chatService, null, visualEffects.CreateService(manifest, resources), renderCulling: renderCulling.CreateService(manifest, resources))
             : terrariaServicesFactory(manifest, resources, chatService) ?? throw new InvalidOperationException("The Terraria service factory returned null.");
         IPluginDispatcher scopedDispatcher = dispatcher.CreateService(manifest, resources, logger);
         return new PluginHostContext(manifest, logger, resources, scopedDispatcher, scheduler.CreateService(manifest, resources, scopedDispatcher, logger), notifications.CreateService(manifest, resources),

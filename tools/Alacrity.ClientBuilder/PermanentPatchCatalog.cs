@@ -116,7 +116,7 @@ internal sealed class ClientPatchOperation
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r3";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r4";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
@@ -148,6 +148,15 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("render.notifications", "Terraria.Main", "DrawInterface_33_MouseText()", "method entry and static Main.spriteBatch field", "insert before first instruction", "DrawNotifications"),
             new ClientPatchTarget("render.world-overlays", "Terraria.Main", "DrawInterface_1_1_DrawEmoteBubblesInWorld()", "EmoteBubble.DrawAll(SpriteBatch) continuation", "insert after native emote bubble draw", "DrawHitboxes"),
             new ClientPatchTarget("combat.melee-capture", "Terraria.Player", "ItemCheck_GetMeleeHitbox(Item, Rectangle, Boolean&, Rectangle&)", "every return in the verified four-parameter method", "insert before return and retarget branch/EH references", "CaptureSwingHitbox")),
+        CreateDefinition(
+            "patch.runtime.render-culling",
+            PermanentPatchPlan.ApplyPermanentRenderCulling,
+            "render.culling",
+            "Terraria.Main / Terraria.Graphics.Renderers.ParticleRenderer",
+            "Conservative fully-off-screen player, dropped-item, and common world-particle presentation gates",
+            new ClientPatchTarget("culling.player-draw-order", "Terraria.Main", "RefreshPlayerDrawOrder()", "Player.outOfRange branch and verified Player loop local", "skip fully off-screen remote player before native draw-list selection", "ShouldDrawWorldPlayer"),
+            new ClientPatchTarget("culling.dropped-items", "Terraria.Main", "DrawItems()", "verified Main.item load and DrawItem(WorldItem, Int32) call", "skip fully off-screen dropped item before native DrawItem", "ShouldDrawWorldItem"),
+            new ClientPatchTarget("culling.world-particles", "Terraria.Graphics.Renderers.ParticleRenderer", "Draw(SpriteBatch)", "IParticle removed-state loop branch and IParticle.Draw call", "skip only common particles with verified world positions", "ShouldDrawWorldParticle")),
         CreateDefinition(
             "patch.runtime.visual-effects",
             PermanentPatchPlan.ApplyPermanentVisualEffects,

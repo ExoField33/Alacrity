@@ -29,6 +29,7 @@ namespace AlacrityTerraria
                 _dispatcher?.Drain(exception => ReportOptionalUiFailure("Plugin dispatcher callback", exception));
                 _scheduler?.Tick(Main.GameUpdateCount);
                 RefreshVisualEffectsPolicy();
+                RefreshRenderCullingPolicy();
                 TimeSpan timestamp = TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency);
                 _presentationStates.Update(Main.gameMenu, Main.drawingPlayerChat, out bool menuChanged, out bool chatInputChanged);
                 if (menuChanged) _extensions.Publish(new ClientMenuStateChangedEvent(Main.gameMenu, Main.GameUpdateCount, timestamp));

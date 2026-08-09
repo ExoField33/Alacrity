@@ -122,26 +122,38 @@ public static partial class PluginUiRuntime
             private static void AddColorControls(UIList list, PluginSettingControl control, int snapIndex)
             {
                 var row = new UIKeybindingSimpleListItem(() => control.DisplayName + ": " + control.GetColor().ToHex(), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(38f, 0f) };
-                var swatch = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f), HAlign = 1f, VAlign = 0.5f, Left = new StyleDimension(-72f, 0f), IgnoresMouseInteraction = true };
+                var swatch = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f), HAlign = 1f, VAlign = 0.5f, Left = new StyleDimension(-84f, 0f), Top = new StyleDimension(-3f, 0f), IgnoresMouseInteraction = true };
                 swatch.OnUpdate += element => ((UIPanel)element).BackgroundColor = new Color(control.GetColor().Red, control.GetColor().Green, control.GetColor().Blue);
                 row.Append(swatch);
-                row.Append(CreateClipboardIcon("Images/UI/CharCreation/Copy", -46f, "Copy color hex", () => TrySetClipboardText(control.GetColor().ToHex())));
-                row.Append(CreateClipboardIcon("Images/UI/CharCreation/Paste", -22f, "Paste color hex", () => { if (PluginColor.TryParseHex(TryGetClipboardText(), out var value)) control.SetColor(value); }));
+                row.Append(CreateClipboardIcon(
+                    "Images/UI/CharCreation/Copy",
+                    -52f,
+                    () => "Copy color hex (" + control.GetColor().ToHex() + ")",
+                    () => TrySetClipboardText(control.GetColor().ToHex())));
+                row.Append(CreateClipboardIcon(
+                    "Images/UI/CharCreation/Paste",
+                    -22f,
+                    GetColorPasteTooltip,
+                    () => { if (PluginColor.TryParseHex(TryGetClipboardText(), out var value)) control.SetColor(value); }));
                 row.SetSnapPoint("PluginSetting", snapIndex, null, null);
                 list.Add(row);
             }
 
-            private static UIElement CreateClipboardIcon(string assetPath, float offset, string hoverText, Action click)
+            private static UIElement CreateClipboardIcon(string assetPath, float offset, Func<string> getHoverText, Action click)
             {
-                // 20px is 65% of Terraria's small character-creation button, keeping the action icons inside this compact row.
-                var button = new UIPanel { Width = new StyleDimension(20f, 0f), Height = new StyleDimension(20f, 0f) };
+                // Give the compact action icon the same visual breathing room as Terraria's
+                // character-creation buttons while keeping its 20px glyph at native size.
+                var button = new UIPanel { Width = new StyleDimension(26f, 0f), Height = new StyleDimension(26f, 0f) };
                 button.SetPadding(0f);
                 button.HAlign = 1f;
                 button.VAlign = 0.5f;
+                button.Top = new StyleDimension(-3f, 0f);
                 button.Left = new StyleDimension(offset, 0f);
                 var image = (UIElement)Activator.CreateInstance(typeof(UIImage), PluginSelectionMenu.RequestTexture(assetPath));
-                image.Width = StyleDimension.Fill;
-                image.Height = StyleDimension.Fill;
+                image.Width = new StyleDimension(20f, 0f);
+                image.Height = new StyleDimension(20f, 0f);
+                image.HAlign = 0.5f;
+                image.VAlign = 0.5f;
                 image.IgnoresMouseInteraction = true;
                 typeof(UIImage).GetProperty("ScaleToFit", BindingFlags.Public | BindingFlags.Instance)?.SetValue(image, true, null);
                 button.Append(image);
@@ -158,7 +170,7 @@ public static partial class PluginUiRuntime
                     panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
                     panel.BorderColor = Color.Black;
                 };
-                button.OnUpdate += element => { if (element.IsMouseHovering) ShowHoverText(hoverText); };
+                button.OnUpdate += element => { if (element.IsMouseHovering) ShowHoverText(getHoverText()); };
                 button.OnLeftClick += (evt, element) => { click(); SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f); };
                 return button;
             }

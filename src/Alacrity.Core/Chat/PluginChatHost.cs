@@ -301,7 +301,7 @@ public sealed class PluginChatHost
 /// <summary>Concrete Terraria service grouping assembled by the host.</summary>
 public sealed class PluginTerrariaServices : ITerrariaServices
 {
-    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null, IPluginNpcTargetSnapshotService? npcTargets = null, IPluginWorldSectionService? worldSections = null)
+    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null, IPluginNpcTargetSnapshotService? npcTargets = null, IPluginWorldSectionService? worldSections = null, IPluginRenderCullingService? renderCulling = null)
     {
         Chat = chat ?? throw new ArgumentNullException(nameof(chat));
         Entities = entities ?? EmptyPluginEntitySnapshotService.Instance;
@@ -310,6 +310,7 @@ public sealed class PluginTerrariaServices : ITerrariaServices
         Session = session ?? EmptyPluginSessionPresentationService.Instance;
         NpcTargets = npcTargets ?? EmptyPluginNpcTargetSnapshotService.Instance;
         WorldSections = worldSections ?? EmptyPluginWorldSectionService.Instance;
+        RenderCulling = renderCulling ?? EmptyPluginRenderCullingService.Instance;
     }
     public IPluginChatService Chat { get; }
     public IPluginEntitySnapshotService Entities { get; }
@@ -318,6 +319,14 @@ public sealed class PluginTerrariaServices : ITerrariaServices
     public IPluginSessionPresentationService Session { get; }
     public IPluginNpcTargetSnapshotService NpcTargets { get; }
     public IPluginWorldSectionService WorldSections { get; }
+    public IPluginRenderCullingService RenderCulling { get; }
+}
+
+internal sealed class EmptyPluginRenderCullingService : IPluginRenderCullingService
+{
+    internal static readonly EmptyPluginRenderCullingService Instance = new EmptyPluginRenderCullingService();
+    private EmptyPluginRenderCullingService() { }
+    public IPluginRegistration RegisterPolicy(PluginRenderCullingPolicy policy) => throw new NotSupportedException("Render-culling policies are unavailable in this host.");
 }
 
 internal sealed class EmptyPluginNpcTargetSnapshotService : IPluginNpcTargetSnapshotService

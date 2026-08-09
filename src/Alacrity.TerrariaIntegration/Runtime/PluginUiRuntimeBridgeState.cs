@@ -47,6 +47,8 @@ internal sealed class PluginUiRuntimeBridgeState
 
     internal string IngameHoveredSettingId { get; set; }
 
+    internal string IngameHoveredPluginActionId { get; set; }
+
     internal uint IconInteractionInputTick { get; set; } = uint.MaxValue;
 
     internal bool IconInteractionWasDown { get; set; }

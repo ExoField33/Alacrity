@@ -21,25 +21,32 @@ namespace AlacrityTerraria
         {
             const int rowHeight = 70;
             const int rowSpacing = 6;
-            int contentTop = bounds.Y + 16;
+            const int contentInset = 16;
+            int contentTop = bounds.Y + contentInset;
             int contentHeight = _ingameEntries.Length * (rowHeight + rowSpacing) - rowSpacing;
-            int visibleHeight = bounds.Height - 32;
-            UpdateIngameScroll(bounds, contentHeight, visibleHeight);
+            int visibleHeight = bounds.Height - contentInset * 2;
+            int contentBottom = contentTop + visibleHeight;
+            UpdateIngameScroll(bounds, contentHeight, visibleHeight, rowHeight + rowSpacing);
+            string hoveredActionId = null;
 
             for (int index = 0; index < _ingameEntries.Length; index++)
             {
                 int rowY = contentTop + index * (rowHeight + rowSpacing) - (int)_ingameScroll;
                 const int rowWidth = 264;
                 var row = new Rectangle(bounds.Center.X - rowWidth / 2, rowY, rowWidth, rowHeight);
-                if (row.Bottom < contentTop || row.Top > bounds.Bottom - 16)
+                // The vanilla right pane has no clipping region for this injected immediate-mode
+                // surface. Draw only rows wholly inside its content area; scrolling advances by a
+                // complete row so this cannot leave a distracting partial-row gap.
+                if (row.Top < contentTop || row.Bottom > contentBottom)
                     continue;
-                DrawIngamePluginRow(spriteBatch, row, _ingameEntries[index]);
+                DrawIngamePluginRow(spriteBatch, row, _ingameEntries[index], ref hoveredActionId);
             }
 
+            UpdateIngamePluginActionHover(hoveredActionId);
             DrawIngameScrollbar(spriteBatch, bounds, contentHeight, visibleHeight);
         }
 
-        private static void DrawIngamePluginRow(SpriteBatch spriteBatch, Rectangle row, PluginManagerRow plugin)
+        private static void DrawIngamePluginRow(SpriteBatch spriteBatch, Rectangle row, PluginManagerRow plugin, ref string hoveredActionId)
         {
             bool rowHovered = row.Contains(Main.mouseX, Main.mouseY);
             Utils.DrawInvBG(spriteBatch, row.X, row.Y, row.Width, row.Height, rowHovered ? ResourcePackHoverBackground : ResourcePackBackground);
@@ -57,6 +64,10 @@ namespace AlacrityTerraria
             var settings = new Rectangle(buttonX + buttonWidth + buttonGap, buttonY, buttonWidth, buttonHeight);
             bool descriptionHovered = description.Contains(Main.mouseX, Main.mouseY);
             bool settingsHovered = settings.Contains(Main.mouseX, Main.mouseY);
+            if (descriptionHovered)
+                hoveredActionId = plugin.Id.Value + ":description";
+            else if (settingsHovered)
+                hoveredActionId = plugin.Id.Value + ":settings";
             DrawIngameIconButton(spriteBatch, description, "Images/UI/CharCreation/CharInfo", descriptionHovered, "Plugin Description");
             DrawIngameIconButton(spriteBatch, settings, "Images/UI/Camera_1", settingsHovered, "Plugin Settings");
 
@@ -82,6 +93,16 @@ namespace AlacrityTerraria
                     SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
                 }
             }
+        }
+
+        private static void UpdateIngamePluginActionHover(string actionId)
+        {
+            if (string.Equals(_ingameHoveredPluginActionId, actionId, StringComparison.Ordinal))
+                return;
+
+            _ingameHoveredPluginActionId = actionId;
+            if (!string.IsNullOrEmpty(actionId))
+                SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
         }
 
         private static void DrawIngamePluginDescription(SpriteBatch spriteBatch, Rectangle bounds, PluginManagerRow plugin)

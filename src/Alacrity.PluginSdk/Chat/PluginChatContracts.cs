@@ -17,6 +17,8 @@ public interface ITerrariaServices
     IPluginPlayerService Players { get; }
     /// Scoped policy registrations for optional client-side visual effects.
     IPluginVisualEffectsService VisualEffects { get; }
+    /// Scoped requests for conservative local off-screen world-render culling.
+    IPluginRenderCullingService RenderCulling { get; }
     /// Read-only world/server presentation data such as the display name and sampled ping.
     IPluginSessionPresentationService Session { get; }
     /// Demand-gated hostile NPC-to-player targeting relationships for presentation diagnostics.

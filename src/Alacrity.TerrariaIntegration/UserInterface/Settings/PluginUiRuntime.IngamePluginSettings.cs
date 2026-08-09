@@ -70,22 +70,22 @@ namespace AlacrityTerraria
         {
             if (control.Kind == PluginSettingControlKind.Color)
             {
-                var swatch = new Rectangle(bounds.X + 18, y - 7, 20, 20);
+                var swatch = new Rectangle(bounds.X + 18, y - 4, 20, 20);
                 Utils.DrawInvBG(spriteBatch, swatch.X, swatch.Y, swatch.Width, swatch.Height, new Color(control.GetColor().Red, control.GetColor().Green, control.GetColor().Blue));
-                Utils.DrawBorderString(spriteBatch, control.DisplayName + ": " + control.GetColor().ToHex(), new Vector2(bounds.X + 46, y), Color.White, 0.7f, 0f, 0f, -1);
-                var copy = new Rectangle(bounds.Right - 73, y - 8, 25, 22);
-                var paste = new Rectangle(bounds.Right - 42, y - 8, 25, 22);
+                Utils.DrawBorderString(spriteBatch, control.DisplayName, new Vector2(bounds.X + 46, y), Color.White, 0.7f, 0f, 0f, -1);
+                var copy = new Rectangle(bounds.Right - 73, y - 5, 25, 22);
+                var paste = new Rectangle(bounds.Right - 42, y - 5, 25, 22);
                 bool copyHover = copy.Contains(Main.mouseX, Main.mouseY), pasteHover = paste.Contains(Main.mouseX, Main.mouseY);
                 anyHovered |= copyHover || pasteHover;
-                DrawIngameClipboardButton(spriteBatch, copy, "Images/UI/CharCreation/Copy", copyHover, "Copy color hex");
-                DrawIngameClipboardButton(spriteBatch, paste, "Images/UI/CharCreation/Paste", pasteHover, "Paste color hex");
+                DrawIngameClipboardButton(spriteBatch, copy, "Images/UI/CharCreation/Copy", copyHover, "Copy color hex (" + control.GetColor().ToHex() + ")");
+                DrawIngameClipboardButton(spriteBatch, paste, "Images/UI/CharCreation/Paste", pasteHover, pasteHover ? GetColorPasteTooltip() : "Paste color hex");
                 if (Main.mouseLeft && Main.mouseLeftRelease && copyHover) TrySetClipboardText(control.GetColor().ToHex());
                 if (Main.mouseLeft && Main.mouseLeftRelease && pasteHover && PluginColor.TryParseHex(TryGetClipboardText(), out var pasted)) control.SetColor(pasted);
                 return 34;
             }
             if (control.Kind == PluginSettingControlKind.Slider)
             {
-                var bar = new Rectangle(bounds.Right - 150, y - 5, 132, 14);
+                var bar = new Rectangle(bounds.Right - 150, y - 2, 132, 14);
                 bool hovered = bar.Contains(Main.mouseX, Main.mouseY);
                 anyHovered |= hovered;
                 DrawIngameSlider(spriteBatch, bar, NormalizeSlider(control));
@@ -120,6 +120,14 @@ namespace AlacrityTerraria
             var destination = new Rectangle(bounds.Center.X - 7, bounds.Center.Y - 7, 14, 14);
             spriteBatch.Draw(texture, destination, Color.White);
             if (hovered) ShowHoverText(hoverText);
+        }
+
+        private static string GetColorPasteTooltip()
+        {
+            string clipboardText = TryGetClipboardText();
+            return PluginColor.TryParseHex(clipboardText, out var color)
+                ? "Paste color hex (" + color.ToHex() + ")"
+                : "Paste color hex";
         }
 
         private static float NormalizeSlider(PluginSettingControl control) => MathHelper.Clamp((control.GetSlider() - control.Minimum) / (control.Maximum - control.Minimum), 0f, 1f);
@@ -368,13 +376,13 @@ namespace AlacrityTerraria
                 Debug.WriteLine("Alacrity optional UI feature failed: " + key);
         }
 
-        private static void UpdateIngameScroll(Rectangle bounds, int contentHeight, int visibleHeight)
+        private static void UpdateIngameScroll(Rectangle bounds, int contentHeight, int visibleHeight, int rowStep)
         {
             if (bounds.Contains(Main.mouseX, Main.mouseY))
             {
                 int delta = Terraria.GameInput.PlayerInput.ScrollWheelDelta;
                 if (delta != 0)
-                    _ingameScroll -= Math.Sign(delta) * 30f;
+                    _ingameScroll -= Math.Sign(delta) * rowStep;
             }
 
             _ingameScroll = Math.Max(0f, Math.Min(_ingameScroll, Math.Max(0, contentHeight - visibleHeight)));
@@ -400,13 +408,16 @@ namespace AlacrityTerraria
             if (_ingameBlankTexture == null)
                 return;
 
+            // Match the list's 16px top/bottom content insets. The old full-pane track
+            // protruded beyond the actual scrollable area at the bottom.
             int trackX = bounds.Right - 12;
-            int trackY = bounds.Top;
-            var track = new Rectangle(trackX, trackY, 4, bounds.Height);
+            int trackY = bounds.Top + 16;
+            int trackHeight = visibleHeight;
+            var track = new Rectangle(trackX, trackY, 4, trackHeight);
             spriteBatch.Draw(_ingameBlankTexture, track, new Color(18, 12, 58, 180));
 
-            int thumbHeight = Math.Max(28, (int)(bounds.Height * Math.Min(1f, visibleHeight / (float)contentHeight)));
-            int thumbY = trackY + (int)((bounds.Height - thumbHeight) * (_ingameScroll / maxScroll));
+            int thumbHeight = Math.Max(28, (int)(trackHeight * Math.Min(1f, visibleHeight / (float)contentHeight)));
+            int thumbY = trackY + (int)((trackHeight - thumbHeight) * (_ingameScroll / maxScroll));
             var thumb = new Rectangle(trackX - 1, thumbY, 6, thumbHeight);
             spriteBatch.Draw(_ingameBlankTexture, thumb, new Color(180, 170, 255, 220));
         }

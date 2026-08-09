@@ -25,6 +25,7 @@
     <ProjectReference Include="..\Alacrity.DustGoreToggle\Alacrity.DustGoreToggle.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Alacrity.VisualDiagnostics\Alacrity.VisualDiagnostics.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.OffScreenCulling\Alacrity.OffScreenCulling.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Query project target outputs instead of reconstructing target-framework output paths. -->
@@ -62,6 +63,9 @@
     <MSBuild Projects="..\Alacrity.VisualDiagnostics\Alacrity.VisualDiagnostics.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
       <Output TaskParameter="TargetOutputs" PropertyName="_VisualDiagnosticsOutput" />
     </MSBuild>
+    <MSBuild Projects="..\Alacrity.OffScreenCulling\Alacrity.OffScreenCulling.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_OffScreenCullingOutput" />
+    </MSBuild>
 
     <ItemGroup>
       <_RuntimeAssembly Include="$(_BridgeOutput);$(_FacadeOutput);$(_BootstrapOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
@@ -83,6 +87,9 @@
       <_PluginPackage Include="$(_VisualDiagnosticsOutput)">
         <PluginId>alacrity.visual-diagnostics</PluginId>
       </_PluginPackage>
+      <_PluginPackage Include="$(_OffScreenCullingOutput)">
+        <PluginId>alacrity.off-screen-culling</PluginId>
+      </_PluginPackage>
       <_PluginManifest Include="..\Alacrity.BetterChat\plugin.json">
         <PluginId>alacrity.better-chat</PluginId>
       </_PluginManifest>
@@ -97,6 +104,9 @@
       </_PluginManifest>
       <_PluginManifest Include="..\Alacrity.VisualDiagnostics\plugin.json">
         <PluginId>alacrity.visual-diagnostics</PluginId>
+      </_PluginManifest>
+      <_PluginManifest Include="..\Alacrity.OffScreenCulling\plugin.json">
+        <PluginId>alacrity.off-screen-culling</PluginId>
       </_PluginManifest>
       <_RuntimeFile Include="@(_RuntimeAssembly)">
         <RelativePath>%(_RuntimeAssembly.Filename)%(_RuntimeAssembly.Extension)</RelativePath>

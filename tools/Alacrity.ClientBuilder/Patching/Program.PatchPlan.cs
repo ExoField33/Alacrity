@@ -9,6 +9,7 @@ internal static partial class PermanentPatchPlan
         ApplyPermanentStartupAndMenu(module, sourceExecutablePath);
         ApplyPermanentInputAndKeybinds(module, sourceExecutablePath);
         ApplyPermanentRenderingAndCombat(module, sourceExecutablePath);
+        ApplyPermanentRenderCulling(module, sourceExecutablePath);
         ApplyPermanentVisualEffects(module, sourceExecutablePath);
         ApplyPermanentChatInputAndCommands(module, sourceExecutablePath);
         ApplyPermanentChatDisplayAndInteraction(module, sourceExecutablePath);
@@ -65,6 +66,19 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldUpdateDustInstance", "System.Boolean", "Terraria.Dust"),
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawDustInstance", "System.Boolean", "Terraria.Dust"),
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldRunGoreSystem", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentRenderCulling(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        var particleRendererType = CecilPatchPrimitives.RequireType(module, "Terraria.Graphics.Renderers.ParticleRenderer");
+        PatchRenderCulling(
+            module,
+            mainType,
+            particleRendererType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawWorldPlayer", "System.Boolean", "Terraria.Player"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawWorldItem", "System.Boolean", "System.Int32"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawWorldParticle", "System.Boolean", "Terraria.Graphics.Renderers.ParticleRenderer", "Terraria.Graphics.Renderers.IParticle"));
     }
 
     internal static void ApplyPermanentChatInputAndCommands(ModuleDefinition module, string sourceExecutablePath)

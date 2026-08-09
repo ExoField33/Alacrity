@@ -43,6 +43,7 @@ namespace AlacrityTerraria
             _ingameScroll = 0f;
             _ingameDescriptionScroll = 0f;
             _ingameHoveredSettingId = null;
+            _ingameHoveredPluginActionId = null;
         }
 
         public static void DrawIngamePluginSettings(SpriteBatch spriteBatch)
@@ -50,9 +51,10 @@ namespace AlacrityTerraria
             if (spriteBatch == null)
                 return;
 
-            // Terraria centers General's right-column controls at screen center + 167.5.
-            // Anchor this immediate-mode panel to that same verified column center.
-            var bounds = new Rectangle(Main.screenWidth / 2 + 10, Main.screenHeight / 2 - 184, 315, 418);
+            // IngameOptions.Draw creates the standard right settings pane at this exact location:
+            // 670x480 window, right half inset by 20px horizontally and 50px vertically.
+            // Match that pane instead of approximating its center so plugin rows remain contained.
+            var bounds = new Rectangle(Main.screenWidth / 2 + 20, Main.screenHeight / 2 - 190, 305, 420);
             if (_ingameEntries.Length == 0)
             {
                 Utils.DrawBorderString(spriteBatch, "No plugins installed.", new Vector2(bounds.Center.X, bounds.Center.Y), Color.White, 0.75f, 0.5f, 0.5f, -1);

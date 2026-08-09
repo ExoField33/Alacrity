@@ -15,6 +15,7 @@
     <ProjectReference Include="..\Alacrity.DustGoreToggle\Alacrity.DustGoreToggle.csproj" />
     <ProjectReference Include="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" />
     <ProjectReference Include="..\Alacrity.VisualDiagnostics\Alacrity.VisualDiagnostics.csproj" />
+    <ProjectReference Include="..\Alacrity.OffScreenCulling\Alacrity.OffScreenCulling.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Alacrity.TerrariaIntegration\Bridge\BridgeReflectionResolver.cs" Link="BridgeReflectionResolver.cs" />

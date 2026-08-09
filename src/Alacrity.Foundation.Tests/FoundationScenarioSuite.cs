@@ -2920,6 +2920,7 @@ public static class FoundationScenarioSuite
         public IPluginSessionPresentationService Session { get; } = new TestSessionPresentation();
         public IPluginNpcTargetSnapshotService NpcTargets { get; } = new TestNpcTargets();
         public IPluginWorldSectionService WorldSections { get; } = new TestWorldSections();
+        public IPluginRenderCullingService RenderCulling { get; } = new TestRenderCulling();
     }
 
     private sealed class TestSessionPresentation : IPluginSessionPresentationService
@@ -2957,6 +2958,11 @@ public static class FoundationScenarioSuite
     private sealed class TestVisualEffects : IPluginVisualEffectsService
     {
         public IPluginRegistration RegisterPolicy(PluginVisualEffectsPolicy policy) => new TestRegistration("visual-effects");
+    }
+
+    private sealed class TestRenderCulling : IPluginRenderCullingService
+    {
+        public IPluginRegistration RegisterPolicy(PluginRenderCullingPolicy policy) => new TestRegistration("render-culling");
     }
 
     private sealed class TestPlayers : IPluginPlayerService
