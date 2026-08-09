@@ -1,0 +1,69 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+
+# Generated Alacrity runtime assemblies are staged under artifacts/runtime.
+# The root client layout is deployment output and must never become source-of-truth.
+/Alacrity.App.dll
+/Alacrity.Core.dll
+/Alacrity.PluginSdk.dll
+/Alacrity.PluginUiCoreBridge.dll
+/Alacrity.PluginUiRuntime.dll
+/AlacrityBootstrapRuntime.dll
+/Alacrity.exe
+/runtime-manifest.txt
+/AlacrityClient/
+/alacrity-client-manifest.json
+
+# Vanilla files copied by BuildAlacrityClient.bat into a clone-based client layout.
+/*.dll
+/*.exe
+/*.msi
+/ChromaAppInfo.xml
+/installscript.vdf
+/serverconfig.txt
+/start-server*.bat
+/steam_appid.txt
+/alacrity-plugin-ui-error.log
+/client-crashlog.txt
+/artifacts/runtime/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# Terraria files
+Terraria.exe
+TerrariaServer.exe
+Content/
+Libraries/
+steam_api*.dll
+Decompiled Terraria 1.4.5.6/
+
+# Alacrity runtime data. These paths are rooted so SDK source folders such as
+# src/Alacrity.PluginSdk/Plugins remain tracked.
+/data/
+/logs/
+/backups/
+/cache/
+/plugins/
+
+# Signing secrets
+*-private.pem
+*.pfx
+*.key
+secret-keys/
+signing-secrets/
+
+# Generated packages
+*.tplugin
+*.zip
+*.nupkg
+
+# Misc
+Directory.Build.props
+Directory.Build.targets
