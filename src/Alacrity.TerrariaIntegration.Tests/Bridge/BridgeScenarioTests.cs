@@ -4,10 +4,21 @@ namespace AlacrityTerraria;
 
 public sealed class BridgeScenarioTests
 {
-    [Theory]
-    [MemberData(nameof(TerrariaIntegrationScenarioSuite.GetScenarioCases), "Bridge", MemberType = typeof(TerrariaIntegrationScenarioSuite))]
-    public void BridgeScenarioPasses(string scenario)
+    [Fact]
+    public void AbiContractRemainsStable()
     {
-        TerrariaIntegrationScenarioSuite.RunScenario(scenario);
+        TerrariaIntegrationScenarioSuite.VerifyBridgeAbiContract();
+    }
+
+    [Fact]
+    public void StagedRuntimeArtifactsAreCoherent()
+    {
+        TerrariaIntegrationScenarioSuite.VerifyStagedRuntimeArtifacts();
+    }
+
+    [Fact]
+    public void HandshakeParsingReportsCompatibilityFailures()
+    {
+        TerrariaIntegrationScenarioSuite.VerifyBridgeHandshakeParsing();
     }
 }

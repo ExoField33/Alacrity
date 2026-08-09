@@ -397,12 +397,12 @@ public static partial class PluginUiRuntime
             private static UIResourcePackInfoButton<string> CreatePackageStatusButton()
             {
                 var button = new UIResourcePackInfoButton<string>("", 0.8f, false) { IgnoresMouseInteraction = true };
-                button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonCloudInactive"); button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText("Plugin is up to date"); }; return button;
+                button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonCloudInactive"); button.OnUpdate += element => { if (element.IsMouseHovering) ShowHoverText("Plugin is up to date"); }; return button;
             }
 
             private static UIResourcePackInfoButton<string> CreateUninstallButton()
             {
-                var button = new UIResourcePackInfoButton<string>("", 0.8f, false); button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonDelete"); button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText("Uninstall Plugin"); }; return button;
+                var button = new UIResourcePackInfoButton<string>("", 0.8f, false); button.SetPadding(0f); AppendSmallIcon(button, "Images/UI/ButtonDelete"); button.OnUpdate += element => { if (element.IsMouseHovering) ShowHoverText("Uninstall Plugin"); }; return button;
             }
 
             private static void AppendSmallIcon(UIElement button, string path)
@@ -566,7 +566,7 @@ public static partial class PluginUiRuntime
                     panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
                     panel.BorderColor = Color.Black;
                 };
-                badge.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText(tooltip); };
+                badge.OnUpdate += element => { if (element.IsMouseHovering) ShowHoverText(tooltip); };
                 row.Append(badge);
             }
 
@@ -654,7 +654,7 @@ public static partial class PluginUiRuntime
             private static void DisplayMouseTextIfHovered(UIElement element, string text)
             {
                 if (element.IsMouseHovering)
-                    Main.instance.MouseText(text);
+                    ShowHoverText(text);
             }
 
             private static void AppendTexturePackIcon(UIElement button, bool enabled)

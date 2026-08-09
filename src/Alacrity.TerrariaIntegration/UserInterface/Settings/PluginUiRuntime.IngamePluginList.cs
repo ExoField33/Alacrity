@@ -74,7 +74,7 @@ namespace AlacrityTerraria
             else if (settingsHovered)
             {
                 if (!HasSettings(plugin.Id))
-                    Main.instance.MouseText("No plugin settings are available.");
+                    ShowHoverText("No plugin settings are available.");
                 else
                 {
                     _ingameSelectedEntry = index;

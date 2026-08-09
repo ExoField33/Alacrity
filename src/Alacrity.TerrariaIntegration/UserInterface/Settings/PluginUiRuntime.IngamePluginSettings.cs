@@ -119,7 +119,7 @@ namespace AlacrityTerraria
             Texture2D texture = RequestTextureValue(texturePath);
             var destination = new Rectangle(bounds.Center.X - 7, bounds.Center.Y - 7, 14, 14);
             spriteBatch.Draw(texture, destination, Color.White);
-            if (hovered) Main.instance.MouseText(hoverText);
+            if (hovered) ShowHoverText(hoverText);
         }
 
         private static float NormalizeSlider(PluginSettingControl control) => MathHelper.Clamp((control.GetSlider() - control.Minimum) / (control.Maximum - control.Minimum), 0f, 1f);
@@ -166,7 +166,7 @@ namespace AlacrityTerraria
                 }
                 SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
             }
-            catch (Exception exception) { Main.instance.MouseText("Unable to change plugin setting: " + exception.Message); }
+            catch (Exception exception) { ShowHoverText("Unable to change plugin setting: " + exception.Message); }
         }
 
         private static string ReadSettingValue(PluginUiContribution contribution)
@@ -188,7 +188,7 @@ namespace AlacrityTerraria
             }
             catch (Exception exception)
             {
-                Main.instance.MouseText("Unable to change plugin setting: " + exception.Message);
+                ShowHoverText("Unable to change plugin setting: " + exception.Message);
             }
         }
 
@@ -250,7 +250,7 @@ namespace AlacrityTerraria
             }
 
             if (hovered)
-                Main.instance.MouseText(hoverText);
+                ShowHoverText(hoverText);
         }
 
         private static void DrawResourcePackButtonBackground(SpriteBatch spriteBatch, Rectangle bounds, bool hovered)

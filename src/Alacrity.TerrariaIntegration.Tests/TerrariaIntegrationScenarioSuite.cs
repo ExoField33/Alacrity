@@ -43,7 +43,7 @@ public static class TerrariaIntegrationScenarioSuite
     {
         return typeof(TerrariaIntegrationScenarioSuite)
             .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
-            .Where(method => method.Name != nameof(RunAll) && method.ReturnType == typeof(void) && method.GetParameters().Length == 0 && !method.Name.StartsWith("VerifyGraphics", StringComparison.Ordinal));
+            .Where(method => method.IsPrivate && method.Name != nameof(RunAll) && method.ReturnType == typeof(void) && method.GetParameters().Length == 0 && !method.Name.StartsWith("VerifyGraphics", StringComparison.Ordinal));
     }
 
     private static string GetScenarioCategory(string name)
@@ -224,7 +224,7 @@ public static class TerrariaIntegrationScenarioSuite
         Assert(!menuChanged && !chatChanged, "Stable presentation state must not repeatedly publish transitions.");
     }
 
-    private static void VerifyBridgeAbiContract()
+    internal static void VerifyBridgeAbiContract()
     {
         string path = GetStagedBridgePath();
         Assert(File.Exists(path), "The staged Terraria bridge assembly must be available for ABI verification.");
@@ -247,7 +247,7 @@ public static class TerrariaIntegrationScenarioSuite
             "The self-contained bridge handshake must remain synchronized with the SDK compatibility constants.");
     }
 
-    private static void VerifyStagedRuntimeArtifacts()
+    internal static void VerifyStagedRuntimeArtifacts()
     {
         string root = GetRuntimeArtifactDirectory();
         string bridgePath = GetStagedBridgePath();
@@ -326,7 +326,7 @@ public static class TerrariaIntegrationScenarioSuite
         throw new InvalidOperationException("Unable to locate the repository runtime artifact directory. Set ALACRITY_RUNTIME_ARTIFACT_DIRECTORY for an external test host.");
     }
 
-    private static void VerifyBridgeHandshakeParsing()
+    internal static void VerifyBridgeHandshakeParsing()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
         Assert(BridgeCompatibilityDescriptor.TryParse("2|2|2|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),

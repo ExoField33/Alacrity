@@ -79,7 +79,7 @@ public static class FoundationScenarioSuite
     {
         return typeof(FoundationScenarioSuite)
             .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
-            .Where(method => method.Name != nameof(RunAll) && method.ReturnType == typeof(void) && method.GetParameters().Length == 0);
+            .Where(method => method.IsPrivate && method.Name != nameof(RunAll) && method.ReturnType == typeof(void) && method.GetParameters().Length == 0);
     }
 
     private static string GetScenarioCategory(string name)
@@ -365,7 +365,7 @@ public static class FoundationScenarioSuite
         resources.Dispose();
     }
 
-    private static void AsyncPluginAssemblyLoaderUsesSharedRuntimeController()
+    internal static void AsyncPluginAssemblyLoaderUsesSharedRuntimeController()
     {
         string root = Path.Combine(Path.GetTempPath(), "alacrity-async-loader-test-" + Guid.NewGuid().ToString("N"));
         try
@@ -747,7 +747,7 @@ public static class FoundationScenarioSuite
         Assert(map.GetSnapshot(31, 0).IsMaterialized && map.GetSnapshot(32, 0).IsMaterialized, "Region clears must not disturb materialization bits outside the requested row.");
     }
 
-    private static void LifecycleCleansResourcesInReverseOrder()
+    internal static void LifecycleCleansResourcesInReverseOrder()
     {
         var order = new List<string>();
         var resources = new PluginResourceScope();
@@ -769,7 +769,7 @@ public static class FoundationScenarioSuite
         Assert(order[0] == "second" && order[1] == "first" && order[2] == "second" && order[3] == "first", "Resources must be released in reverse registration order.");
     }
 
-    private static void LifecycleReactivationCreatesFreshScopedContext()
+    internal static void LifecycleReactivationCreatesFreshScopedContext()
     {
         string root = Path.Combine(Path.GetTempPath(), "alacrity-reactivation-" + Guid.NewGuid().ToString("N"));
         try
@@ -1130,7 +1130,7 @@ public static class FoundationScenarioSuite
         AssertThrows<InvalidOperationException>(() => trust.Validate());
     }
 
-    private static void LifecycleFailureFaultsAndCleansResources()
+    internal static void LifecycleFailureFaultsAndCleansResources()
     {
         var order = new List<string>();
         var resources = new PluginResourceScope();
@@ -1146,7 +1146,7 @@ public static class FoundationScenarioSuite
         }
     }
 
-    private static void LifecyclePreservesCallbackFailureAndRecordsCleanupFailure()
+    internal static void LifecyclePreservesCallbackFailureAndRecordsCleanupFailure()
     {
         var resources = new PluginResourceScope();
         var plugin = new CleanupFailurePlugin(resources, failDisable: true, failShutdown: false);
@@ -1163,7 +1163,7 @@ public static class FoundationScenarioSuite
         lifecycle.Dispose();
     }
 
-    private static void LifecycleUninstallReachesTerminalStateAfterFailures()
+    internal static void LifecycleUninstallReachesTerminalStateAfterFailures()
     {
         var resources = new PluginResourceScope();
         var plugin = new CleanupFailurePlugin(resources, failDisable: true, failShutdown: true);
@@ -1178,7 +1178,7 @@ public static class FoundationScenarioSuite
         Assert(lifecycle.LastOperation.CleanupFailures.Count >= 1, "Later shutdown failures must be retained as cleanup diagnostics.");
     }
 
-    private static void AsyncLifecycleSupportsMixedActivationCancellationAndTimeout()
+    internal static void AsyncLifecycleSupportsMixedActivationCancellationAndTimeout()
     {
         var order = new List<string>();
         using var syncScope = new PluginResourceScope();
@@ -1212,7 +1212,7 @@ public static class FoundationScenarioSuite
         Assert(cancelled.State == PluginLifecycleState.Faulted, "Cancellation during async initialization must fault only that plugin and preserve host startup isolation.");
     }
 
-    private static void AsyncUninstallPropagatesLifecycleFailures()
+    internal static void AsyncUninstallPropagatesLifecycleFailures()
     {
         using var scope = new PluginResourceScope();
         var manifest = new PluginManifest(new PluginId("async.uninstall"), "Async uninstall", new Version(1, 0), "Tests", "Async uninstall", new[] { "1.4.5.6" });
@@ -1224,7 +1224,7 @@ public static class FoundationScenarioSuite
         Assert(controller.State == PluginLifecycleState.Uninstalled && controller.LastOperation.CallbackFailure?.Exception is InvalidOperationException, "Async uninstall must retain lifecycle callback failures while reaching its terminal state.");
     }
 
-    private static void AsyncLifecycleCancelsAfterCallbackStarts()
+    internal static void AsyncLifecycleCancelsAfterCallbackStarts()
     {
         using var scope = new PluginResourceScope();
         var manifest = new PluginManifest(new PluginId("async.external-cancel"), "Async cancellation", new Version(1, 0), "Tests", "Async cancellation", new[] { "1.4.5.6" });
@@ -1240,7 +1240,7 @@ public static class FoundationScenarioSuite
         plugin.Complete();
     }
 
-    private static void AsyncShutdownIsBoundedAndRetainsFailures()
+    internal static void AsyncShutdownIsBoundedAndRetainsFailures()
     {
         var manifest = new PluginManifest(new PluginId("async.shutdown"), "Async shutdown", new Version(1, 0), "Tests", "Async shutdown", new[] { "1.4.5.6" });
 
@@ -1299,7 +1299,7 @@ public static class FoundationScenarioSuite
         scope.Dispose();
     }
 
-    private static void ActivationTransactionRollsBackInReverseOrder()
+    internal static void ActivationTransactionRollsBackInReverseOrder()
     {
         var order = new List<string>();
         var resources = new PluginResourceScope();
@@ -1925,7 +1925,7 @@ public static class FoundationScenarioSuite
         scope.Dispose();
     }
 
-    private static void DispatcherHonorsFrameBudget()
+    internal static void DispatcherHonorsFrameBudget()
     {
         var dispatcher = new PluginDispatcherHost(1, TimeSpan.FromSeconds(1));
         var scope = new PluginResourceScope();
@@ -1940,7 +1940,7 @@ public static class FoundationScenarioSuite
         scope.Dispose();
     }
 
-    private static void DispatcherRetainsPhysicalQueueSlotsAfterCancellation()
+    internal static void DispatcherRetainsPhysicalQueueSlotsAfterCancellation()
     {
         var dispatcher = new PluginDispatcherHost(8, TimeSpan.FromSeconds(1), maximumQueuedWork: 1, maximumQueuedWorkPerPlugin: 1);
         using var scope = new PluginResourceScope();
@@ -1952,7 +1952,7 @@ public static class FoundationScenarioSuite
         service.Post(() => { }).Dispose();
     }
 
-    private static void SchedulerUsesDispatcherAndActivationCleanup()
+    internal static void SchedulerUsesDispatcherAndActivationCleanup()
     {
         var dispatcher = new PluginDispatcherHost(16, TimeSpan.FromSeconds(1));
         var scheduler = new PluginSchedulerHost();
@@ -1976,7 +1976,7 @@ public static class FoundationScenarioSuite
         AssertThrows<ObjectDisposedException>(() => service.NextUpdate("stale", () => { }));
     }
 
-    private static void EmptyDispatcherDrainIsAllocationFree()
+    internal static void EmptyDispatcherDrainIsAllocationFree()
     {
         var dispatcher = new PluginDispatcherHost();
         dispatcher.Drain();
@@ -1986,7 +1986,7 @@ public static class FoundationScenarioSuite
         Assert(allocated == 0, "An empty dispatcher drain must not allocate a Stopwatch or temporary collection.");
     }
 
-    private static void SchedulerTickWithoutDueWorkIsAllocationFree()
+    internal static void SchedulerTickWithoutDueWorkIsAllocationFree()
     {
         var dispatcher = new PluginDispatcherHost();
         var scheduler = new PluginSchedulerHost();
@@ -2002,7 +2002,7 @@ public static class FoundationScenarioSuite
         Assert(allocated == 0, "A scheduler tick with no due work must not allocate a temporary list or array.");
     }
 
-    private static void SchedulerElapsedWorkUsesMonotonicClockUnits()
+    internal static void SchedulerElapsedWorkUsesMonotonicClockUnits()
     {
         var clock = new ManualMonotonicClock(3);
         var dispatcher = new PluginDispatcherHost(16, TimeSpan.FromSeconds(1));
@@ -2033,7 +2033,7 @@ public static class FoundationScenarioSuite
             "Large elapsed delays must saturate instead of overflowing their clock deadline.");
     }
 
-    private static void BackgroundWorkIsBoundedAndActivationOwned()
+    internal static void BackgroundWorkIsBoundedAndActivationOwned()
     {
         var scheduler = new PluginSchedulerHost(maximumScheduledWorkPerPlugin: 4, maximumBackgroundWorkPerPlugin: 1);
         using var scope = new PluginResourceScope();
@@ -2086,7 +2086,7 @@ public static class FoundationScenarioSuite
         Assert(logger.ContainsError("fault") && logger.ContainsError(manifest.Id.Value), "Unexpected background failures must remain attributed to the owning plugin logger.");
     }
 
-    private static void TransientSchedulerAndDispatcherResourcesAreReleased()
+    internal static void TransientSchedulerAndDispatcherResourcesAreReleased()
     {
         var dispatcher = new PluginDispatcherHost(128, TimeSpan.FromSeconds(1), 128, 128);
         var scheduler = new PluginSchedulerHost(128, 8);
@@ -2103,7 +2103,7 @@ public static class FoundationScenarioSuite
         Assert(scope.ResourceCount == baseline, "Completed scheduler and dispatcher registrations must release their scope ownership instead of accumulating for the activation lifetime.");
     }
 
-    private static void LifecycleDrainsActivationBackgroundWorkBeforeDisableAndReenable()
+    internal static void LifecycleDrainsActivationBackgroundWorkBeforeDisableAndReenable()
     {
         using var host = new FakePluginHost();
         PluginManifest manifest = CreateBundledTestManifest("activation.background.sync");
@@ -2124,7 +2124,7 @@ public static class FoundationScenarioSuite
         Assert(plugin.DisableCount == 2, "Each activation disable must drain only that activation's background work.");
     }
 
-    private static void AsyncLifecycleDrainsActivationBackgroundWorkBeforeDisable()
+    internal static void AsyncLifecycleDrainsActivationBackgroundWorkBeforeDisable()
     {
         using var host = new FakePluginHost();
         PluginManifest manifest = CreateBundledTestManifest("activation.background.async");
@@ -2138,7 +2138,7 @@ public static class FoundationScenarioSuite
         Assert(plugin.DisableObservedDrain, "Asynchronous disable must drain the activation background work before its lifecycle callback.");
     }
 
-    private static void SynchronousDisableDoesNotWaitForNonCooperativeBackgroundWork()
+    internal static void SynchronousDisableDoesNotWaitForNonCooperativeBackgroundWork()
     {
         using var host = new FakePluginHost();
         PluginManifest manifest = CreateBundledTestManifest("activation.background.noncooperative");

@@ -158,7 +158,7 @@ public static partial class PluginUiRuntime
                     panel.BackgroundColor = new Color(63, 82, 151) * 0.8f;
                     panel.BorderColor = Color.Black;
                 };
-                button.OnUpdate += element => { if (element.IsMouseHovering) Main.instance.MouseText(hoverText); };
+                button.OnUpdate += element => { if (element.IsMouseHovering) ShowHoverText(hoverText); };
                 button.OnLeftClick += (evt, element) => { click(); SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f); };
                 return button;
             }
