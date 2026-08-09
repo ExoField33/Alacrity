@@ -7,10 +7,14 @@ using System.Threading.Tasks;
 
 namespace Alacrity.PluginSdk;
 
-/// Registers validated plugin commands.
+/// Registers validated plugin commands. Handlers run on the host command-dispatch boundary, which
+/// Terraria currently invokes from its input/update thread. Handlers must stay short and must not
+/// block on I/O. Registrations are activation-scoped; once teardown begins a queued command is
+/// consumed locally but its plugin callback is not started.
 public interface IPluginCommandService
 {
-    /// Registers a command owned by the current plugin.
+    /// Registers a command owned by the current plugin. The handler is invoked on the host's
+    /// command-dispatch thread and is removed automatically when the activation ends.
     IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler);
 }
 
@@ -94,7 +98,7 @@ public sealed class PluginCommandDescriptor
             result.Add(validated);
         }
 
-        return result.ToArray();
+        return Array.AsReadOnly(result.ToArray());
     }
 
     private static IReadOnlyList<PluginCommandParameterDescriptor> CopyParameters(IEnumerable<PluginCommandParameterDescriptor>? parameters)
@@ -128,7 +132,7 @@ public sealed class PluginCommandDescriptor
             result.Add(parameter);
         }
 
-        return result.ToArray();
+        return Array.AsReadOnly(result.ToArray());
     }
 }
 
@@ -138,7 +142,18 @@ public sealed class PluginCommandInvocation
     /// Creates an invocation snapshot.
     public PluginCommandInvocation(IReadOnlyList<string> arguments, Action<string>? reply = null)
     {
-        Arguments = arguments ?? throw new ArgumentNullException(nameof(arguments));
+        if (arguments == null)
+        {
+            throw new ArgumentNullException(nameof(arguments));
+        }
+
+        var copy = new string[arguments.Count];
+        for (int index = 0; index < arguments.Count; index++)
+        {
+            copy[index] = arguments[index] ?? throw new ArgumentException("Command arguments cannot contain null values.", nameof(arguments));
+        }
+
+        Arguments = Array.AsReadOnly(copy);
         this.reply = reply;
     }
 

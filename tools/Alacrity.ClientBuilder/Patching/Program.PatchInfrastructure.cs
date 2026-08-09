@@ -2,7 +2,7 @@ using Mono.Cecil;
 using Mono.Cecil.Cil;
 
 // Patch-domain implementation is separate from the command-line entry point.
-internal static partial class Program
+internal static partial class PermanentPatchPlan
 {
     internal static DefaultAssemblyResolver CreateResolver(string executablePath)
     {

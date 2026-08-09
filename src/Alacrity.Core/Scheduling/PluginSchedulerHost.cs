@@ -49,7 +49,7 @@ public sealed class PluginSchedulerHost
         if (dispatcher == null) throw new ArgumentNullException(nameof(dispatcher));
         if (logger == null) throw new ArgumentNullException(nameof(logger));
         ThrowIfStopping();
-        var guard = new ScopeGuard();
+        var guard = new ScopeGuard(ActivationCallbackGates.TryGet(resources));
         var activation = new BackgroundActivation();
         try
         {
@@ -175,13 +175,14 @@ public sealed class PluginSchedulerHost
 
     private void Execute(ScheduledWork work, uint updateVersion)
     {
-        bool entered = false;
         try
         {
-            entered = !work.IsReleased && work.Guard.TryEnterCallback();
-            if (entered)
+            if (!work.IsReleased && work.Guard.TryEnterCallback(out ActivationCallbackGate.Lease lease))
             {
-                work.Callback();
+                using (lease)
+                {
+                    work.Callback();
+                }
             }
         }
         catch (Exception exception)
@@ -337,7 +338,7 @@ public sealed class PluginSchedulerHost
 
     private void ThrowIfUnavailable(ScopeGuard guard)
     {
-        if (guard.IsReleased) throw new ObjectDisposedException("IPluginScheduler", "The owning plugin activation has ended.");
+        if (guard.IsUnavailable) throw new ObjectDisposedException("IPluginScheduler", "The owning plugin activation has ended.");
         ThrowIfStopping();
     }
 
@@ -396,12 +397,35 @@ public sealed class PluginSchedulerHost
 
     private sealed class ScopeGuard : IDisposable
     {
+        private readonly ActivationCallbackGate? callbackGate;
         private int released;
+
+        internal ScopeGuard(ActivationCallbackGate? callbackGate)
+        {
+            this.callbackGate = callbackGate;
+        }
 
         internal bool IsReleased => Volatile.Read(ref released) != 0;
 
+        internal bool IsUnavailable => IsReleased || (callbackGate != null && callbackGate.IsClosed);
+
         // Admission is checked before the callback starts; teardown does not wait on plugin code.
-        internal bool TryEnterCallback() => Volatile.Read(ref released) == 0;
+        internal bool TryEnterCallback(out ActivationCallbackGate.Lease lease)
+        {
+            if (IsUnavailable)
+            {
+                lease = default;
+                return false;
+            }
+
+            if (callbackGate == null)
+            {
+                lease = default;
+                return true;
+            }
+
+            return callbackGate.TryEnter(out lease);
+        }
 
         public void Dispose()
         {
@@ -527,7 +551,7 @@ public sealed class PluginSchedulerHost
             lock (startGate)
             {
                 if (task != null) return;
-                if (IsReleased || guard.IsReleased || activation.IsStopped) completeWithoutStarting = true;
+                if (IsReleased || guard.IsUnavailable || activation.IsStopped) completeWithoutStarting = true;
                 else task = Task.Run(RunAsync);
             }
             if (completeWithoutStarting) Complete();
@@ -540,11 +564,14 @@ public sealed class PluginSchedulerHost
 
         private async Task RunAsync()
         {
-            bool entered = guard.TryEnterCallback();
+            bool entered = guard.TryEnterCallback(out ActivationCallbackGate.Lease lease);
             try
             {
                 if (!entered || IsReleased || activation.IsStopped || cancellation.IsCancellationRequested) return;
-                await callback(cancellation.Token).ConfigureAwait(false);
+                using (lease)
+                {
+                    await callback(cancellation.Token).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested || guard.IsReleased)
             {

@@ -24,6 +24,9 @@ public sealed class PluginLifecycleController : IDisposable
     private bool shutdown;
     private int asynchronousDisposeStarted;
     private int synchronousQuiescencePending;
+    private int asynchronousCallbackRunning;
+    private int asynchronousCallbackQuarantined;
+    private Task? quarantinedAsyncCallback;
 
     public PluginLifecycleController(IAlacrityPlugin plugin, IPluginContext context)
         : this((object)plugin, context, default(TimeSpan?), null)
@@ -157,6 +160,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureNotShutdown();
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
+        CloseActivationCallbackAdmission();
 
         Task<bool>? backgroundDrain = BeginBackgroundDrain(out var cleanupFailures);
         Exception? callbackFailure = null;
@@ -195,6 +199,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         EnsureSynchronousLifecycle();
         EnsureNotShutdown();
+        CloseActivationCallbackAdmission();
         var cleanupFailures = RequestBackgroundDrain();
         Exception? callbackFailure = null;
         State = PluginLifecycleState.Uninstalling;
@@ -226,6 +231,7 @@ public sealed class PluginLifecycleController : IDisposable
             return;
         }
 
+        CloseActivationCallbackAdmission();
         var cleanupFailures = RequestBackgroundDrain();
         Exception? callbackFailure = null;
         try
@@ -286,6 +292,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         try
         {
+            CloseActivationCallbackAdmission();
             // Runtime activations receive a context factory and never reuse a scope. Legacy
             // direct-controller callers remain releasable because they cannot supply a fresh one.
             if (contextFactory != null)
@@ -297,6 +304,18 @@ public sealed class PluginLifecycleController : IDisposable
         catch (Exception exception)
         {
             return new List<PluginCleanupFailure> { new PluginCleanupFailure("Release resources", exception) };
+        }
+    }
+
+    /// <summary>
+    /// Teardown is an admission boundary, not a blocking barrier. Existing callbacks may finish,
+    /// but no callback that has not acquired a lease may enter the old activation afterwards.
+    /// </summary>
+    private void CloseActivationCallbackAdmission()
+    {
+        if (context is IActivationCallbackAdmissionContext activation)
+        {
+            activation.CloseCallbackAdmission();
         }
     }
 
@@ -387,6 +406,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         try
         {
+            CloseActivationCallbackAdmission();
             if (context is not IActivationBackgroundWorkContext activation ||
                 await activation.StopAndDrainBackgroundWorkAsync(asyncCallbackTimeout).ConfigureAwait(false))
                 return new List<PluginCleanupFailure>();
@@ -510,6 +530,7 @@ public sealed class PluginLifecycleController : IDisposable
         EnsureNotShutdown();
         EnsureState(PluginLifecycleState.Enabled);
         Transition(PluginLifecycleState.Disabling);
+        CloseActivationCallbackAdmission();
         var cleanupFailures = await DrainBackgroundWorkAsync().ConfigureAwait(false);
         Exception? callbackFailure = null;
         try { await InvokeAsync("Disable", token => asyncPlugin!.DisableAsync(token), cancellationToken).ConfigureAwait(false); }
@@ -527,6 +548,7 @@ public sealed class PluginLifecycleController : IDisposable
     {
         if (!UsesAsyncLifecycle) { Dispose(); return; }
         if (shutdown) return;
+        CloseActivationCallbackAdmission();
         var cleanupFailures = await DrainBackgroundWorkAsync().ConfigureAwait(false);
         Exception? callbackFailure = null;
         try
@@ -564,6 +586,7 @@ public sealed class PluginLifecycleController : IDisposable
         if (!UsesAsyncLifecycle) { Uninstall(); return; }
         EnsureNotShutdown();
         State = PluginLifecycleState.Uninstalling;
+        CloseActivationCallbackAdmission();
         var cleanupFailures = await DrainBackgroundWorkAsync().ConfigureAwait(false);
         Exception? callbackFailure = null;
         try
@@ -599,10 +622,35 @@ public sealed class PluginLifecycleController : IDisposable
     private async Task InvokeAsync(string operation, Func<CancellationToken, Task> callback, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref asynchronousCallbackQuarantined) != 0)
+        {
+            throw new InvalidOperationException("The plugin instance is quarantined because a previous asynchronous lifecycle callback did not stop. It cannot receive another lifecycle callback in this process.");
+        }
+
+        if (Interlocked.CompareExchange(ref asynchronousCallbackRunning, 1, 0) != 0)
+        {
+            throw new InvalidOperationException("An asynchronous lifecycle callback is already running for this plugin instance.");
+        }
+
         using var timeout = new CancellationTokenSource();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         using var timerCancellation = new CancellationTokenSource();
-        Task task = callback(linked.Token) ?? throw new InvalidOperationException(operation + " returned a null task.");
+        Task task;
+        try
+        {
+            task = callback(linked.Token) ?? throw new InvalidOperationException(operation + " returned a null task.");
+        }
+        catch
+        {
+            Interlocked.Exchange(ref asynchronousCallbackRunning, 0);
+            throw;
+        }
+
+        _ = task.ContinueWith(
+            _ => Interlocked.Exchange(ref asynchronousCallbackRunning, 0),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
         Task timeoutTask = Task.Delay(asyncCallbackTimeout, timerCancellation.Token);
         Task externalCancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         Task completed = await Task.WhenAny(task, timeoutTask, externalCancellationTask).ConfigureAwait(false);
@@ -615,9 +663,37 @@ public sealed class PluginLifecycleController : IDisposable
 
         timeout.Cancel();
         ObserveFault(task);
+        QuarantineAsyncCallback(operation, task, ReferenceEquals(completed, externalCancellationTask));
         if (ReferenceEquals(completed, externalCancellationTask))
             throw new OperationCanceledException(cancellationToken);
         throw new TimeoutException(operation + " exceeded the host callback timeout of " + asyncCallbackTimeout + ".");
+    }
+
+    private void QuarantineAsyncCallback(string operation, Task task, bool externalCancellation)
+    {
+        if (Interlocked.Exchange(ref asynchronousCallbackQuarantined, 1) != 0)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref quarantinedAsyncCallback, task);
+
+        string reason = externalCancellation
+            ? operation + " was cancelled while the plugin callback was still running."
+            : operation + " exceeded the host timeout while the plugin callback was still running.";
+        context.Logger.Warn(reason + " The plugin instance is quarantined and will not receive another lifecycle callback in this process.");
+        _ = task.ContinueWith(
+            completed =>
+            {
+                Interlocked.CompareExchange(ref quarantinedAsyncCallback, null, completed);
+                if (completed.IsFaulted)
+                {
+                    context.Logger.Error("A quarantined asynchronous " + operation + " callback later faulted.", completed.Exception!.GetBaseException());
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private static void ObserveFault(Task task)

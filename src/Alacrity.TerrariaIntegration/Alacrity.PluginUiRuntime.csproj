@@ -16,8 +16,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Bridge\PluginUiRuntime.RuntimeForwarding.cs" />
+    <Compile Include="Bridge\PluginUiRuntimeBridgeState.cs" />
+    <Compile Include="Bridge\ClientManifestIntegrity.cs" />
     <!-- Shared source keeps the injected façade able to diagnose a missing/stale SDK DLL. -->
     <Compile Include="..\Alacrity.PluginSdk\Compatibility\BridgeCompatibilityDescriptor.cs" Link="Bridge\BridgeCompatibilityDescriptor.cs" />
     <Compile Include="Bridge\BridgeReflectionResolver.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System.Web.Extensions" />
   </ItemGroup>
 </Project>

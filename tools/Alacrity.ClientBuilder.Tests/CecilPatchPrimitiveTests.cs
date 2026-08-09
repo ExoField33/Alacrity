@@ -153,6 +153,54 @@ public sealed class CecilPatchPrimitiveTests : IDisposable
         Assert.Contains("fixture.run", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PatchPostconditionRejectsDuplicateBridgeCallsInTheCorrectTarget()
+    {
+        var path = CreateFixture();
+        using var module = ModuleDefinition.ReadModule(path);
+        var target = new ClientPatchTarget("fixture.run", "Fixture.Container/Nested", "Run(System.Int32)", "return", "insert Ping", "Ping");
+        var operation = new ClientPatchOperation("fixture.targeted", "Fixture.Container/Nested", "targeted fixture", new[] { target }, "Ping");
+        var definition = new ClientPatchDefinition(
+            "fixture.duplicate-call.patch",
+            (assembly, _) =>
+            {
+                MethodDefinition method = CecilPatchPrimitives.RequireMethod(CecilPatchPrimitives.RequireType(assembly, "Fixture.Container/Nested"), "Run", "System.Void", "System.Int32");
+                Instruction ret = CecilPatchPrimitives.RequireUniqueInstruction(method, instruction => instruction.OpCode == OpCodes.Ret, "return");
+                MethodReference ping = CreatePing(assembly);
+                method.Body.GetILProcessor().InsertBefore(ret, Instruction.Create(OpCodes.Call, ping));
+                method.Body.GetILProcessor().InsertBefore(ret, Instruction.Create(OpCodes.Call, ping));
+            },
+            assembly => CountPingCalls(assembly) > 0,
+            new[] { operation });
+
+        ClientBuildException exception = Assert.Throws<ClientBuildException>(() => PermanentPatchCatalog.ApplyDefinitions(module, path, new[] { definition }));
+        Assert.Contains("expected 1 call(s)", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AllReturnPatchPostconditionRequiresABridgeCallBeforeEveryReturn()
+    {
+        var path = CreateFixture();
+        using var module = ModuleDefinition.ReadModule(path);
+        MethodDefinition method = CecilPatchPrimitives.RequireMethod(CecilPatchPrimitives.RequireType(module, "Fixture.Container/Nested"), "Run", "System.Void", "System.Int32");
+        method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+        var target = new ClientPatchTarget("fixture.run", "Fixture.Container/Nested", "Run(System.Int32)", "every return", "insert before return", "Ping");
+        var operation = new ClientPatchOperation("fixture.targeted", "Fixture.Container/Nested", "targeted fixture", new[] { target }, "Ping");
+        var definition = new ClientPatchDefinition(
+            "fixture.all-returns.patch",
+            (assembly, _) =>
+            {
+                MethodDefinition targetMethod = CecilPatchPrimitives.RequireMethod(CecilPatchPrimitives.RequireType(assembly, "Fixture.Container/Nested"), "Run", "System.Void", "System.Int32");
+                Instruction firstReturn = targetMethod.Body.Instructions.First(instruction => instruction.OpCode == OpCodes.Ret);
+                targetMethod.Body.GetILProcessor().InsertBefore(firstReturn, Instruction.Create(OpCodes.Call, CreatePing(assembly)));
+            },
+            assembly => CountPingCalls(assembly) > 0,
+            new[] { operation });
+
+        ClientBuildException exception = Assert.Throws<ClientBuildException>(() => PermanentPatchCatalog.ApplyDefinitions(module, path, new[] { definition }));
+        Assert.Contains("expected 2 call(s)", exception.Message, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory))
@@ -189,6 +237,14 @@ public sealed class CecilPatchPrimitiveTests : IDisposable
         }
 
         return count;
+    }
+
+    private static MethodReference CreatePing(ModuleDefinition assembly)
+    {
+        var facade = new AssemblyNameReference(BridgeAbiContractCatalog.FacadeAssemblyName, new Version(1, 0));
+        assembly.AssemblyReferences.Add(facade);
+        var bridgeType = new TypeReference("AlacrityTerraria", "PluginUiRuntime", assembly, facade);
+        return new MethodReference("Ping", assembly.TypeSystem.Void, bridgeType) { HasThis = false };
     }
 
     private static void CountPingCalls(TypeDefinition type, ref int count)

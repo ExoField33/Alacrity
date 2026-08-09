@@ -139,6 +139,56 @@ public sealed class TypedCommandTests
     }
 
     [Fact]
+    public void TokenizerPreservesWindowsPathsAndOnlyEscapesActiveQuotesOrBackslashes()
+    {
+        Assert.True(PluginCommandTokenizer.TryTokenize(
+            "open \"C:\\Games\\Terraria\" \"C:\\\\Temp\" \"say \\\"hello\\\"\" 'it\\'s fine' \\",
+            out var tokens,
+            out var error));
+        Assert.Null(error);
+        Assert.Equal(new[] { "open", "C:\\Games\\Terraria", "C:\\Temp", "say \"hello\"", "it's fine", "\\" }, tokens);
+
+        Assert.True(PluginCommandTokenizer.TryTokenize("empty \"\"", out tokens, out error));
+        Assert.Equal(new[] { "empty", string.Empty }, tokens);
+    }
+
+    [Fact]
+    public void TypedCommandRejectsDefaultsOutsideTheInputSemanticDomain()
+    {
+        using var host = new FakePluginHost();
+        PluginHostContext context = host.Create(CreateManifest());
+
+        Assert.Throws<ArgumentException>(() => context.Commands.Define("float", "Invalid default").OptionalSingle("value", float.NaN));
+        Assert.Throws<ArgumentOutOfRangeException>(() => context.Commands.Define("bounds", "Invalid bounds").RequiredSingle("value", float.NegativeInfinity, 1f));
+        Assert.Throws<ArgumentException>(() => context.Commands.Define("mode", "Invalid enum").OptionalEnum("mode", (TypedMode)99));
+        Assert.Throws<ArgumentException>(() => context.Commands.Define("validated", "Invalid validator").OptionalString("value", "bad", validator: _ => "rejected"));
+    }
+
+    [Fact]
+    public void CommandMetadataAndInvocationArgumentsDefensivelyCopyCallerCollections()
+    {
+        var aliases = new[] { "old" };
+        var choices = new[] { "one", "two" };
+        var descriptor = new PluginCommandDescriptor("copy", "Copies metadata", aliases, new[]
+        {
+            new PluginCommandParameterDescriptor("choice", PluginCommandValueKind.Choice, false, choices: choices)
+        });
+
+        aliases[0] = "mutated";
+        choices[0] = "mutated";
+        Assert.Equal("old", descriptor.Aliases[0]);
+        Assert.Equal("one", descriptor.Parameters[0].Choices[0]);
+        Assert.False(descriptor.Aliases is string[]);
+        Assert.False(descriptor.Parameters[0].Choices is string[]);
+
+        var supplied = new[] { "first" };
+        var invocation = new PluginCommandInvocation(supplied);
+        supplied[0] = "mutated";
+        Assert.Equal("first", invocation.Arguments[0]);
+        Assert.False(invocation.Arguments is string[]);
+    }
+
+    [Fact]
     public void TypedCommandUsesTheExistingScopedHostAndAttributesFailures()
     {
         using var host = new FakePluginHost();

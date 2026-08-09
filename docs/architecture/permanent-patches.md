@@ -15,7 +15,7 @@ clean Terraria 1.4.5.6 + exact SHA-256
 
 ## Supported catalog
 
-The current catalog is `alacrity-terraria-1.4.5.6-r2`. It is intentionally version locked to the
+The current catalog is `alacrity-terraria-1.4.5.6-r3`. It is intentionally version locked to the
 single Steam Windows Terraria 1.4.5.6 SHA-256 recorded in `SupportedTerrariaBuildCatalog`.
 Unknown binaries can be inspected, but cannot be generated into a normal Alacrity client.
 
@@ -24,7 +24,9 @@ The six independently applied catalog definitions are the authoritative inventor
 verified anchor, injection style, and bridge ABI postcondition. The source hash makes the exact
 target method bodies part of each definition's precondition; the builder still validates the staged
 bridge handshake, reopens the resulting executable, and verifies every injected facade method
-reference.
+reference. Target postconditions require one expected bridge call per ordinary patch site; the
+melee-collision capture site requires one call immediately before every return. This catches both
+duplicate injection and incomplete return coverage after branch or exception-handler retargeting.
 
 | Area | Terraria target(s) | Bridge ABI responsibility | Runtime subsystem |
 | --- | --- | --- | --- |

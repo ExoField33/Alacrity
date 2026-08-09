@@ -5,6 +5,9 @@ using Mono.Cecil;
 internal static class ClientBuildPipeline
 {
     private const string ClientManifestName = "alacrity-client-manifest.json";
+    // Test-only fault seam. Production never assigns it; each boundary is intentionally distinct
+    // so deployment rollback is exercised after the same mutations that a real I/O failure sees.
+    internal static Action<DeploymentMutationPoint>? DeploymentMutationFailureInjector { get; set; }
 
     internal static ClientBuildResult Generate(ClientBuildOptions options)
     {
@@ -27,7 +30,7 @@ internal static class ClientBuildPipeline
             var temporaryOutput = Path.Combine(temporaryDirectory, "Alacrity.exe");
 
             List<ClientPatchResult> patchResults;
-            using (var resolver = Program.CreateResolver(temporarySource))
+            using (var resolver = PermanentPatchPlan.CreateResolver(temporarySource))
             using (var module = ModuleDefinition.ReadModule(temporarySource, new ReaderParameters
             {
                 AssemblyResolver = resolver,
@@ -39,7 +42,7 @@ internal static class ClientBuildPipeline
                 module.Write(temporaryOutput);
             }
 
-            using (var resolver = Program.CreateResolver(temporaryOutput))
+            using (var resolver = PermanentPatchPlan.CreateResolver(temporaryOutput))
             using (var patched = ModuleDefinition.ReadModule(temporaryOutput, new ReaderParameters
             {
                 AssemblyResolver = resolver,
@@ -180,15 +183,31 @@ internal static class ClientBuildPipeline
         // Snapshot and validate the old ownership before the new manifest can overwrite it.
         ClientBuildManifest? previousManifest = ReadPreviousDeploymentManifest(outputDirectory);
         ValidateManifestPaths(outputDirectory, manifest, "New deployment manifest");
-        CopyPipelineFiles(temporaryDirectory, outputDirectory, manifest);
-        RemovePreviouslyOwnedFiles(outputDirectory, previousManifest, manifest);
-        WriteClientManifest(outputDirectory, manifest);
-        System.IO.Directory.CreateDirectory(Path.Combine(outputDirectory, "data"));
+        ValidatePipelineFiles(temporaryDirectory, manifest);
+        using var transaction = new DeploymentTransaction(outputDirectory);
+        try
+        {
+            CopyPipelineFiles(temporaryDirectory, outputDirectory, manifest, transaction);
+            RemovePreviouslyOwnedFiles(outputDirectory, previousManifest, manifest, transaction);
+            DeploymentMutationFailureInjector?.Invoke(DeploymentMutationPoint.AfterStaleCleanup);
+            ValidatePublishedRuntimeFiles(outputDirectory, manifest);
+            transaction.Capture(Path.Combine(outputDirectory, ClientManifestName));
+            DeploymentMutationFailureInjector?.Invoke(DeploymentMutationPoint.BeforeManifestCommit);
+            WriteClientManifest(outputDirectory, manifest);
+            System.IO.Directory.CreateDirectory(Path.Combine(outputDirectory, "data"));
+            ValidatePublishedDeployment(outputDirectory, manifest);
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.RollBack();
+            throw;
+        }
     }
 
     internal static void RemovePreviouslyOwnedFiles(string outputDirectory, ClientBuildManifest currentManifest)
     {
-        RemovePreviouslyOwnedFiles(outputDirectory, ReadPreviousDeploymentManifest(outputDirectory), currentManifest);
+        RemovePreviouslyOwnedFiles(outputDirectory, ReadPreviousDeploymentManifest(outputDirectory), currentManifest, null);
     }
 
     private static ClientBuildManifest? ReadPreviousDeploymentManifest(string outputDirectory)
@@ -216,7 +235,7 @@ internal static class ClientBuildPipeline
         }
     }
 
-    private static void RemovePreviouslyOwnedFiles(string outputDirectory, ClientBuildManifest? previousManifest, ClientBuildManifest currentManifest)
+    private static void RemovePreviouslyOwnedFiles(string outputDirectory, ClientBuildManifest? previousManifest, ClientBuildManifest currentManifest, DeploymentTransaction? transaction)
     {
         if (previousManifest == null)
         {
@@ -235,6 +254,7 @@ internal static class ClientBuildPipeline
             string candidate = ClientBuildPaths.ResolveUnderRoot(outputDirectory, relativePath, "Existing deployment manifest path");
             if (File.Exists(candidate))
             {
+                transaction?.Capture(candidate);
                 File.Delete(candidate);
             }
         }
@@ -276,7 +296,7 @@ internal static class ClientBuildPipeline
             string.Equals(normalized, "AlacrityBootstrapRuntime.dll", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void CopyPipelineFiles(string temporaryDirectory, string outputDirectory, ClientBuildManifest manifest)
+    private static void CopyPipelineFiles(string temporaryDirectory, string outputDirectory, ClientBuildManifest manifest, DeploymentTransaction? transaction = null)
     {
         var files = new List<string> { "Alacrity.exe" };
         for (var index = 0; index < manifest.RuntimeFiles.Count; index++)
@@ -289,8 +309,67 @@ internal static class ClientBuildPipeline
             string relativePath = ClientBuildPaths.NormalizeRelativePath(files[index], "Pipeline output path");
             string sourcePath = ClientBuildPaths.ResolveUnderRoot(temporaryDirectory, relativePath, "Pipeline output path");
             string targetPath = ClientBuildPaths.ResolveUnderRoot(outputDirectory, relativePath, "Pipeline output path");
+            transaction?.Capture(targetPath);
             System.IO.Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
             File.Copy(sourcePath, targetPath, overwrite: true);
+            DeploymentMutationFailureInjector?.Invoke(DeploymentMutationPoint.AfterCopy);
+        }
+    }
+
+    /// <summary>Verifies the exact files that the running client will load after deployment.</summary>
+    internal static void ValidatePublishedDeployment(string outputDirectory, ClientBuildManifest expected)
+    {
+        ValidatePublishedRuntimeFiles(outputDirectory, expected);
+
+        ClientBuildManifest? published = ReadPreviousDeploymentManifest(outputDirectory);
+        if (published == null || !string.Equals(published.BridgeHandshake, expected.BridgeHandshake, StringComparison.Ordinal) ||
+            !string.Equals(published.OutputExecutableSha256, expected.OutputExecutableSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ClientBuildException("Published client manifest does not describe the generated runtime set.");
+        }
+    }
+
+    private static void ValidatePublishedRuntimeFiles(string outputDirectory, ClientBuildManifest expected)
+    {
+        if (!File.Exists(Path.Combine(outputDirectory, "Alacrity.exe")))
+        {
+            throw new ClientBuildException("Published deployment is missing Alacrity.exe.");
+        }
+
+        string executableHash = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(outputDirectory, "Alacrity.exe"));
+        if (!string.Equals(executableHash, expected.OutputExecutableSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ClientBuildException("Published Alacrity.exe does not match the generated client manifest.");
+        }
+
+        for (int index = 0; index < expected.RuntimeFiles.Count; index++)
+        {
+            ClientBuildFile file = expected.RuntimeFiles[index];
+            string path = ClientBuildPaths.ResolveUnderRoot(outputDirectory, file.Path, "Published runtime path");
+            if (!File.Exists(path) || !string.Equals(SupportedTerrariaBuildCatalog.ComputeSha256(path), file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ClientBuildException("Published runtime file does not match the generated client manifest: " + file.Path + ".");
+            }
+        }
+
+    }
+
+    private static void ValidatePipelineFiles(string temporaryDirectory, ClientBuildManifest manifest)
+    {
+        string executable = Path.Combine(temporaryDirectory, "Alacrity.exe");
+        if (!File.Exists(executable) || !string.Equals(SupportedTerrariaBuildCatalog.ComputeSha256(executable), manifest.OutputExecutableSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ClientBuildException("Generated temporary Alacrity.exe does not match its client manifest.");
+        }
+
+        for (int index = 0; index < manifest.RuntimeFiles.Count; index++)
+        {
+            ClientBuildFile file = manifest.RuntimeFiles[index];
+            string path = ClientBuildPaths.ResolveUnderRoot(temporaryDirectory, file.Path, "Temporary runtime path");
+            if (!File.Exists(path) || !string.Equals(SupportedTerrariaBuildCatalog.ComputeSha256(path), file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ClientBuildException("Generated temporary runtime file does not match its client manifest: " + file.Path + ".");
+            }
         }
     }
 

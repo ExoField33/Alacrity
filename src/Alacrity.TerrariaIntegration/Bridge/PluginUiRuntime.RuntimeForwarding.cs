@@ -18,64 +18,18 @@ namespace AlacrityTerraria
     {
         private const int PluginMenuMode = 888;
         private const int IngamePluginsCategory = 777016;
-        private static readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(2, 2, 2, "1.4.5.6");
-        private static readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
-        private static FieldInfo _versionNumber;
-        private static Assembly _bridgeAssembly;
-        private static Type _bridgeType;
-        private static Action _bootstrapPluginRuntime;
-        private static Func<string> _getBridgeHandshake;
-        private static Action _shutdownPluginRuntime;
-        private static Action _open;
-        private static Action _openIngamePluginSettings;
-        private static Action<SpriteBatch> _drawIngamePluginSettings;
-        private static Action<SpriteBatch> _drawNotifications;
-        private static Action<SpriteBatch> _drawHudWidgets;
-        private static Action<SpriteBatch> _drawWorldOverlays;
-        private static Action<SpriteBatch> _drawMenuOverlays;
-        private static Action<Player, bool, Rectangle> _captureMeleeCollisionBounds;
-        private static Action _updatePluginKeybinds;
-        private static Action _ensurePluginKeybindStateShape;
-        private static Action<UIManageControls> _appendPluginKeybindControls;
-        private static Func<bool> _shouldRunDustSystem;
-        private static Func<int, bool> _shouldCreateDust;
-        private static Func<Dust, bool> _shouldUpdateDustInstance;
-        private static Func<Dust, bool> _shouldDrawDustInstance;
-        private static Func<bool> _shouldRunGoreSystem;
-        private static Func<string, bool> _tryHandlePluginChatCommand;
-        private static Func<bool> _handlePluginMenuInput;
-        private static Func<bool> _hasChatInputEditors;
-        private static Func<string, bool, string> _processChatInput;
-        private static Func<string, string> _formatChatInputForDraw;
-        private static Func<object, Color, string, object> _decorateChatMessage;
-        private static Func<byte, bool> _shouldDisplayNetworkChatMessage;
-        private static Func<bool> _shouldDisplayLocalChatMessage;
-        private static Action<object> _handleChatSnippetHover;
-        private static Func<object, bool> _handleChatSnippetClick;
-        private static Func<object, Color, Color> _getChatSnippetVisibleColor;
-        private static Action<object, object> _copyChatSnippetContext;
-        private static bool _chatBridgeResolved;
-        private static Action<Color, float> _drawVersionNumber;
-        private static bool _versionRendererResolved;
-        private static bool _bridgeLoadAttempted;
-        private static bool _runtimeCapabilitiesResolved;
-        private static bool _pluginManagerCapabilitiesResolved;
-        private static bool _notificationCapabilitiesResolved;
-        private static readonly object CapabilityDiagnosticGate = new object();
-        private static readonly Dictionary<string, string> CapabilityDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal);
-        private static string _lastDiagnostic;
-        private static bool _shutdownHooked;
+        private static readonly PluginUiRuntimeBridgeState State = new PluginUiRuntimeBridgeState();
 
         /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
-        public static string LastBridgeDiagnostic { get { return _lastDiagnostic ?? string.Empty; } }
+        public static string LastBridgeDiagnostic { get { return State.LastDiagnostic ?? string.Empty; } }
 
         /// <summary>Returns the cached diagnostic for one independently resolved bridge capability.</summary>
         public static string GetBridgeCapabilityDiagnostic(string capability)
         {
             if (string.IsNullOrWhiteSpace(capability))
                 throw new ArgumentException("A bridge capability name is required.", nameof(capability));
-            lock (CapabilityDiagnosticGate)
-                return CapabilityDiagnostics.TryGetValue(capability, out var diagnostic) ? diagnostic : string.Empty;
+            lock (State.CapabilityDiagnosticGate)
+                return State.CapabilityDiagnostics.TryGetValue(capability, out var diagnostic) ? diagnostic : string.Empty;
         }
 
         public static bool HandleInput()
@@ -104,12 +58,12 @@ namespace AlacrityTerraria
             try
             {
                 if (!EnsureRuntimeCapabilities()) return;
-                if (!_shutdownHooked)
+                if (!State.ShutdownHooked)
                 {
                     AppDomain.CurrentDomain.ProcessExit += (_, __) => ShutdownPluginRuntime();
-                    _shutdownHooked = true;
+                    State.ShutdownHooked = true;
                 }
-                _bootstrapPluginRuntime?.Invoke();
+                State.BootstrapPluginRuntime?.Invoke();
             }
             catch (Exception exception) { RecordFailure("Plugin runtime startup", exception); }
         }
@@ -118,7 +72,7 @@ namespace AlacrityTerraria
         {
             try
             {
-                _shutdownPluginRuntime?.Invoke();
+                State.ShutdownPluginRuntime?.Invoke();
             }
             catch (Exception exception) { RecordFailure("Plugin runtime shutdown", exception); }
         }
@@ -132,7 +86,7 @@ namespace AlacrityTerraria
                     return;
 
                 SoundEngine.PlaySound(10, -1, -1, 1, 1f, 0f);
-                _open();
+                State.Open();
             }
             catch (Exception exception)
             {
@@ -147,17 +101,17 @@ namespace AlacrityTerraria
 
             try
             {
-                string originalVersion = (string)_versionNumber.GetValue(null);
+                string originalVersion = (string)State.VersionNumber.GetValue(null);
                 try
                 {
-                    _versionNumber.SetValue(null, versionText);
-                    _drawVersionNumber(color, verticalOffset);
-                    if (_runtimeCapabilitiesResolved)
-                        _drawMenuOverlays?.Invoke(Main.spriteBatch);
+                    State.VersionNumber.SetValue(null, versionText);
+                    State.DrawVersionNumber(color, verticalOffset);
+                    if (State.RuntimeCapabilitiesResolved)
+                        State.DrawMenuOverlays?.Invoke(Main.spriteBatch);
                 }
                 finally
                 {
-                    _versionNumber.SetValue(null, originalVersion);
+                    State.VersionNumber.SetValue(null, originalVersion);
                 }
             }
             catch (Exception exception)
@@ -171,13 +125,13 @@ namespace AlacrityTerraria
             SetIngamePluginsCategory();
             try
             {
-                if (!EnsureBridge() || _openIngamePluginSettings == null)
+                if (!EnsureBridge() || State.OpenIngamePluginSettings == null)
                 {
                     RestoreIngameOptionsCategory();
                     return;
                 }
 
-                _openIngamePluginSettings();
+                State.OpenIngamePluginSettings();
             }
             catch (Exception exception)
             {
@@ -193,13 +147,13 @@ namespace AlacrityTerraria
 
             try
             {
-                if (!EnsureBridge() || _drawIngamePluginSettings == null)
+                if (!EnsureBridge() || State.DrawIngamePluginSettings == null)
                 {
                     RestoreIngameOptionsCategory();
                     return;
                 }
 
-                _drawIngamePluginSettings(spriteBatch);
+                State.DrawIngamePluginSettings(spriteBatch);
             }
             catch (Exception exception)
             {
@@ -221,8 +175,8 @@ namespace AlacrityTerraria
                     if (!Main.gameMenu)
                     {
                         EnsureNotificationCapability();
-                        _drawNotifications?.Invoke(spriteBatch);
-                        _drawHudWidgets?.Invoke(spriteBatch);
+                        State.DrawNotifications?.Invoke(spriteBatch);
+                        State.DrawHudWidgets?.Invoke(spriteBatch);
                     }
                 }
             }
@@ -239,7 +193,7 @@ namespace AlacrityTerraria
             {
                 BootstrapPluginRuntime();
                 if (EnsureRuntimeCapabilities())
-                    _updatePluginKeybinds?.Invoke();
+                    State.UpdatePluginKeybinds?.Invoke();
             }
             catch (Exception exception)
             {
@@ -260,9 +214,9 @@ namespace AlacrityTerraria
                 return;
             try
             {
-                if (!EnsureRuntimeCapabilities() || _drawWorldOverlays == null)
+                if (!EnsureRuntimeCapabilities() || State.DrawWorldOverlays == null)
                     return;
-                _drawWorldOverlays(spriteBatch);
+                State.DrawWorldOverlays(spriteBatch);
             }
             catch (Exception exception)
             {
@@ -282,11 +236,11 @@ namespace AlacrityTerraria
             try
             {
                 // This is called from a combat-hot path. Once resolved, avoid even the bridge readiness check.
-                Action<Player, bool, Rectangle> capture = _captureMeleeCollisionBounds;
+                Action<Player, bool, Rectangle> capture = State.CaptureMeleeCollisionBounds;
                 if (capture != null)
                     capture(player, dontAttack, hitbox);
                 else if (EnsureRuntimeCapabilities())
-                    _captureMeleeCollisionBounds?.Invoke(player, dontAttack, hitbox);
+                    State.CaptureMeleeCollisionBounds?.Invoke(player, dontAttack, hitbox);
             }
             catch (Exception exception)
             {
@@ -301,7 +255,7 @@ namespace AlacrityTerraria
             {
                 BootstrapPluginRuntime();
                 if (EnsureRuntimeCapabilities())
-                    _ensurePluginKeybindStateShape?.Invoke();
+                    State.EnsurePluginKeybindStateShape?.Invoke();
             }
             catch (Exception exception)
             {
@@ -310,15 +264,15 @@ namespace AlacrityTerraria
         }
 
         // These version-locked calls fail open: an unavailable plugin bridge must never suppress vanilla effects.
-        public static bool ShouldRunDustSystem() => EnsureRuntimeCapabilities() && _shouldRunDustSystem != null ? _shouldRunDustSystem() : true;
-        public static bool ShouldCreateDust(int dustType) => EnsureRuntimeCapabilities() && _shouldCreateDust != null ? _shouldCreateDust(dustType) : true;
-        public static bool ShouldUpdateDustInstance(Dust dust) => EnsureRuntimeCapabilities() && _shouldUpdateDustInstance != null ? _shouldUpdateDustInstance(dust) : true;
-        public static bool ShouldDrawDustInstance(Dust dust) => EnsureRuntimeCapabilities() && _shouldDrawDustInstance != null ? _shouldDrawDustInstance(dust) : true;
-        public static bool ShouldRunGoreSystem() => EnsureRuntimeCapabilities() && _shouldRunGoreSystem != null ? _shouldRunGoreSystem() : true;
+        public static bool ShouldRunDustSystem() => EnsureRuntimeCapabilities() && State.ShouldRunDustSystem != null ? State.ShouldRunDustSystem() : true;
+        public static bool ShouldCreateDust(int dustType) => EnsureRuntimeCapabilities() && State.ShouldCreateDust != null ? State.ShouldCreateDust(dustType) : true;
+        public static bool ShouldUpdateDustInstance(Dust dust) => EnsureRuntimeCapabilities() && State.ShouldUpdateDustInstance != null ? State.ShouldUpdateDustInstance(dust) : true;
+        public static bool ShouldDrawDustInstance(Dust dust) => EnsureRuntimeCapabilities() && State.ShouldDrawDustInstance != null ? State.ShouldDrawDustInstance(dust) : true;
+        public static bool ShouldRunGoreSystem() => EnsureRuntimeCapabilities() && State.ShouldRunGoreSystem != null ? State.ShouldRunGoreSystem() : true;
 
         public static bool TryHandlePluginChatCommand(string text)
         {
-            return EnsureRuntimeCapabilities() && _tryHandlePluginChatCommand != null && _tryHandlePluginChatCommand(text);
+            return EnsureRuntimeCapabilities() && State.TryHandlePluginChatCommand != null && State.TryHandlePluginChatCommand(text);
         }
 
         /// <summary>Version-locked controls-menu entry point. It remains a no-op when the optional bridge is unavailable.</summary>
@@ -331,7 +285,7 @@ namespace AlacrityTerraria
             {
                 BootstrapPluginRuntime();
                 if (EnsureRuntimeCapabilities())
-                    _appendPluginKeybindControls?.Invoke(controls);
+                    State.AppendPluginKeybindControls?.Invoke(controls);
             }
             catch (Exception exception)
             {
@@ -348,7 +302,7 @@ namespace AlacrityTerraria
 
         public static bool HasChatInputEditors()
         {
-            return EnsureChatBridge() && _hasChatInputEditors != null && _hasChatInputEditors();
+            return EnsureChatBridge() && State.HasChatInputEditors != null && State.HasChatInputEditors();
         }
 
         public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
@@ -358,7 +312,7 @@ namespace AlacrityTerraria
 
         public static string ProcessChatInput(string text, bool allowMultiLine)
         {
-            return EnsureChatBridge() && _processChatInput != null ? _processChatInput(text, allowMultiLine) : text;
+            return EnsureChatBridge() && State.ProcessChatInput != null ? State.ProcessChatInput(text, allowMultiLine) : text;
         }
 
         public static string FormatPlayerChatText(string text)
@@ -368,95 +322,95 @@ namespace AlacrityTerraria
 
         public static string FormatChatInputForDraw(string text)
         {
-            if (EnsureChatBridge() && _formatChatInputForDraw != null)
-                return _formatChatInputForDraw(text);
+            if (EnsureChatBridge() && State.FormatChatInputForDraw != null)
+                return State.FormatChatInputForDraw(text);
             return Main.instance != null && Main.instance.textBlinkerState == 1 ? (text ?? string.Empty) + "|" : text;
         }
 
         public static object DecorateChatMessage(object snippets, Color baseColor, string originalMessage)
         {
-            return EnsureChatBridge() && _decorateChatMessage != null ? _decorateChatMessage(snippets, baseColor, originalMessage) : snippets;
+            return EnsureChatBridge() && State.DecorateChatMessage != null ? State.DecorateChatMessage(snippets, baseColor, originalMessage) : snippets;
         }
 
         public static bool ShouldDisplayNetworkChatMessage(byte messageAuthor)
         {
-            return EnsureChatBridge() && _shouldDisplayNetworkChatMessage != null ? _shouldDisplayNetworkChatMessage(messageAuthor) : true;
+            return EnsureChatBridge() && State.ShouldDisplayNetworkChatMessage != null ? State.ShouldDisplayNetworkChatMessage(messageAuthor) : true;
         }
 
         public static bool ShouldDisplayLocalChatMessage()
         {
-            return EnsureChatBridge() && _shouldDisplayLocalChatMessage != null ? _shouldDisplayLocalChatMessage() : true;
+            return EnsureChatBridge() && State.ShouldDisplayLocalChatMessage != null ? State.ShouldDisplayLocalChatMessage() : true;
         }
 
         public static void HandleChatSnippetHover(object snippet)
         {
-            if (EnsureChatBridge() && _handleChatSnippetHover != null)
-                _handleChatSnippetHover(snippet);
+            if (EnsureChatBridge() && State.HandleChatSnippetHover != null)
+                State.HandleChatSnippetHover(snippet);
         }
 
         public static bool HandleChatSnippetClick(object snippet)
         {
-            return EnsureChatBridge() && _handleChatSnippetClick != null && _handleChatSnippetClick(snippet);
+            return EnsureChatBridge() && State.HandleChatSnippetClick != null && State.HandleChatSnippetClick(snippet);
         }
 
         public static Color GetChatSnippetVisibleColor(object snippet, Color color)
         {
-            return EnsureChatBridge() && _getChatSnippetVisibleColor != null ? _getChatSnippetVisibleColor(snippet, color) : color;
+            return EnsureChatBridge() && State.GetChatSnippetVisibleColor != null ? State.GetChatSnippetVisibleColor(snippet, color) : color;
         }
 
         public static void CopyChatSnippetContext(object source, object copy)
         {
-            if (EnsureChatBridge() && _copyChatSnippetContext != null)
-                _copyChatSnippetContext(source, copy);
+            if (EnsureChatBridge() && State.CopyChatSnippetContext != null)
+                State.CopyChatSnippetContext(source, copy);
         }
 
         private static bool EnsureVersionRenderer()
         {
-            if (_versionRendererResolved)
-                return _drawVersionNumber != null && _versionNumber != null;
+            if (State.VersionRendererResolved)
+                return State.DrawVersionNumber != null && State.VersionNumber != null;
 
-            _versionRendererResolved = true;
+            State.VersionRendererResolved = true;
             string diagnostic;
             MethodInfo renderer;
-            if (!Reflection.TryResolveStaticField(typeof(Main), "versionNumber", typeof(string), out _versionNumber, out diagnostic) ||
-                !Reflection.TryResolveStaticMethod(typeof(Main), "DrawVersionNumber", typeof(void), new[] { typeof(Color), typeof(float) }, out renderer, out diagnostic))
+            if (!State.Reflection.TryResolveStaticField(typeof(Main), "versionNumber", typeof(string), out State.VersionNumber, out diagnostic) ||
+                !State.Reflection.TryResolveStaticMethod(typeof(Main), "DrawVersionNumber", typeof(void), new[] { typeof(Color), typeof(float) }, out renderer, out diagnostic))
             {
                 RecordUnavailable(diagnostic);
                 return false;
             }
 
             Delegate callback;
-            if (!Reflection.TryCreateDelegate(renderer, typeof(Action<Color, float>), out callback, out diagnostic))
+            if (!State.Reflection.TryCreateDelegate(renderer, typeof(Action<Color, float>), out callback, out diagnostic))
             {
                 RecordUnavailable(diagnostic);
                 return false;
             }
 
-            _drawVersionNumber = (Action<Color, float>)callback;
+            State.DrawVersionNumber = (Action<Color, float>)callback;
             return true;
         }
 
         private static bool EnsureBridge()
         {
-            if (_pluginManagerCapabilitiesResolved)
-                return _open != null;
+            if (State.PluginManagerCapabilitiesResolved)
+                return State.Open != null;
 
             if (!EnsureBridgeAssembly())
                 return false;
 
-            _pluginManagerCapabilitiesResolved = true;
+            State.PluginManagerCapabilitiesResolved = true;
             try
             {
-                Type bridgeType = _bridgeType;
+                Type bridgeType = State.BridgeType;
                 string diagnostic;
                 MethodInfo open;
                 MethodInfo openIngame;
                 MethodInfo drawIngame;
                 MethodInfo handleInput;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "Open", typeof(void), Type.EmptyTypes, out open, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "OpenIngamePluginSettings", typeof(void), Type.EmptyTypes, out openIngame, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "DrawIngamePluginSettings", typeof(void), new[] { typeof(SpriteBatch) }, out drawIngame, out diagnostic) ||
-                    !Reflection.TryResolveStaticMethod(bridgeType, "HandlePluginMenuInput", typeof(bool), Type.EmptyTypes, out handleInput, out diagnostic))
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "Open", typeof(void), Type.EmptyTypes, out open, out diagnostic) ||
+                    !State.Reflection.TryResolveStaticMethod(bridgeType, "OpenIngamePluginSettings", typeof(void), Type.EmptyTypes, out openIngame, out diagnostic) ||
+                    !State.Reflection.TryResolveStaticMethod(bridgeType, "DrawIngamePluginSettings", typeof(void), new[] { typeof(SpriteBatch) }, out drawIngame, out diagnostic) ||
+                    !State.Reflection.TryResolveStaticMethod(bridgeType, "HandlePluginMenuInput", typeof(bool), Type.EmptyTypes, out handleInput, out diagnostic))
                 {
                     SetCapabilityDiagnostic("plugin-manager", diagnostic);
                     RecordUnavailable(diagnostic);
@@ -465,14 +419,14 @@ namespace AlacrityTerraria
                 }
 
                 Delegate callback = null;
-                if (!Reflection.TryCreateDelegate(open, typeof(Action), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
-                _open = (Action)callback;
-                if (!Reflection.TryCreateDelegate(openIngame, typeof(Action), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
-                _openIngamePluginSettings = (Action)callback;
-                if (!Reflection.TryCreateDelegate(drawIngame, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
-                _drawIngamePluginSettings = (Action<SpriteBatch>)callback;
-                if (!Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
-                _handlePluginMenuInput = (Func<bool>)callback;
+                if (!State.Reflection.TryCreateDelegate(open, typeof(Action), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                State.Open = (Action)callback;
+                if (!State.Reflection.TryCreateDelegate(openIngame, typeof(Action), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                State.OpenIngamePluginSettings = (Action)callback;
+                if (!State.Reflection.TryCreateDelegate(drawIngame, typeof(Action<SpriteBatch>), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                State.DrawIngamePluginSettings = (Action<SpriteBatch>)callback;
+                if (!State.Reflection.TryCreateDelegate(handleInput, typeof(Func<bool>), out callback, out diagnostic)) { SetCapabilityDiagnostic("plugin-manager", diagnostic); RecordUnavailable(diagnostic); ClearPluginManagerDelegates(); return false; }
+                State.HandlePluginMenuInput = (Func<bool>)callback;
                 SetCapabilityDiagnostic("plugin-manager", string.Empty);
                 return true;
             }
@@ -487,13 +441,18 @@ namespace AlacrityTerraria
 
         private static bool EnsureBridgeAssembly()
         {
-            if (_bridgeType != null)
+            if (State.BridgeType != null)
                 return true;
-            if (_bridgeLoadAttempted)
+            if (State.BridgeLoadAttempted)
                 return false;
 
-            _bridgeLoadAttempted = true;
+            State.BridgeLoadAttempted = true;
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "Alacrity.PluginUiCoreBridge.dll");
+            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "2|2|2|1.4.5.6", out string integrityDiagnostic))
+            {
+                RecordUnavailable("Client integrity check failed: " + integrityDiagnostic);
+                return false;
+            }
             if (!File.Exists(path))
             {
                 RecordUnavailable("Unavailable: Alacrity.PluginUiCoreBridge.dll was not found at " + path + ".");
@@ -502,9 +461,9 @@ namespace AlacrityTerraria
 
             try
             {
-                _bridgeAssembly = Assembly.LoadFrom(path);
-                _bridgeType = _bridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
-                if (_bridgeType == null)
+                State.BridgeAssembly = Assembly.LoadFrom(path);
+                State.BridgeType = State.BridgeAssembly.GetType("AlacrityTerraria.PluginUiRuntime", false);
+                if (State.BridgeType == null)
                 {
                     RecordUnavailable("Unavailable: the UI bridge does not contain AlacrityTerraria.PluginUiRuntime.");
                     return false;
@@ -514,8 +473,8 @@ namespace AlacrityTerraria
             }
             catch (Exception exception)
             {
-                _bridgeAssembly = null;
-                _bridgeType = null;
+                State.BridgeAssembly = null;
+                State.BridgeType = null;
                 RecordFailure("Load plugin bridge assembly", exception);
                 return false;
             }
@@ -523,12 +482,12 @@ namespace AlacrityTerraria
 
         private static bool EnsureRuntimeCapabilities()
         {
-            if (_runtimeCapabilitiesResolved)
-                return _bootstrapPluginRuntime != null;
+            if (State.RuntimeCapabilitiesResolved)
+                return State.BootstrapPluginRuntime != null;
             if (!EnsureBridgeAssembly())
                 return false;
 
-            _runtimeCapabilitiesResolved = true;
+            State.RuntimeCapabilitiesResolved = true;
             try
             {
                 string diagnostic;
@@ -536,34 +495,34 @@ namespace AlacrityTerraria
                 MethodInfo bootstrap;
                 MethodInfo shutdown;
                 MethodInfo handshake;
-                if (!Reflection.TryResolveStaticMethod(_bridgeType, "GetBridgeHandshake", typeof(string), Type.EmptyTypes, out handshake, out diagnostic) ||
-                    !Reflection.TryCreateDelegate(handshake, typeof(Func<string>), out callback, out diagnostic))
+                if (!State.Reflection.TryResolveStaticMethod(State.BridgeType, "GetBridgeHandshake", typeof(string), Type.EmptyTypes, out handshake, out diagnostic) ||
+                    !State.Reflection.TryCreateDelegate(handshake, typeof(Func<string>), out callback, out diagnostic))
                 {
                     RecordUnavailable("Bridge compatibility handshake is unavailable: " + diagnostic);
                     return false;
                 }
-                _getBridgeHandshake = (Func<string>)callback;
-                if (!BridgeCompatibilityDescriptor.TryParse(_getBridgeHandshake(), out BridgeCompatibilityDescriptor descriptor, out diagnostic))
+                State.GetBridgeHandshake = (Func<string>)callback;
+                if (!BridgeCompatibilityDescriptor.TryParse(State.GetBridgeHandshake(), out BridgeCompatibilityDescriptor descriptor, out diagnostic))
                 {
                     RecordUnavailable("Bridge compatibility handshake is invalid: " + diagnostic + " Rebuild/copy Alacrity assemblies together.");
                     return false;
                 }
-                if (!descriptor.TryValidateAgainst(ExpectedBridgeCompatibility, out diagnostic))
+                if (!descriptor.TryValidateAgainst(State.ExpectedBridgeCompatibility, out diagnostic))
                 {
                     RecordUnavailable(diagnostic + " Rebuild/copy Alacrity assemblies together.");
                     return false;
                 }
-                if (!Reflection.TryResolveStaticMethod(_bridgeType, "BootstrapPluginRuntime", typeof(void), Type.EmptyTypes, out bootstrap, out diagnostic) ||
-                    !Reflection.TryCreateDelegate(bootstrap, typeof(Action), out callback, out diagnostic))
+                if (!State.Reflection.TryResolveStaticMethod(State.BridgeType, "BootstrapPluginRuntime", typeof(void), Type.EmptyTypes, out bootstrap, out diagnostic) ||
+                    !State.Reflection.TryCreateDelegate(bootstrap, typeof(Action), out callback, out diagnostic))
                 {
                     RecordUnavailable(diagnostic);
                     return false;
                 }
-                _bootstrapPluginRuntime = (Action)callback;
-                if (Reflection.TryResolveStaticMethod(_bridgeType, "ShutdownPluginRuntime", typeof(void), Type.EmptyTypes, out shutdown, out _) &&
-                    Reflection.TryCreateDelegate(shutdown, typeof(Action), out callback, out _))
-                    _shutdownPluginRuntime = (Action)callback;
-                ResolveOptionalCapabilities(_bridgeType);
+                State.BootstrapPluginRuntime = (Action)callback;
+                if (State.Reflection.TryResolveStaticMethod(State.BridgeType, "ShutdownPluginRuntime", typeof(void), Type.EmptyTypes, out shutdown, out _) &&
+                    State.Reflection.TryCreateDelegate(shutdown, typeof(Action), out callback, out _))
+                    State.ShutdownPluginRuntime = (Action)callback;
+                ResolveOptionalCapabilities(State.BridgeType);
                 return true;
             }
             catch (Exception exception)
@@ -575,31 +534,31 @@ namespace AlacrityTerraria
 
         private static void ResolveOptionalCapabilities(Type bridgeType)
         {
-            if (TryResolveOptionalCapability(bridgeType, "hud-widgets", "DrawHudWidgets", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out var callback)) _drawHudWidgets = (Action<SpriteBatch>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "world-overlays", "DrawWorldOverlays", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out callback)) _drawWorldOverlays = (Action<SpriteBatch>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "menu-overlays", "DrawMenuOverlays", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out callback)) _drawMenuOverlays = (Action<SpriteBatch>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "combat-collision-capture", "CaptureMeleeCollisionBounds", typeof(Action<Player, bool, Rectangle>), typeof(void), new[] { typeof(Player), typeof(bool), typeof(Rectangle) }, out callback)) _captureMeleeCollisionBounds = (Action<Player, bool, Rectangle>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "keybind-update", "UpdatePluginKeybinds", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) _updatePluginKeybinds = (Action)callback;
-            if (TryResolveOptionalCapability(bridgeType, "keybind-state", "EnsurePluginKeybindStateShape", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) _ensurePluginKeybindStateShape = (Action)callback;
-            if (TryResolveOptionalCapability(bridgeType, "keybind-controls", "AppendPluginKeybindControls", typeof(Action<UIManageControls>), typeof(void), new[] { typeof(UIManageControls) }, out callback)) _appendPluginKeybindControls = (Action<UIManageControls>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "dust-system", "ShouldRunDustSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) _shouldRunDustSystem = (Func<bool>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "dust-create", "ShouldCreateDust", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) _shouldCreateDust = (Func<int, bool>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "dust-update", "ShouldUpdateDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) _shouldUpdateDustInstance = (Func<Dust, bool>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "dust-draw", "ShouldDrawDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) _shouldDrawDustInstance = (Func<Dust, bool>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "gore-system", "ShouldRunGoreSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) _shouldRunGoreSystem = (Func<bool>)callback;
-            if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) _tryHandlePluginChatCommand = (Func<string, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "hud-widgets", "DrawHudWidgets", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out var callback)) State.DrawHudWidgets = (Action<SpriteBatch>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "world-overlays", "DrawWorldOverlays", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out callback)) State.DrawWorldOverlays = (Action<SpriteBatch>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "menu-overlays", "DrawMenuOverlays", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out callback)) State.DrawMenuOverlays = (Action<SpriteBatch>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "combat-collision-capture", "CaptureMeleeCollisionBounds", typeof(Action<Player, bool, Rectangle>), typeof(void), new[] { typeof(Player), typeof(bool), typeof(Rectangle) }, out callback)) State.CaptureMeleeCollisionBounds = (Action<Player, bool, Rectangle>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "keybind-update", "UpdatePluginKeybinds", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) State.UpdatePluginKeybinds = (Action)callback;
+            if (TryResolveOptionalCapability(bridgeType, "keybind-state", "EnsurePluginKeybindStateShape", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) State.EnsurePluginKeybindStateShape = (Action)callback;
+            if (TryResolveOptionalCapability(bridgeType, "keybind-controls", "AppendPluginKeybindControls", typeof(Action<UIManageControls>), typeof(void), new[] { typeof(UIManageControls) }, out callback)) State.AppendPluginKeybindControls = (Action<UIManageControls>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-system", "ShouldRunDustSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.ShouldRunDustSystem = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-create", "ShouldCreateDust", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) State.ShouldCreateDust = (Func<int, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-update", "ShouldUpdateDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) State.ShouldUpdateDustInstance = (Func<Dust, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "dust-draw", "ShouldDrawDustInstance", typeof(Func<Dust, bool>), typeof(bool), new[] { typeof(Dust) }, out callback)) State.ShouldDrawDustInstance = (Func<Dust, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "gore-system", "ShouldRunGoreSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.ShouldRunGoreSystem = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) State.TryHandlePluginChatCommand = (Func<string, bool>)callback;
         }
 
         private static bool EnsureNotificationCapability()
         {
-            if (_notificationCapabilitiesResolved)
-                return _drawNotifications != null;
-            _notificationCapabilitiesResolved = true;
+            if (State.NotificationCapabilitiesResolved)
+                return State.DrawNotifications != null;
+            State.NotificationCapabilitiesResolved = true;
             if (!EnsureBridgeAssembly())
                 return false;
-            if (!TryResolveOptionalCapability(_bridgeType, "notifications", "DrawNotifications", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out var callback))
+            if (!TryResolveOptionalCapability(State.BridgeType, "notifications", "DrawNotifications", typeof(Action<SpriteBatch>), typeof(void), new[] { typeof(SpriteBatch) }, out var callback))
                 return false;
-            _drawNotifications = (Action<SpriteBatch>)callback;
+            State.DrawNotifications = (Action<SpriteBatch>)callback;
             return true;
         }
 
@@ -608,8 +567,8 @@ namespace AlacrityTerraria
             callback = null;
             string diagnostic;
             MethodInfo method;
-            if (!Reflection.TryResolveStaticMethod(bridgeType, methodName, returnType, parameterTypes, out method, out diagnostic) ||
-                !Reflection.TryCreateDelegate(method, delegateType, out callback, out diagnostic))
+            if (!State.Reflection.TryResolveStaticMethod(bridgeType, methodName, returnType, parameterTypes, out method, out diagnostic) ||
+                !State.Reflection.TryCreateDelegate(method, delegateType, out callback, out diagnostic))
             {
                 SetCapabilityDiagnostic(capability, diagnostic);
                 return false;
@@ -620,44 +579,44 @@ namespace AlacrityTerraria
 
         private static void SetCapabilityDiagnostic(string capability, string diagnostic)
         {
-            lock (CapabilityDiagnosticGate)
-                CapabilityDiagnostics[capability] = diagnostic ?? string.Empty;
+            lock (State.CapabilityDiagnosticGate)
+                State.CapabilityDiagnostics[capability] = diagnostic ?? string.Empty;
         }
 
         private static bool EnsureChatBridge()
         {
-            if (_chatBridgeResolved)
-                return _hasChatInputEditors != null;
-            _chatBridgeResolved = true;
+            if (State.ChatBridgeResolved)
+                return State.HasChatInputEditors != null;
+            State.ChatBridgeResolved = true;
             if (!EnsureBridgeAssembly())
                 return false;
 
             try
             {
-                Type bridgeType = _bridgeType;
+                Type bridgeType = State.BridgeType;
                 string diagnostic;
                 MethodInfo method;
                 Delegate callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "HasChatInputEditors", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); return false; }
-                _hasChatInputEditors = (Func<bool>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "ProcessChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _processChatInput = (Func<string, bool, string>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "FormatChatInputForDraw", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _formatChatInputForDraw = (Func<string, string>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "DecorateChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _decorateChatMessage = (Func<object, Color, string, object>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayNetworkChatMessage", typeof(bool), new[] { typeof(byte) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<byte, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _shouldDisplayNetworkChatMessage = (Func<byte, bool>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayLocalChatMessage", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _shouldDisplayLocalChatMessage = (Func<bool>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "HandleChatSnippetHover", typeof(void), new[] { typeof(object) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Action<object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _handleChatSnippetHover = (Action<object>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "HandleChatSnippetClick", typeof(bool), new[] { typeof(object) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _handleChatSnippetClick = (Func<object, bool>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "GetChatSnippetVisibleColor", typeof(Color), new[] { typeof(object), typeof(Color) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Func<object, Color, Color>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _getChatSnippetVisibleColor = (Func<object, Color, Color>)callback;
-                if (!Reflection.TryResolveStaticMethod(bridgeType, "CopyChatSnippetContext", typeof(void), new[] { typeof(object), typeof(object) }, out method, out diagnostic) || !Reflection.TryCreateDelegate(method, typeof(Action<object, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                _copyChatSnippetContext = (Action<object, object>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "HasChatInputEditors", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); return false; }
+                State.HasChatInputEditors = (Func<bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ProcessChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.ProcessChatInput = (Func<string, bool, string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "FormatChatInputForDraw", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.FormatChatInputForDraw = (Func<string, string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "DecorateChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.DecorateChatMessage = (Func<object, Color, string, object>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayNetworkChatMessage", typeof(bool), new[] { typeof(byte) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<byte, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.ShouldDisplayNetworkChatMessage = (Func<byte, bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayLocalChatMessage", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.ShouldDisplayLocalChatMessage = (Func<bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "HandleChatSnippetHover", typeof(void), new[] { typeof(object) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action<object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.HandleChatSnippetHover = (Action<object>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "HandleChatSnippetClick", typeof(bool), new[] { typeof(object) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<object, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.HandleChatSnippetClick = (Func<object, bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "GetChatSnippetVisibleColor", typeof(Color), new[] { typeof(object), typeof(Color) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<object, Color, Color>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.GetChatSnippetVisibleColor = (Func<object, Color, Color>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "CopyChatSnippetContext", typeof(void), new[] { typeof(object), typeof(object) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action<object, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.CopyChatSnippetContext = (Action<object, object>)callback;
                 return true;
             }
             catch (Exception exception)
@@ -671,51 +630,51 @@ namespace AlacrityTerraria
         private static void ClearBridgeDelegates()
         {
             ClearPluginManagerDelegates();
-            _drawHudWidgets = null;
-            _drawWorldOverlays = null;
-            _drawMenuOverlays = null;
-            _captureMeleeCollisionBounds = null;
-            _updatePluginKeybinds = null;
-            _ensurePluginKeybindStateShape = null;
-            _appendPluginKeybindControls = null;
-            _shouldRunDustSystem = null;
-            _shouldCreateDust = null;
-            _shouldUpdateDustInstance = null;
-            _shouldDrawDustInstance = null;
-            _shouldRunGoreSystem = null;
-            _tryHandlePluginChatCommand = null;
-            _bootstrapPluginRuntime = null;
-            _shutdownPluginRuntime = null;
-            _runtimeCapabilitiesResolved = false;
-            _notificationCapabilitiesResolved = false;
+            State.DrawHudWidgets = null;
+            State.DrawWorldOverlays = null;
+            State.DrawMenuOverlays = null;
+            State.CaptureMeleeCollisionBounds = null;
+            State.UpdatePluginKeybinds = null;
+            State.EnsurePluginKeybindStateShape = null;
+            State.AppendPluginKeybindControls = null;
+            State.ShouldRunDustSystem = null;
+            State.ShouldCreateDust = null;
+            State.ShouldUpdateDustInstance = null;
+            State.ShouldDrawDustInstance = null;
+            State.ShouldRunGoreSystem = null;
+            State.TryHandlePluginChatCommand = null;
+            State.BootstrapPluginRuntime = null;
+            State.ShutdownPluginRuntime = null;
+            State.RuntimeCapabilitiesResolved = false;
+            State.NotificationCapabilitiesResolved = false;
         }
 
         private static void ClearPluginManagerDelegates()
         {
-            _open = null;
-            _openIngamePluginSettings = null;
-            _drawIngamePluginSettings = null;
-            _drawNotifications = null;
-            _handlePluginMenuInput = null;
+            State.Open = null;
+            State.OpenIngamePluginSettings = null;
+            State.DrawIngamePluginSettings = null;
+            State.DrawNotifications = null;
+            State.HandlePluginMenuInput = null;
         }
 
         private static void ClearChatDelegates()
         {
-            _hasChatInputEditors = null;
-            _processChatInput = null;
-            _formatChatInputForDraw = null;
-            _decorateChatMessage = null;
-            _shouldDisplayNetworkChatMessage = null;
-            _shouldDisplayLocalChatMessage = null;
-            _handleChatSnippetHover = null;
-            _handleChatSnippetClick = null;
-            _getChatSnippetVisibleColor = null;
-            _copyChatSnippetContext = null;
+            State.HasChatInputEditors = null;
+            State.ProcessChatInput = null;
+            State.FormatChatInputForDraw = null;
+            State.DecorateChatMessage = null;
+            State.ShouldDisplayNetworkChatMessage = null;
+            State.ShouldDisplayLocalChatMessage = null;
+            State.HandleChatSnippetHover = null;
+            State.HandleChatSnippetClick = null;
+            State.GetChatSnippetVisibleColor = null;
+            State.CopyChatSnippetContext = null;
         }
 
         private static bool HandlePluginMenuInput()
         {
-            return EnsureBridge() && _handlePluginMenuInput != null ? _handlePluginMenuInput() : true;
+            return EnsureBridge() && State.HandlePluginMenuInput != null ? State.HandlePluginMenuInput() : true;
         }
 
         private static bool IsIngamePluginsCategory()
@@ -741,7 +700,7 @@ namespace AlacrityTerraria
         private static bool TryGetIngameOptionsCategoryField(out FieldInfo field)
         {
             string diagnostic;
-            bool available = Reflection.TryResolveStaticField(typeof(IngameOptions), "category", typeof(int), out field, out diagnostic);
+            bool available = State.Reflection.TryResolveStaticField(typeof(IngameOptions), "category", typeof(int), out field, out diagnostic);
             if (!available) RecordUnavailable(diagnostic);
             return available;
         }
@@ -749,7 +708,7 @@ namespace AlacrityTerraria
         private static bool TryGetMenuModeField(out FieldInfo field)
         {
             string diagnostic;
-            bool available = Reflection.TryResolveStaticField(typeof(Main), "menuMode", typeof(int), out field, out diagnostic);
+            bool available = State.Reflection.TryResolveStaticField(typeof(Main), "menuMode", typeof(int), out field, out diagnostic);
             if (!available) RecordUnavailable(diagnostic);
             return available;
         }
@@ -771,10 +730,10 @@ namespace AlacrityTerraria
 
         private static void RecordDiagnostic(string diagnostic, Exception exception = null)
         {
-            if (string.Equals(_lastDiagnostic, diagnostic, StringComparison.Ordinal))
+            if (string.Equals(State.LastDiagnostic, diagnostic, StringComparison.Ordinal))
                 return;
 
-            _lastDiagnostic = diagnostic;
+            State.LastDiagnostic = diagnostic;
             try
             {
                 string detail = exception == null ? diagnostic : diagnostic + Environment.NewLine + exception;

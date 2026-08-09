@@ -46,6 +46,12 @@ pipeline-owned runtime files that are absent from the new stage and publishes th
 Malformed manifests and paths outside the generated client root fail closed; saves, configuration,
 and user-installed files are never treated as builder-owned output.
 
+Deployment uses a per-publish rollback journal. Every file changed or removed is backed up before
+mutation; if copying, cleanup, manifest publication, or final hash verification fails, the previous
+pipeline-owned files and client manifest are restored. `runtime-manifest.txt` remains a build-stage
+integrity record, while `alacrity-client-manifest.json` is the deployed-client integrity record
+checked by the patch-facing facade before it loads the mutable Core bridge.
+
 ## Direct builder use
 
 The supported command surface is deliberately small:

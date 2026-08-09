@@ -56,10 +56,14 @@ public sealed class PluginHudHost
             Entry entry = active[index];
             DateTime now = utcNow();
             if (!entry.CanInvoke(now)) continue;
+            if (!entry.TryEnter(out ActivationCallbackGate.Lease lease)) continue;
             transaction?.BeginWidget();
             try
             {
-                renderer.Render(entry.Owner, entry.Descriptor, entry.Draw, frame);
+                using (lease)
+                {
+                    renderer.Render(entry.Owner, entry.Descriptor, entry.Draw, frame);
+                }
                 transaction?.CommitWidget();
                 entry.RecordSuccess();
             }
@@ -82,7 +86,7 @@ public sealed class PluginHudHost
         {
             if (entries.Any(entry => entry.Owner == owner && string.Equals(entry.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
                 throw new InvalidOperationException("The plugin already registered HUD widget '" + descriptor.Id + "'.");
-            entry = new Entry(owner, descriptor, draw, ++sequence, Remove, logger);
+            entry = new Entry(owner, descriptor, draw, ++sequence, Remove, logger, ActivationCallbackGates.TryGet(resources));
         }
         try
         {
@@ -161,11 +165,17 @@ public sealed class PluginHudHost
 
     private sealed class Entry : IPluginRegistration
     {
-        private readonly Action<Entry> remove; private readonly IPluginLogger? logger; private readonly PluginFailureWindow failures = new PluginFailureWindow(); private bool released;
-        internal Entry(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, long sequence, Action<Entry> remove, IPluginLogger? logger) { Owner = owner; Descriptor = descriptor; Draw = draw; Sequence = sequence; this.remove = remove; this.logger = logger; }
+        private readonly Action<Entry> remove; private readonly IPluginLogger? logger; private readonly PluginFailureWindow failures = new PluginFailureWindow(); private readonly ActivationCallbackGate? callbackGate; private bool released;
+        internal Entry(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, long sequence, Action<Entry> remove, IPluginLogger? logger, ActivationCallbackGate? callbackGate) { Owner = owner; Descriptor = descriptor; Draw = draw; Sequence = sequence; this.remove = remove; this.logger = logger; this.callbackGate = callbackGate; }
         internal PluginId Owner { get; } internal PluginHudWidgetDescriptor Descriptor { get; } internal Action<IPluginHudCanvas, PluginHudFrame> Draw { get; } internal long Sequence { get; }
         internal IPluginLogger? Logger => logger;
         internal bool CanInvoke(DateTime now) => failures.CanInvoke(now);
+        internal bool TryEnter(out ActivationCallbackGate.Lease lease)
+        {
+            if (IsReleased) { lease = default; return false; }
+            if (callbackGate == null) { lease = default; return true; }
+            return callbackGate.TryEnter(out lease);
+        }
         public string Name => "hud-widget:" + Descriptor.Id; public bool IsReleased => released;
         public void Dispose() { if (released) return; released = true; remove(this); }
         internal void RecordFailure(DateTime now, TimeSpan window)

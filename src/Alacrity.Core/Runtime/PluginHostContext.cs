@@ -5,7 +5,7 @@ using Alacrity.PluginSdk;
 namespace Alacrity.Core;
 
 /// <summary>Concrete host context assembled from verified package metadata and scope-owned services.</summary>
-public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWorkContext
+public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWorkContext, IActivationCallbackAdmissionContext
 {
     internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginDispatcher dispatcher, IPluginScheduler scheduler, IPluginNotificationService notifications, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginOverlayService overlays, IPluginHudService hud, IPluginUserInteractionService userInteraction, ITerrariaServices terraria, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
     {
@@ -52,6 +52,14 @@ public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWor
         return Scheduler is IActivationBackgroundWork activation
             ? activation.StopAndDrainBackgroundWorkAsync(timeout)
             : Task.FromResult(true);
+    }
+
+    void IActivationCallbackAdmissionContext.CloseCallbackAdmission()
+    {
+        if (Resources is PluginResourceScope scope)
+        {
+            scope.CallbackGate.CloseAdmission();
+        }
     }
 }
 

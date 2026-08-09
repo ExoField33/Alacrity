@@ -1254,7 +1254,7 @@ public static class FoundationScenarioSuite
 
             controller.DisposeAsync(CancellationToken.None).GetAwaiter().GetResult();
             Assert(plugin.DisableStarted, "Shutdown must begin an enabled async plugin's disable callback.");
-            Assert(plugin.ShutdownCalled, "Shutdown must continue after a bounded disable timeout.");
+            Assert(!plugin.ShutdownCalled, "A plugin whose DisableAsync callback exceeded its timeout must be quarantined rather than receiving a concurrent ShutdownAsync callback.");
             Assert(scope.IsDisposed && controller.State == PluginLifecycleState.Uninstalled, "A timed-out async shutdown must permanently release its activation scope.");
             plugin.CompleteDisable();
         }

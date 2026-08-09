@@ -23,6 +23,16 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     {
         PermanentPatchCatalog.ValidateCatalog();
         var definitions = PermanentPatchCatalog.GetDefinitions();
+        foreach (ClientPatchDefinition definition in definitions)
+        {
+            foreach (ClientPatchOperation operation in definition.Operations)
+            {
+                foreach (ClientPatchTarget target in operation.Targets)
+                {
+                    Assert.DoesNotContain("/", target.MemberSignature, StringComparison.Ordinal);
+                }
+            }
+        }
 
         Assert.Equal(
             new[]
@@ -271,9 +281,11 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         File.WriteAllText(Path.Combine(output, "alacrity-client-manifest.json"), System.Text.Json.JsonSerializer.Serialize(previous));
         var current = new ClientBuildManifest
         {
+            OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
+            BridgeHandshake = "2|2|2|1.4.5.6",
             RuntimeFiles = new List<ClientBuildFile>
             {
-                new ClientBuildFile { Path = "bin/NewBridge.dll", Sha256 = "new" }
+                new ClientBuildFile { Path = "bin/NewBridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "bin", "NewBridge.dll")) }
             }
         };
 
@@ -288,6 +300,125 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         Assert.NotNull(published);
         Assert.Single(published!.RuntimeFiles);
         Assert.Equal("bin/NewBridge.dll", published.RuntimeFiles[0].Path);
+    }
+
+    [Fact]
+    public void FailedPostMutationDeploymentRestoresAllPriorFiles()
+    {
+        string output = Path.Combine(directory, "client-rollback");
+        string temporary = Path.Combine(directory, "temporary-rollback");
+        Directory.CreateDirectory(Path.Combine(output, "bin"));
+        Directory.CreateDirectory(Path.Combine(temporary, "bin"));
+        File.WriteAllText(Path.Combine(output, "Alacrity.exe"), "old executable");
+        File.WriteAllText(Path.Combine(output, "bin", "Bridge.dll"), "old bridge");
+        File.WriteAllText(Path.Combine(temporary, "Alacrity.exe"), "new executable");
+        File.WriteAllText(Path.Combine(temporary, "bin", "Bridge.dll"), "new bridge");
+
+        var previous = new ClientBuildManifest
+        {
+            OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "Alacrity.exe")),
+            BridgeHandshake = "2|2|2|1.4.5.6",
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "bin", "Bridge.dll")) }
+            }
+        };
+        string manifestPath = Path.Combine(output, "alacrity-client-manifest.json");
+        string priorManifest = System.Text.Json.JsonSerializer.Serialize(previous);
+        File.WriteAllText(manifestPath, priorManifest);
+
+        var current = new ClientBuildManifest
+        {
+            OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
+            BridgeHandshake = "2|2|2|1.4.5.6",
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "bin", "Bridge.dll")) }
+            }
+        };
+
+        ClientBuildPipeline.DeploymentMutationFailureInjector = point =>
+        {
+            if (point == DeploymentMutationPoint.AfterStaleCleanup)
+            {
+                throw new ClientBuildException("Injected deployment failure.");
+            }
+        };
+        try
+        {
+            Assert.Throws<ClientBuildException>(() => ClientBuildPipeline.PublishDeployment(temporary, output, current));
+        }
+        finally
+        {
+            ClientBuildPipeline.DeploymentMutationFailureInjector = null;
+        }
+        Assert.Equal("old executable", File.ReadAllText(Path.Combine(output, "Alacrity.exe")));
+        Assert.Equal("old bridge", File.ReadAllText(Path.Combine(output, "bin", "Bridge.dll")));
+        Assert.Equal(priorManifest, File.ReadAllText(manifestPath));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void DeploymentFailuresAtEachMutationBoundaryRestoreThePreviousClient(int failurePointValue)
+    {
+        DeploymentMutationPoint failurePoint = (DeploymentMutationPoint)failurePointValue;
+        string output = Path.Combine(directory, "client-boundary-" + failurePoint);
+        string temporary = Path.Combine(directory, "temporary-boundary-" + failurePoint);
+        Directory.CreateDirectory(Path.Combine(output, "bin"));
+        Directory.CreateDirectory(Path.Combine(output, "plugins", "stale"));
+        Directory.CreateDirectory(Path.Combine(temporary, "bin"));
+        File.WriteAllText(Path.Combine(output, "Alacrity.exe"), "old executable");
+        File.WriteAllText(Path.Combine(output, "bin", "Bridge.dll"), "old bridge");
+        File.WriteAllText(Path.Combine(output, "plugins", "stale", "Plugin.dll"), "stale plugin");
+        File.WriteAllText(Path.Combine(temporary, "Alacrity.exe"), "new executable");
+        File.WriteAllText(Path.Combine(temporary, "bin", "Bridge.dll"), "new bridge");
+
+        var previous = new ClientBuildManifest
+        {
+            OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "Alacrity.exe")),
+            BridgeHandshake = "2|2|2|1.4.5.6",
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "bin", "Bridge.dll")) },
+                new ClientBuildFile { Path = "plugins/stale/Plugin.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "plugins", "stale", "Plugin.dll")) }
+            }
+        };
+        string manifestPath = Path.Combine(output, "alacrity-client-manifest.json");
+        string previousManifest = System.Text.Json.JsonSerializer.Serialize(previous);
+        File.WriteAllText(manifestPath, previousManifest);
+        var current = new ClientBuildManifest
+        {
+            OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
+            BridgeHandshake = "2|2|2|1.4.5.6",
+            RuntimeFiles = new List<ClientBuildFile>
+            {
+                new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "bin", "Bridge.dll")) }
+            }
+        };
+
+        int observed = 0;
+        ClientBuildPipeline.DeploymentMutationFailureInjector = point =>
+        {
+            if (point == failurePoint && ++observed == 1)
+            {
+                throw new ClientBuildException("Injected " + point + " failure.");
+            }
+        };
+        try
+        {
+            Assert.Throws<ClientBuildException>(() => ClientBuildPipeline.PublishDeployment(temporary, output, current));
+        }
+        finally
+        {
+            ClientBuildPipeline.DeploymentMutationFailureInjector = null;
+        }
+
+        Assert.Equal("old executable", File.ReadAllText(Path.Combine(output, "Alacrity.exe")));
+        Assert.Equal("old bridge", File.ReadAllText(Path.Combine(output, "bin", "Bridge.dll")));
+        Assert.Equal("stale plugin", File.ReadAllText(Path.Combine(output, "plugins", "stale", "Plugin.dll")));
+        Assert.Equal(previousManifest, File.ReadAllText(manifestPath));
     }
 
     [Fact]

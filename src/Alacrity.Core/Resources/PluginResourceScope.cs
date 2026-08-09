@@ -16,6 +16,10 @@ public sealed class PluginResourceScope : IPluginResourceScope
     private readonly List<PluginResourceReleaseFailure> failures = new List<PluginResourceReleaseFailure>();
     private PluginResourceScopeState state = PluginResourceScopeState.Open;
 
+    // A scope never reopens its callback gate. Runtime activations receive a fresh scope after
+    // re-enable, so callbacks retained by the old activation cannot enter the new one.
+    internal ActivationCallbackGate CallbackGate { get; } = new ActivationCallbackGate();
+
     public bool IsDisposed
     {
         get { lock (gate) return state == PluginResourceScopeState.Disposed; }
@@ -76,6 +80,7 @@ public sealed class PluginResourceScope : IPluginResourceScope
                 return;
         }
 
+        CallbackGate.CloseAdmission();
         releaseFailures = ReleaseAllCore(permanentlyDispose: true);
         ThrowIfFailed(releaseFailures);
     }

@@ -77,14 +77,14 @@ public sealed class PluginTypedCommandBuilder
     /// <summary>Declares one required invariant-culture floating-point value.</summary>
     public PluginTypedCommandParameter<float> RequiredSingle(string name, float? minimum = null, float? maximum = null, string? description = null, Func<float, string?>? validator = null)
     {
-        ValidateRange(minimum, maximum, nameof(minimum));
+        ValidateSingleRange(minimum, maximum, nameof(minimum));
         return AddRequired(name, PluginCommandValueKind.Single, description, TryParseSingle, minimum, maximum, null, validator);
     }
 
     /// <summary>Declares one optional invariant-culture floating-point value.</summary>
     public PluginTypedCommandParameter<float> OptionalSingle(string name, float defaultValue, float? minimum = null, float? maximum = null, string? description = null, Func<float, string?>? validator = null)
     {
-        ValidateRange(minimum, maximum, nameof(minimum));
+        ValidateSingleRange(minimum, maximum, nameof(minimum));
         return AddOptional(name, PluginCommandValueKind.Single, defaultValue, description, TryParseSingle, minimum, maximum, null, validator);
     }
 
@@ -112,6 +112,11 @@ public sealed class PluginTypedCommandBuilder
     public PluginTypedCommandParameter<TEnum> OptionalEnum<TEnum>(string name, TEnum defaultValue, string? description = null, Func<TEnum, string?>? validator = null)
         where TEnum : struct, Enum
     {
+        if (!Enum.IsDefined(typeof(TEnum), defaultValue))
+        {
+            throw new ArgumentException("The optional enum default must be a declared enum value.", nameof(defaultValue));
+        }
+
         var parser = CreateEnumParser<TEnum>(out string[] enumNames);
         return AddOptional(name, PluginCommandValueKind.Enum, defaultValue, description, parser, null, null, enumNames, validator);
     }
@@ -306,6 +311,17 @@ public sealed class PluginTypedCommandBuilder
         {
             throw new ArgumentOutOfRangeException(parameterName, "A parameter minimum cannot exceed its maximum.");
         }
+    }
+
+    private static void ValidateSingleRange(float? minimum, float? maximum, string parameterName)
+    {
+        if ((minimum.HasValue && (float.IsNaN(minimum.Value) || float.IsInfinity(minimum.Value))) ||
+            (maximum.HasValue && (float.IsNaN(maximum.Value) || float.IsInfinity(maximum.Value))))
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "Floating-point bounds must be finite.");
+        }
+
+        ValidateRange(minimum, maximum, parameterName);
     }
 
     private static string FormatDefault<T>(T value)
@@ -524,6 +540,11 @@ public sealed class PluginTypedCommandBuilder
 
         private bool IsWithinRange(T value)
         {
+            if (value is float floatingPoint && (float.IsNaN(floatingPoint) || float.IsInfinity(floatingPoint)))
+            {
+                return false;
+            }
+
             if (!minimum.HasValue && !maximum.HasValue)
             {
                 return true;

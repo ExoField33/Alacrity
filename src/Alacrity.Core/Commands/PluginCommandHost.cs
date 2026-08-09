@@ -59,7 +59,17 @@ public sealed class PluginCommandHost
 
         try
         {
-            registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>(), reply));
+            if (!registration.TryEnter(out ActivationCallbackGate.Lease lease))
+            {
+                // A command found during teardown is still consumed locally. It must never fall
+                // through into vanilla/server chat after its owner has closed callback admission.
+                return PluginCommandDispatchResult.Handled;
+            }
+
+            using (lease)
+            {
+                registration.Invoke(new PluginCommandInvocation(arguments ?? Array.Empty<string>(), reply));
+            }
             return PluginCommandDispatchResult.Handled;
         }
         catch (Exception exception)
@@ -94,34 +104,43 @@ public sealed class PluginCommandHost
     {
         if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
         if (handler == null) throw new ArgumentNullException(nameof(handler));
-        CommandRegistration registration;
         var names = CreateNames(descriptor);
-        lock (gate)
-        {
-            for (int index = 0; index < names.Length; index++)
-            {
-                if (commands.ContainsKey(names[index]))
-                {
-                    throw new InvalidOperationException("A command with this ID or alias is already registered: " + names[index]);
-                }
-            }
-
-            registration = new CommandRegistration(owner, logger, descriptor, names, handler, Remove);
-            for (int index = 0; index < names.Length; index++)
-            {
-                commands.Add(names[index], registration);
-            }
-        }
+        ActivationCallbackGate? callbackGate = ActivationCallbackGates.TryGet(resources);
+        var registration = new CommandRegistration(owner, logger, descriptor, names, handler, Remove, callbackGate);
         try
         {
             resources.Own(registration.Name, PluginResourceKind.Command, registration);
-            return registration;
         }
         catch
         {
             registration.Dispose();
             throw;
         }
+
+        lock (gate)
+        {
+            if (registration.IsReleased || (callbackGate != null && callbackGate.IsClosed))
+            {
+                registration.Dispose();
+                throw new ObjectDisposedException("IPluginResourceScope");
+            }
+
+            for (int index = 0; index < names.Length; index++)
+            {
+                if (commands.ContainsKey(names[index]))
+                {
+                    registration.Dispose();
+                    throw new InvalidOperationException("A command with this ID or alias is already registered: " + names[index]);
+                }
+            }
+
+            for (int index = 0; index < names.Length; index++)
+            {
+                commands.Add(names[index], registration);
+            }
+        }
+
+        return registration;
     }
 
     private static string[] CreateNames(PluginCommandDescriptor descriptor)
@@ -158,6 +177,7 @@ public sealed class PluginCommandHost
         private readonly ScopeGuard guard;
         private readonly PluginId owner;
         private readonly IPluginLogger? logger;
+        private readonly ActivationCallbackGate? callbackGate;
 
         public ScopedService(PluginCommandHost host, IPluginResourceScope resources, ScopeGuard guard, PluginId owner, IPluginLogger? logger)
         {
@@ -166,11 +186,12 @@ public sealed class PluginCommandHost
             this.guard = guard;
             this.owner = owner;
             this.logger = logger;
+            callbackGate = ActivationCallbackGates.TryGet(resources);
         }
 
         public IPluginRegistration Register(PluginCommandDescriptor descriptor, Action<PluginCommandInvocation> handler)
         {
-            if (guard.IsReleased)
+            if (guard.IsReleased || (callbackGate != null && callbackGate.IsClosed))
             {
                 throw new ObjectDisposedException("IPluginCommandService", "The owning plugin scope has been released.");
             }
@@ -182,6 +203,7 @@ public sealed class PluginCommandHost
     private sealed class CommandRegistration : IPluginRegistration
     {
         private readonly Action<CommandRegistration> remove;
+        private readonly ActivationCallbackGate? callbackGate;
         private bool released;
 
         public CommandRegistration(
@@ -190,7 +212,8 @@ public sealed class PluginCommandHost
             PluginCommandDescriptor descriptor,
             IReadOnlyList<string> names,
             Action<PluginCommandInvocation> handler,
-            Action<CommandRegistration> remove)
+            Action<CommandRegistration> remove,
+            ActivationCallbackGate? callbackGate)
         {
             Owner = owner;
             Logger = logger;
@@ -198,6 +221,7 @@ public sealed class PluginCommandHost
             Names = names;
             Handler = handler;
             this.remove = remove;
+            this.callbackGate = callbackGate;
         }
 
         public PluginId Owner { get; }
@@ -217,6 +241,23 @@ public sealed class PluginCommandHost
         public void Invoke(PluginCommandInvocation invocation)
         {
             Handler(invocation);
+        }
+
+        public bool TryEnter(out ActivationCallbackGate.Lease lease)
+        {
+            if (IsReleased)
+            {
+                lease = default;
+                return false;
+            }
+
+            if (callbackGate == null)
+            {
+                lease = default;
+                return true;
+            }
+
+            return callbackGate.TryEnter(out lease);
         }
 
         public void Dispose()

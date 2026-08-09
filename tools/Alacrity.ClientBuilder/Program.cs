@@ -1,5 +1,5 @@
 /// <summary>Small command-line entry point for the authoritative client-generation pipeline.</summary>
-internal static partial class Program
+internal static class Program
 {
     private static int Main(string[] args)
     {

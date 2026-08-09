@@ -18,21 +18,27 @@ public static class PluginCommandTokenizer
         var result = new List<string>();
         StringBuilder? current = null;
         char quote = '\0';
-        bool escaped = false;
 
         for (int index = 0; index < text.Length; index++)
         {
             char character = text[index];
-            if (escaped)
-            {
-                EnsureCurrent(ref current).Append(character);
-                escaped = false;
-                continue;
-            }
-
             if (character == '\\' && quote != '\0')
             {
-                escaped = true;
+                if (index + 1 < text.Length)
+                {
+                    char next = text[index + 1];
+                    bool escapesActiveQuote = next == quote;
+                    if (next == '\\' || escapesActiveQuote)
+                    {
+                        EnsureCurrent(ref current).Append(next);
+                        index++;
+                        continue;
+                    }
+                }
+
+                // A backslash is only an escape before a backslash or the active quote. This
+                // preserves ordinary Windows paths such as C:\\Games\\Terraria.
+                EnsureCurrent(ref current).Append(character);
                 continue;
             }
 
@@ -61,11 +67,6 @@ public static class PluginCommandTokenizer
             EnsureCurrent(ref current).Append(character);
         }
 
-        if (escaped)
-        {
-            EnsureCurrent(ref current).Append('\\');
-        }
-
         if (quote != '\0')
         {
             tokens = Array.Empty<string>();
@@ -74,7 +75,7 @@ public static class PluginCommandTokenizer
         }
 
         CompleteToken(result, ref current);
-        tokens = result.ToArray();
+        tokens = Array.AsReadOnly(result.ToArray());
         error = null;
         return true;
     }

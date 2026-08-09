@@ -50,6 +50,12 @@ public sealed class PluginCommandParameterDescriptor
             throw new ArgumentException("A parameter name without whitespace is required.", nameof(name));
         }
 
+        if ((minimum.HasValue && !IsFinite(minimum.Value)) ||
+            (maximum.HasValue && !IsFinite(maximum.Value)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimum), "Numeric command bounds must be finite.");
+        }
+
         if (minimum.HasValue && maximum.HasValue && minimum.Value > maximum.Value)
         {
             throw new ArgumentOutOfRangeException(nameof(minimum), "A parameter minimum cannot exceed its maximum.");
@@ -112,6 +118,11 @@ public sealed class PluginCommandParameterDescriptor
             result.Add(choice);
         }
 
-        return result.ToArray();
+        return Array.AsReadOnly(result.ToArray());
+    }
+
+    private static bool IsFinite(double value)
+    {
+        return !double.IsNaN(value) && !double.IsInfinity(value);
     }
 }

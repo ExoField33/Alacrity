@@ -53,9 +53,13 @@ public sealed class PluginOverlayHost
         {
             DateTime now = utcNow();
             if (!entry.CanInvoke(now)) continue;
+            if (!entry.TryEnter(out ActivationCallbackGate.Lease lease)) continue;
             try
             {
-                entry.Draw(canvas, frame);
+                using (lease)
+                {
+                    entry.Draw(canvas, frame);
+                }
                 entry.RecordSuccess();
             }
             catch (Exception exception)
@@ -90,7 +94,7 @@ public sealed class PluginOverlayHost
         {
             if (entries.Any(candidate => candidate.Owner == manifest.Id && string.Equals(candidate.Descriptor.Id, descriptor.Id, StringComparison.Ordinal)))
                 throw new InvalidOperationException("The plugin already registered overlay '" + descriptor.Id + "'.");
-            entry = new Entry(manifest.Id, descriptor, draw, logger, nextSequence++);
+            entry = new Entry(manifest.Id, descriptor, draw, logger, nextSequence++, ActivationCallbackGates.TryGet(resources));
         }
         var registration = new Registration("overlay:" + manifest.Id.Value + ":" + descriptor.Id, () => { lock (gate) { entries.Remove(entry); RebuildSnapshot(); } });
         try
@@ -180,13 +184,19 @@ public sealed class PluginOverlayHost
     private sealed class Entry
     {
         private readonly PluginFailureWindow failures = new PluginFailureWindow();
-        public Entry(PluginId owner, PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw, IPluginLogger? logger, long sequence) { Owner = owner; Descriptor = descriptor; Draw = draw; Logger = logger; Sequence = sequence; }
+        private readonly ActivationCallbackGate? callbackGate;
+        public Entry(PluginId owner, PluginOverlayDescriptor descriptor, Action<IPluginOverlayCanvas, PluginOverlayFrame> draw, IPluginLogger? logger, long sequence, ActivationCallbackGate? callbackGate) { Owner = owner; Descriptor = descriptor; Draw = draw; Logger = logger; Sequence = sequence; this.callbackGate = callbackGate; }
         public PluginId Owner { get; }
         public PluginOverlayDescriptor Descriptor { get; }
         public Action<IPluginOverlayCanvas, PluginOverlayFrame> Draw { get; }
         public IPluginLogger? Logger { get; }
         public long Sequence { get; }
         public bool CanInvoke(DateTime now) => failures.CanInvoke(now);
+        public bool TryEnter(out ActivationCallbackGate.Lease lease)
+        {
+            if (callbackGate == null) { lease = default; return true; }
+            return callbackGate.TryEnter(out lease);
+        }
         public void RecordFailure(DateTime now, TimeSpan window)
         {
             failures.RecordFailure(now, window);

@@ -346,5 +346,84 @@ public sealed class PluginSettingControl
         return this;
     }
 
-}
+    /// <summary>
+    /// Creates a retained-control view that rejects callback access once its host activation has
+    /// closed. Hosts use this when a native menu can retain a control longer than its plugin.
+    /// </summary>
+    /// <remarks>
+    /// This does not change the original control instance. A plugin can still keep its own
+    /// declaration, while the host publishes only the activation-scoped view.
+    /// </remarks>
+    public PluginSettingControl WithAvailability(Func<bool> isAvailable)
+    {
+        if (isAvailable == null)
+        {
+            throw new ArgumentNullException(nameof(isAvailable));
+        }
 
+        var copy = new PluginSettingControl(Id, DisplayName, Kind)
+        {
+            PageId = PageId,
+            Minimum = Minimum,
+            Maximum = Maximum,
+            Step = Step,
+            CycleValues = CycleValues == null ? null : Array.AsReadOnly(CycleValues.ToArray())
+        };
+
+        copy.GetToggle = GetToggle == null ? null : () =>
+        {
+            EnsureAvailable(isAvailable);
+            return GetToggle();
+        };
+        copy.SetToggle = SetToggle == null ? null : value =>
+        {
+            EnsureAvailable(isAvailable);
+            SetToggle(value);
+        };
+        copy.GetCycle = GetCycle == null ? null : () =>
+        {
+            EnsureAvailable(isAvailable);
+            return GetCycle();
+        };
+        copy.SetCycle = SetCycle == null ? null : value =>
+        {
+            EnsureAvailable(isAvailable);
+            SetCycle(value);
+        };
+        copy.GetSlider = GetSlider == null ? null : () =>
+        {
+            EnsureAvailable(isAvailable);
+            return GetSlider();
+        };
+        copy.SetSlider = SetSlider == null ? null : value =>
+        {
+            EnsureAvailable(isAvailable);
+            SetSlider(value);
+        };
+        copy.FormatSlider = FormatSlider == null ? null : value =>
+        {
+            EnsureAvailable(isAvailable);
+            return FormatSlider(value);
+        };
+        copy.GetColor = GetColor == null ? null : () =>
+        {
+            EnsureAvailable(isAvailable);
+            return GetColor();
+        };
+        copy.SetColor = SetColor == null ? null : value =>
+        {
+            EnsureAvailable(isAvailable);
+            SetColor(value);
+        };
+        return copy;
+    }
+
+    private static void EnsureAvailable(Func<bool> isAvailable)
+    {
+        if (!isAvailable())
+        {
+            throw new ObjectDisposedException(nameof(PluginSettingControl), "The owning plugin activation has been released.");
+        }
+    }
+
+}

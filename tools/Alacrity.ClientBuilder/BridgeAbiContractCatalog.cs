@@ -20,6 +20,7 @@ internal static class BridgeAbiContractCatalog
 
     private static readonly BridgeAbiContract[] Contracts =
     {
+        new BridgeAbiContract("GetBridgeHandshake", "System.String"),
         new BridgeAbiContract("OpenPluginManager", "System.Void"),
         new BridgeAbiContract("OpenIngamePluginSettings", "System.Void"),
         new BridgeAbiContract("DrawIngamePluginSettings", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch"),

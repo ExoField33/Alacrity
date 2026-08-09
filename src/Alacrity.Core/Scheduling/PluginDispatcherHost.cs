@@ -36,7 +36,7 @@ public sealed class PluginDispatcherHost
     {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        var guard = new ScopeGuard(this);
+        var guard = new ScopeGuard(this, ActivationCallbackGates.TryGet(resources));
         try
         {
             resources.Own("dispatcher", PluginResourceKind.BackgroundTask, guard);
@@ -73,14 +73,17 @@ public sealed class PluginDispatcherHost
                 item = pending.Dequeue();
                 ReleaseQueueSlotUnderLock(item.Owner);
             }
-            if (item.Registration.IsReleased || item.Scope.IsReleased)
+            if (item.Registration.IsReleased || item.Scope.IsReleased || !item.Scope.TryEnterCallback(out ActivationCallbackGate.Lease lease))
             {
                 continue;
             }
 
             try
             {
-                item.Callback();
+                using (lease)
+                {
+                    item.Callback();
+                }
             }
             catch (Exception exception)
             {
@@ -98,7 +101,7 @@ public sealed class PluginDispatcherHost
     private IPluginRegistration Post(IPluginResourceScope resources, ScopeGuard guard, PluginId owner, IPluginLogger? logger, Action callback)
     {
         if (callback == null) throw new ArgumentNullException(nameof(callback));
-        if (guard.IsReleased) throw new ObjectDisposedException("IPluginDispatcher", "The owning plugin scope has been released.");
+        if (guard.IsUnavailable) throw new ObjectDisposedException("IPluginDispatcher", "The owning plugin activation has been released.");
         ReserveQueueSlot(owner);
         var registration = new WorkRegistration();
         try
@@ -114,7 +117,7 @@ public sealed class PluginDispatcherHost
         }
         lock (gate)
         {
-            if (guard.IsReleased || registration.IsReleased)
+            if (guard.IsUnavailable || registration.IsReleased)
             {
                 registration.Dispose();
                 ReleaseQueueSlotUnderLock(owner);
@@ -232,14 +235,35 @@ public sealed class PluginDispatcherHost
     private sealed class ScopeGuard : IDisposable
     {
         private readonly PluginDispatcherHost host;
+        private readonly ActivationCallbackGate? callbackGate;
         private int released;
 
-        internal ScopeGuard(PluginDispatcherHost host)
+        internal ScopeGuard(PluginDispatcherHost host, ActivationCallbackGate? callbackGate)
         {
             this.host = host;
+            this.callbackGate = callbackGate;
         }
 
         internal bool IsReleased => Volatile.Read(ref released) != 0;
+
+        internal bool IsUnavailable => IsReleased || (callbackGate != null && callbackGate.IsClosed);
+
+        internal bool TryEnterCallback(out ActivationCallbackGate.Lease lease)
+        {
+            if (IsUnavailable)
+            {
+                lease = default;
+                return false;
+            }
+
+            if (callbackGate == null)
+            {
+                lease = default;
+                return true;
+            }
+
+            return callbackGate.TryEnter(out lease);
+        }
 
         public void Dispose()
         {

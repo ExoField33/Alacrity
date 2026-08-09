@@ -2,7 +2,7 @@ using Mono.Cecil;
 using Mono.Cecil.Cil;
 
 // Patch-domain implementation is separate from the command-line entry point.
-internal static partial class Program
+internal static partial class PermanentPatchPlan
 {
     private static void PatchVisualEffects(ModuleDefinition module, TypeDefinition mainType, MethodReference shouldRunDustSystem, MethodReference shouldCreateDust, MethodReference shouldUpdateDustInstance, MethodReference shouldDrawDustInstance, MethodReference shouldRunGoreSystem)
     {

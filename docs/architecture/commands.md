@@ -53,6 +53,17 @@ reply locally and do not invoke the plugin handler.
 The adapter tokenizes only a command name currently owned by the plugin host; unknown slash input
 continues to Terraria unchanged for vanilla or server command handling.
 
+Inside quoted tokens, only an escaped matching quote and `\\` are interpreted specially. A
+backslash before any other character remains literal, so ordinary paths such as
+`"C:\Games\Terraria"` are preserved. Unterminated quotes are rejected locally; empty quoted
+tokens remain valid. Optional defaults are validated using the same finite-number, range, enum,
+choice, and custom-validator rules as explicit input.
+
 Command handlers run on the host command-dispatch path, currently initiated by Terraria chat input.
 They should stay short and schedule longer work through `context.Scheduler` or
 `context.Dispatcher` as appropriate. Plugins do not own manual cleanup: the activation scope does.
+
+Command callbacks run on Terraria's input/update path. They must not block, perform long I/O, or
+touch worker-thread-only state. Once an activation starts disabling, the command host closes its
+callback-admission gate: a command observed during that boundary is still consumed locally, but its
+plugin handler is not invoked and it never falls through to vanilla or server chat.

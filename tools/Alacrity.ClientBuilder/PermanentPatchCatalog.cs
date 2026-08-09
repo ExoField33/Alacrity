@@ -67,7 +67,7 @@ internal sealed class ClientPatchTarget
         Precondition = "The exact member signature and unique anchor recorded for this target must be present in the clean, hash-verified Terraria 1.4.5.6 executable.";
         Postcondition = bridgeMethods.Length == 0
             ? "The recorded target mutation must survive the Cecil write/reopen validation."
-            : "Every listed PluginUiRuntime ABI call must be present after Cecil write/reopen validation.";
+            : "Every listed PluginUiRuntime ABI call must be present exactly once after Cecil write/reopen validation, except all-return capture sites which require one call before every return.";
     }
 
     internal string Id { get; }
@@ -116,13 +116,13 @@ internal sealed class ClientPatchOperation
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r2";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r3";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
         CreateDefinition(
             "patch.runtime.startup-and-menu",
-            Program.ApplyPermanentStartupAndMenu,
+            PermanentPatchPlan.ApplyPermanentStartupAndMenu,
             "runtime.startup-and-menu",
             "Terraria.Main / Terraria.IngameOptions",
             "Main-menu insertion, in-game settings replacement, and version labels",
@@ -132,7 +132,7 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("menu.version-draw", "Terraria.Main", "DrawMenu(Microsoft.Xna.Framework.GameTime)", "Main.DrawVersionNumber(Color, Single) using verified locals 3 and 31", "insert after version draw", "DrawAlacrityVersion")),
         CreateDefinition(
             "patch.runtime.input-and-keybinds",
-            Program.ApplyPermanentInputAndKeybinds,
+            PermanentPatchPlan.ApplyPermanentInputAndKeybinds,
             "runtime.input-and-keybinds",
             "Terraria.Main / Terraria.GameInput.PlayerInput / Terraria.GameContent.UI.States.UIManageControls",
             "Post-input keybind dispatch and controls-menu integration",
@@ -141,7 +141,7 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("input.controls-menu", "Terraria.GameContent.UI.States.UIManageControls", "OnInitialize()", "final return", "insert before return", "AppendPluginKeybindControls")),
         CreateDefinition(
             "patch.runtime.rendering-and-combat",
-            Program.ApplyPermanentRenderingAndCombat,
+            PermanentPatchPlan.ApplyPermanentRenderingAndCombat,
             "runtime.rendering-and-combat",
             "Terraria.Main / Terraria.Player",
             "HUD notification, world-overlay, and melee collision capture hooks",
@@ -150,18 +150,21 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("combat.melee-capture", "Terraria.Player", "ItemCheck_GetMeleeHitbox(Item, Rectangle, Boolean&, Rectangle&)", "every return in the verified four-parameter method", "insert before return and retarget branch/EH references", "CaptureSwingHitbox")),
         CreateDefinition(
             "patch.runtime.visual-effects",
-            Program.ApplyPermanentVisualEffects,
+            PermanentPatchPlan.ApplyPermanentVisualEffects,
             "runtime.visual-effects",
             "Terraria.Main / Terraria.Dust / Terraria.Gore",
             "Dust and gore simulation, creation, and draw policy gates",
             new ClientPatchTarget("effects.dust-draw", "Terraria.Main", "DrawDust()", "method entry and verified dust loop local", "entry gate and per-instance branch", "ShouldRunDustSystem", "ShouldDrawDustInstance"),
             new ClientPatchTarget("effects.dust-create", "Terraria.Dust", "NewDust(..., Int32 type, ...)", "method entry with type at parameter index 3", "return vanilla failure sentinel when denied", "ShouldCreateDust"),
             new ClientPatchTarget("effects.dust-update", "Terraria.Dust", "UpdateDust()", "method entry and active-field branch using the verified Dust loop local", "entry gate and per-instance loop branch", "ShouldRunDustSystem", "ShouldUpdateDustInstance"),
-            new ClientPatchTarget("effects.gore-draw", "Terraria.Main", "DrawGore() / DrawGoreBehind() / DrawBackGore()", "each method entry", "return gate", "ShouldRunGoreSystem"),
-            new ClientPatchTarget("effects.gore-simulation", "Terraria.Gore", "NewGore(...) / Update()", "method entries", "return sentinels/gates", "ShouldRunGoreSystem")),
+            new ClientPatchTarget("effects.gore-draw", "Terraria.Main", "DrawGore()", "method entry", "return gate", "ShouldRunGoreSystem"),
+            new ClientPatchTarget("effects.gore-draw-behind", "Terraria.Main", "DrawGoreBehind()", "method entry", "return gate", "ShouldRunGoreSystem"),
+            new ClientPatchTarget("effects.gore-draw-back", "Terraria.Main", "DrawBackGore()", "method entry", "return gate", "ShouldRunGoreSystem"),
+            new ClientPatchTarget("effects.gore-create", "Terraria.Gore", "NewGore(...)", "method entry", "return sentinel", "ShouldRunGoreSystem"),
+            new ClientPatchTarget("effects.gore-update", "Terraria.Gore", "Update()", "method entry", "return gate", "ShouldRunGoreSystem")),
         CreateDefinition(
             "patch.runtime.chat-input-and-commands",
-            Program.ApplyPermanentChatInputAndCommands,
+            PermanentPatchPlan.ApplyPermanentChatInputAndCommands,
             "runtime.chat-input-and-commands",
             "Terraria.Main / Terraria.Program",
             "Chat editing, command consumption, startup, and input formatting",
@@ -171,23 +174,25 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("chat.input-format", "Terraria.Main", "DrawPlayerChat()", "verified chatText capture into string local 2 and cursor literal/append region", "format input and remove vanilla cursor append", "FormatPlayerChatText")),
         CreateDefinition(
             "patch.runtime.chat-display-and-interaction",
-            Program.ApplyPermanentChatDisplayAndInteraction,
+            PermanentPatchPlan.ApplyPermanentChatDisplayAndInteraction,
             "runtime.chat-display-and-interaction",
             "Terraria.UI.Chat.TextSnippet / Terraria.UI.Chat.ChatManager / Terraria.Chat.ChatHelper / Terraria.Main",
             "Chat decoration, display visibility, hover, click, color, and copy context",
             new ClientPatchTarget("chat.snippet-color", "Terraria.UI.Chat.TextSnippet", "GetVisibleColor()", "complete method body", "replace body", "GetChatSnippetVisibleColor"),
-            new ClientPatchTarget("chat.snippet-hover-click", "Terraria.UI.Chat.TextSnippet", "OnHover() / OnClick()", "complete method bodies", "replace bodies", "HandleChatSnippetHover", "HandleChatSnippetClick"),
+            new ClientPatchTarget("chat.snippet-hover", "Terraria.UI.Chat.TextSnippet", "OnHover()", "complete method body", "replace body", "HandleChatSnippetHover"),
+            new ClientPatchTarget("chat.snippet-click", "Terraria.UI.Chat.TextSnippet", "OnClick()", "complete method body", "replace body", "HandleChatSnippetClick"),
             new ClientPatchTarget("chat.snippet-copy", "Terraria.UI.Chat.TextSnippet", "CopyMorph(String)", "final return", "insert copy-context callback before return", "CopyChatSnippetContext"),
             new ClientPatchTarget("chat.parse-decoration", "Terraria.UI.Chat.ChatManager", "ParseMessage(String, Color)", "final return", "decorate returned snippet list before return", "DecorateChatMessage"),
             new ClientPatchTarget("chat.network-visibility", "Terraria.Chat.ChatHelper", "DisplayMessage(NetworkText, Color, Byte)", "method entry", "return gate using argument 2", "ShouldDisplayNetworkChatMessage"),
-            new ClientPatchTarget("chat.local-visibility", "Terraria.Main", "NewText(String, Byte, Byte, Byte) / NewTextMultiline(String, Boolean, Color, Int32)", "method entries", "return gates", "ShouldDisplayLocalChatMessage"))
+            new ClientPatchTarget("chat.local-visibility-text", "Terraria.Main", "NewText(String, Byte, Byte, Byte)", "method entry", "return gate", "ShouldDisplayLocalChatMessage"),
+            new ClientPatchTarget("chat.local-visibility-multiline", "Terraria.Main", "NewTextMultiline(String, Boolean, Color, Int32)", "method entry", "return gate", "ShouldDisplayLocalChatMessage"))
     };
 
     private static ClientPatchDefinition CreateDefinition(string patchId, Action<ModuleDefinition, string> apply, string operationId, string targetType, string targetDescription, params ClientPatchTarget[] targets)
     {
         var bridgeMethods = GetBridgeMethods(targets);
         var operation = new ClientPatchOperation(operationId, targetType, targetDescription, targets, bridgeMethods);
-        return new ClientPatchDefinition(patchId, apply, module => HasBridgeMethodCalls(module, bridgeMethods), new[] { operation });
+        return new ClientPatchDefinition(patchId, apply, module => HasDefinitionPostconditions(module, targets), new[] { operation });
     }
 
     private static string[] GetBridgeMethods(IReadOnlyList<ClientPatchTarget> targets)
@@ -230,6 +235,7 @@ internal static class PermanentPatchCatalog
 
             try
             {
+                ValidateOperationPreconditions(module, definition);
                 definition.Apply(module, cleanSourcePath);
             }
             catch (ClientBuildException)
@@ -357,6 +363,29 @@ internal static class PermanentPatchCatalog
         return true;
     }
 
+    private static bool HasDefinitionPostconditions(ModuleDefinition module, IReadOnlyList<ClientPatchTarget> targets)
+    {
+        try
+        {
+            for (int targetIndex = 0; targetIndex < targets.Count; targetIndex++)
+            {
+                ClientPatchTarget target = targets[targetIndex];
+                TypeDefinition type = CecilPatchPrimitives.RequireType(module, target.TypeName);
+                IReadOnlyList<MethodDefinition> methods = ResolveTargetMethods(type, target);
+                for (int bridgeIndex = 0; bridgeIndex < target.BridgeMethods.Count; bridgeIndex++)
+                {
+                    ValidateTargetBridgePostcondition(target, methods, target.BridgeMethods[bridgeIndex]);
+                }
+            }
+
+            return true;
+        }
+        catch (ClientBuildException)
+        {
+            return false;
+        }
+    }
+
     private static void ValidateOperationPostcondition(ModuleDefinition module, ClientPatchOperation operation)
     {
         for (int targetIndex = 0; targetIndex < operation.Targets.Count; targetIndex++)
@@ -372,12 +401,21 @@ internal static class PermanentPatchCatalog
             for (int bridgeIndex = 0; bridgeIndex < target.BridgeMethods.Count; bridgeIndex++)
             {
                 string bridgeMethod = target.BridgeMethods[bridgeIndex];
-                if (!HasBridgeMethodCall(targetMethods, bridgeMethod))
-                {
-                    throw new ClientBuildException(
-                        "Patch target " + target.Id + " did not inject its expected bridge method " + bridgeMethod +
-                        " into " + target.TypeName + "::" + target.MemberSignature + ".");
-                }
+                ValidateTargetBridgePostcondition(target, targetMethods, bridgeMethod);
+            }
+        }
+    }
+
+    private static void ValidateOperationPreconditions(ModuleDefinition module, ClientPatchDefinition definition)
+    {
+        for (int operationIndex = 0; operationIndex < definition.Operations.Count; operationIndex++)
+        {
+            ClientPatchOperation operation = definition.Operations[operationIndex];
+            for (int targetIndex = 0; targetIndex < operation.Targets.Count; targetIndex++)
+            {
+                ClientPatchTarget target = operation.Targets[targetIndex];
+                TypeDefinition type = CecilPatchPrimitives.RequireType(module, target.TypeName);
+                _ = ResolveTargetMethods(type, target);
             }
         }
     }
@@ -386,6 +424,10 @@ internal static class PermanentPatchCatalog
     {
         var methods = new List<MethodDefinition>();
         string[] alternatives = target.MemberSignature.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (alternatives.Length != 1)
+        {
+            throw new ClientBuildException("Patch target " + target.Id + " must name one exact method. Split grouped target signatures into independently verified patch sites.");
+        }
         for (int index = 0; index < alternatives.Length; index++)
         {
             string candidate = alternatives[index].Trim();
@@ -484,6 +526,93 @@ internal static class PermanentPatchCatalog
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// A successful Cecil write is not enough: each target has a deliberately small, exact ABI
+    /// footprint. Counting calls detects duplicate application, and the melee hook additionally
+    /// proves that every return remains covered after branch/EH retargeting.
+    /// </summary>
+    private static void ValidateTargetBridgePostcondition(ClientPatchTarget target, IReadOnlyList<MethodDefinition> targetMethods, string bridgeMethod)
+    {
+        bool allReturns = target.Anchor.IndexOf("every return", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            target.Injection.IndexOf("every return", StringComparison.OrdinalIgnoreCase) >= 0;
+        int expected = allReturns ? CountReturns(targetMethods) : 1;
+        int actual = CountBridgeMethodCalls(targetMethods, bridgeMethod);
+        if (actual != expected)
+        {
+            throw new ClientBuildException(
+                "Patch target " + target.Id + " expected " + expected + " call(s) to " + bridgeMethod +
+                " but found " + actual + " in " + target.TypeName + "::" + target.MemberSignature + ".");
+        }
+
+        if (allReturns)
+        {
+            for (int methodIndex = 0; methodIndex < targetMethods.Count; methodIndex++)
+            {
+                MethodDefinition method = targetMethods[methodIndex];
+                for (int instructionIndex = 0; instructionIndex < method.Body.Instructions.Count; instructionIndex++)
+                {
+                    Instruction instruction = method.Body.Instructions[instructionIndex];
+                    if (instruction.OpCode != OpCodes.Ret)
+                    {
+                        continue;
+                    }
+
+                    Instruction? previous = instruction.Previous;
+                    if (!IsBridgeMethodCall(previous, bridgeMethod))
+                    {
+                        throw new ClientBuildException(
+                            "Patch target " + target.Id + " does not invoke " + bridgeMethod +
+                            " immediately before every return in " + method.FullName + ".");
+                    }
+                }
+            }
+        }
+    }
+
+    private static int CountReturns(IReadOnlyList<MethodDefinition> targetMethods)
+    {
+        int count = 0;
+        for (int methodIndex = 0; methodIndex < targetMethods.Count; methodIndex++)
+        {
+            MethodDefinition method = targetMethods[methodIndex];
+            for (int instructionIndex = 0; instructionIndex < method.Body.Instructions.Count; instructionIndex++)
+            {
+                if (method.Body.Instructions[instructionIndex].OpCode == OpCodes.Ret)
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    private static int CountBridgeMethodCalls(IReadOnlyList<MethodDefinition> targetMethods, string bridgeMethod)
+    {
+        int count = 0;
+        for (int methodIndex = 0; methodIndex < targetMethods.Count; methodIndex++)
+        {
+            MethodDefinition method = targetMethods[methodIndex];
+            for (int instructionIndex = 0; instructionIndex < method.Body.Instructions.Count; instructionIndex++)
+            {
+                if (IsBridgeMethodCall(method.Body.Instructions[instructionIndex], bridgeMethod))
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    private static bool IsBridgeMethodCall(Instruction? instruction, string bridgeMethod)
+    {
+        return instruction != null &&
+            instruction.Operand is MethodReference reference &&
+            string.Equals(reference.DeclaringType.FullName, BridgeAbiContractCatalog.FacadeTypeName, StringComparison.Ordinal) &&
+            string.Equals(reference.Name, bridgeMethod, StringComparison.Ordinal);
     }
 
     private static bool HasBridgeMethodCall(ModuleDefinition module, string methodName)

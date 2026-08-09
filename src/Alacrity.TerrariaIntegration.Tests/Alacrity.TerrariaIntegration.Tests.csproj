@@ -20,6 +20,7 @@
     <Reference Include="Microsoft.Xna.Framework.Graphics"><HintPath>$(AlacrityXnaReferenceDirectory)\Microsoft.Xna.Framework.Graphics\v4.0_4.0.0.0__842cf8be1de50553\Microsoft.Xna.Framework.Graphics.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Microsoft.Xna.Framework.Game"><HintPath>$(AlacrityXnaReferenceDirectory)\Microsoft.Xna.Framework.Game\v4.0_4.0.0.0__842cf8be1de50553\Microsoft.Xna.Framework.Game.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Web.Extensions" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="TerrariaIntegrationScenarioSuite.cs" />
@@ -35,6 +36,8 @@
     <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Entities\TerrariaEntitySnapshotService.cs" Link="TerrariaEntitySnapshotService.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Entities\EntityGenerationTracker.cs" Link="EntityGenerationTracker.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Runtime\ClientPresentationStateTracker.cs" Link="ClientPresentationStateTracker.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Bridge\ClientManifestIntegrity.cs" Link="ClientManifestIntegrity.cs" />
+    <Compile Include="Bridge\ClientManifestIntegrityTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
