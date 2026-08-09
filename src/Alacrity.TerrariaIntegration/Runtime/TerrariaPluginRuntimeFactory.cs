@@ -57,6 +57,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
         var dispatcher = new PluginDispatcherHost();
         var scheduler = new PluginSchedulerHost();
         var entitySnapshots = new TerrariaEntitySnapshotCache();
+        var worldSections = new TerrariaWorldSectionSnapshotCache();
         var userInteraction = new PluginUserInteractionHost(new TerrariaPluginUserInteractionBackend());
         var sessionPresentation = new TerrariaSessionPresentationService();
         var visualEffects = new PluginVisualEffectsHost();
@@ -77,7 +78,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
                 entitySnapshots.CreatePlayerService(manifest, resources),
                 sessionPresentation.CreateService(manifest, resources),
                 entitySnapshots.CreateNpcTargetService(manifest, resources),
-                TerrariaWorldSectionService.CreateService(manifest, resources),
+                TerrariaWorldSectionService.CreateService(worldSections, manifest, resources),
                 renderCulling.CreateService(manifest, resources)),
             dispatcher,
             null,
@@ -94,7 +95,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
         return new TerrariaClientRuntime
         {
             Lifecycle = new TerrariaLifecycleRuntime(runtime, diagnostics, dispatcher, scheduler),
-            GameState = new TerrariaGameStateRuntime(entitySnapshots, sessionPresentation),
+            GameState = new TerrariaGameStateRuntime(entitySnapshots, sessionPresentation, worldSections),
             Rendering = new TerrariaRenderingRuntime(notifications, overlays, hud, new TerrariaHudAdapter(hud)),
             Communication = new TerrariaCommunicationRuntime(commands, chat, userInteraction),
             PluginUi = new TerrariaPluginUiRuntime(new PluginManagementMenu(runtime), extensions, serviceHub),
@@ -118,9 +119,10 @@ internal sealed class TerrariaLifecycleRuntime
 /// <summary>Shared detached game-state capture adapters.</summary>
 internal sealed class TerrariaGameStateRuntime
 {
-    internal TerrariaGameStateRuntime(TerrariaEntitySnapshotCache entities, TerrariaSessionPresentationService session) { Entities = entities; Session = session; }
+    internal TerrariaGameStateRuntime(TerrariaEntitySnapshotCache entities, TerrariaSessionPresentationService session, TerrariaWorldSectionSnapshotCache worldSections) { Entities = entities; Session = session; WorldSections = worldSections; }
     internal TerrariaEntitySnapshotCache Entities { get; }
     internal TerrariaSessionPresentationService Session { get; }
+    internal TerrariaWorldSectionSnapshotCache WorldSections { get; }
 }
 
 /// <summary>Host-owned HUD, overlay, and notification rendering services.</summary>

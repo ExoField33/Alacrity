@@ -264,15 +264,80 @@ namespace AlacrityTerraria
             }
         }
 
-        // These version-locked calls fail open: an unavailable plugin bridge must never suppress vanilla effects.
-        public static bool ShouldRunDustSystem() => EnsureRuntimeCapabilities() && State.ShouldRunDustSystem != null ? State.ShouldRunDustSystem() : true;
-        public static bool ShouldCreateDust(int dustType) => EnsureRuntimeCapabilities() && State.ShouldCreateDust != null ? State.ShouldCreateDust(dustType) : true;
-        public static bool ShouldUpdateDustInstance(Dust dust) => EnsureRuntimeCapabilities() && State.ShouldUpdateDustInstance != null ? State.ShouldUpdateDustInstance(dust) : true;
-        public static bool ShouldDrawDustInstance(Dust dust) => EnsureRuntimeCapabilities() && State.ShouldDrawDustInstance != null ? State.ShouldDrawDustInstance(dust) : true;
-        public static bool ShouldDrawWorldPlayer(Player player) => EnsureRuntimeCapabilities() && State.ShouldDrawWorldPlayer != null ? State.ShouldDrawWorldPlayer(player) : true;
-        public static bool ShouldDrawWorldItem(int itemIndex) => EnsureRuntimeCapabilities() && State.ShouldDrawWorldItem != null ? State.ShouldDrawWorldItem(itemIndex) : true;
-        public static bool ShouldDrawWorldParticle(ParticleRenderer renderer, IParticle particle) => EnsureRuntimeCapabilities() && State.ShouldDrawWorldParticle != null ? State.ShouldDrawWorldParticle(renderer, particle) : true;
-        public static bool ShouldRunGoreSystem() => EnsureRuntimeCapabilities() && State.ShouldRunGoreSystem != null ? State.ShouldRunGoreSystem() : true;
+        // These version-locked calls are in per-instance draw/update loops. Delegate resolution is
+        // lazy, but once a capability is present the hot path is one cached delegate invocation.
+        // Every unavailable or faulted path fails open to unchanged Terraria behavior.
+        public static bool ShouldRunDustSystem()
+        {
+            Func<bool> callback = State.ShouldRunDustSystem;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldRunDustSystem;
+            return InvokeGate(callback, "Dust-system gate");
+        }
+
+        public static bool ShouldCreateDust(int dustType)
+        {
+            Func<int, bool> callback = State.ShouldCreateDust;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldCreateDust;
+            return InvokeGate(callback, dustType, "Dust-creation gate");
+        }
+
+        public static bool ShouldUpdateDustInstance(Dust dust)
+        {
+            Func<Dust, bool> callback = State.ShouldUpdateDustInstance;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldUpdateDustInstance;
+            return InvokeGate(callback, dust, "Dust-update gate");
+        }
+
+        public static bool ShouldDrawDustInstance(Dust dust)
+        {
+            Func<Dust, bool> callback = State.ShouldDrawDustInstance;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldDrawDustInstance;
+            return InvokeGate(callback, dust, "Dust-draw gate");
+        }
+
+        public static bool ShouldDrawWorldPlayer(Player player)
+        {
+            Func<Player, bool> callback = State.ShouldDrawWorldPlayer;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldDrawWorldPlayer;
+            return InvokeGate(callback, player, "World-player culling gate");
+        }
+
+        public static bool ShouldDrawWorldItem(int itemIndex)
+        {
+            Func<int, bool> callback = State.ShouldDrawWorldItem;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldDrawWorldItem;
+            return InvokeGate(callback, itemIndex, "World-item culling gate");
+        }
+
+        public static bool ShouldDrawWorldParticle(ParticleRenderer renderer, IParticle particle)
+        {
+            Func<ParticleRenderer, IParticle, bool> callback = State.ShouldDrawWorldParticle;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldDrawWorldParticle;
+            if (callback == null) return true;
+            try { return callback(renderer, particle); }
+            catch (Exception exception) { RecordFailure("World-particle culling gate", exception); return true; }
+        }
+
+        public static bool ShouldRunGoreSystem()
+        {
+            Func<bool> callback = State.ShouldRunGoreSystem;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldRunGoreSystem;
+            return InvokeGate(callback, "Gore-system gate");
+        }
+
+        private static bool InvokeGate(Func<bool> callback, string operation)
+        {
+            if (callback == null) return true;
+            try { return callback(); }
+            catch (Exception exception) { RecordFailure(operation, exception); return true; }
+        }
+
+        private static bool InvokeGate<T>(Func<T, bool> callback, T value, string operation)
+        {
+            if (callback == null) return true;
+            try { return callback(value); }
+            catch (Exception exception) { RecordFailure(operation, exception); return true; }
+        }
 
         public static bool TryHandlePluginChatCommand(string text)
         {

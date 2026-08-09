@@ -4,7 +4,10 @@ using System.Collections.Generic;
 
 namespace Alacrity.PluginSdk;
 
-/// <summary>Immutable client tile-section state for a bounded visible world region.</summary>
+/// <summary>
+/// Immutable client tile-section state captured at the host update boundary for a bounded visible
+/// world region. Values are detached from Terraria and remain safe to read after capture.
+/// </summary>
 public readonly struct PluginWorldSectionSnapshot
 {
     public PluginWorldSectionSnapshot(int sectionX, int sectionY, float worldX, float worldY, float worldWidth, float worldHeight, bool isLoaded)
@@ -28,12 +31,17 @@ public readonly struct PluginWorldSectionSnapshot
 }
 
 /// <summary>
-/// Provides detached section state for the visible world region. The host bounds collection to the
-/// caller's requested margin; plugins never receive the full mutable Terraria section grid.
+/// Provides the latest detached section state captured by the host update boundary. Calls may
+/// return the previous update's frame while a new frame is being captured. The service is
+/// activation-scoped and throws after plugin disable.
 /// </summary>
 public interface IPluginWorldSectionService
 {
-    /// <summary>Appends visible section state plus the requested non-negative section margin.</summary>
+    /// <summary>
+    /// Appends visible section state to <paramref name="destination"/> plus the requested
+    /// non-negative section margin. The first call requests capture for this activation; it does
+    /// not read live game state from the caller's thread.
+    /// </summary>
     void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int margin = 0);
 }
 

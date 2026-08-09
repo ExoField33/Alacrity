@@ -383,7 +383,18 @@ internal static class ClientBuildPipeline
         {
             if (File.Exists(path))
             {
-                File.Replace(temporaryPath, path, null);
+                try
+                {
+                    File.Replace(temporaryPath, path, null);
+                }
+                catch (IOException)
+                {
+                    // Some valid local filesystems reject Replace for a file under source control
+                    // or an antivirus-scanned client root. Publication is still guarded by the
+                    // deployment transaction, which has already captured the prior manifest.
+                    File.Copy(temporaryPath, path, overwrite: true);
+                    File.Delete(temporaryPath);
+                }
             }
             else
             {

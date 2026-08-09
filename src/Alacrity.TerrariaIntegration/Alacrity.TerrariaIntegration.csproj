@@ -51,6 +51,8 @@
     <Compile Include="GameState\Entities\TerrariaEntitySnapshotService.cs" />
     <Compile Include="GameState\Entities\EntityGenerationTracker.cs" />
     <Compile Include="GameState\World\TerrariaWorldSectionService.cs" />
+    <Compile Include="GameState\World\TerrariaWorldSectionSnapshotCache.cs" />
+    <Compile Include="GameState\World\TerrariaWorldSectionBounds.cs" />
     <Compile Include="Rendering\Overlays\TerrariaOverlayAdapter.cs" />
     <Compile Include="Input\PluginUserInteractionBackend.cs" />
     <Compile Include="Rendering\Hud\TerrariaHudAdapter.cs" />
@@ -65,6 +67,7 @@
     <Compile Include="Rendering\TerrariaPluginDrawAdapter.cs" />
     <Compile Include="Rendering\PluginUiRuntime.RenderingBridge.cs" />
     <Compile Include="Rendering\Culling\TerrariaRenderCullingAdapter.cs" />
+    <Compile Include="Rendering\Culling\TerrariaRenderCullingBounds.cs" />
     <Compile Include="Rendering\Culling\PluginUiRuntime.RenderCullingBridge.cs" />
     <Compile Include="Chat\TerrariaPluginChatAdapter.cs" />
     <Compile Include="Runtime\TerrariaPluginOperationCoordinator.cs" />

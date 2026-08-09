@@ -31,6 +31,7 @@ internal sealed class PluginUiRuntimeState
         Scheduler = services.Lifecycle.Scheduler;
         EntitySnapshots = services.GameState.Entities;
         SessionPresentation = services.GameState.Session;
+        WorldSections = services.GameState.WorldSections;
         Chat = services.Communication.Chat;
         UserInteraction = services.Communication.UserInteraction;
         DrawAdapter = new TerrariaPluginDrawAdapter(services.Rendering.Notifications, services.Rendering.Overlays, services.Rendering.Hud, services.Rendering.HudAdapter, services.GameState.Entities, reportFailure);
@@ -55,6 +56,7 @@ internal sealed class PluginUiRuntimeState
     internal PluginSchedulerHost Scheduler { get; }
     internal TerrariaEntitySnapshotCache EntitySnapshots { get; }
     internal TerrariaSessionPresentationService SessionPresentation { get; }
+    internal TerrariaWorldSectionSnapshotCache WorldSections { get; }
     internal PluginChatHost Chat { get; }
     internal TerrariaPluginChatAdapter ChatAdapter { get; }
     internal PluginUserInteractionHost UserInteraction { get; }

@@ -52,6 +52,20 @@ public sealed class ClientManifestIntegrityTests : IDisposable
         Assert.Contains("escapes", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"formatVersion\":\"one\"}")]
+    [InlineData("{\"formatVersion\":0}")]
+    [InlineData("{\"formatVersion\":2}")]
+    public void RejectsUnsupportedManifestFormatVersions(string manifest)
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "alacrity-client-manifest.json"), manifest);
+
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "2|2|2|1.4.5.6", out string diagnostic));
+        Assert.Contains("formatVersion", diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void DistinguishesExecutableAndRequiredRuntimeIntegrityFailures()
     {
@@ -75,7 +89,7 @@ public sealed class ClientManifestIntegrityTests : IDisposable
     {
         File.WriteAllText(
             Path.Combine(directory, "alacrity-client-manifest.json"),
-            "{\"bridgeHandshake\":\"" + handshake + "\",\"outputExecutableSha256\":\"" + executableHash + "\",\"runtimeFiles\":[{\"Path\":\"" + path + "\",\"Sha256\":\"" + hash + "\"}]}");
+            "{\"formatVersion\":1,\"bridgeHandshake\":\"" + handshake + "\",\"outputExecutableSha256\":\"" + executableHash + "\",\"runtimeFiles\":[{\"Path\":\"" + path + "\",\"Sha256\":\"" + hash + "\"}]}");
     }
 
     private static string Hash(string path)

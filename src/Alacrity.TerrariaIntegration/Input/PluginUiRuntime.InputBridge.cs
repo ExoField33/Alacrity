@@ -25,6 +25,7 @@ namespace AlacrityTerraria
             {
                 _entitySnapshots?.CaptureForCurrentTick();
                 _sessionPresentation?.CaptureForCurrentTick();
+                _worldSections?.CaptureForCurrentTick();
                 UpdateIconInteractionInput();
                 _dispatcher?.Drain(exception => ReportOptionalUiFailure("Plugin dispatcher callback", exception));
                 _scheduler?.Tick(Main.GameUpdateCount);

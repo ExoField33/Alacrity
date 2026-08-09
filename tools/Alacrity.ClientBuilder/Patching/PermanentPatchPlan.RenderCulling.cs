@@ -48,7 +48,7 @@ internal static partial class PermanentPatchPlan
         il.InsertBefore(insertionPoint, il.Create(OpCodes.Br, loopContinue));
     }
 
-    private static void PatchDroppedItemDraw(TypeDefinition mainType, MethodReference shouldDrawItem)
+    internal static void PatchDroppedItemDraw(TypeDefinition mainType, MethodReference shouldDrawItem)
     {
         MethodDefinition method = mainType.Methods.SingleOrDefault(candidate =>
             candidate.Name == "DrawItems" &&
@@ -66,34 +66,54 @@ internal static partial class PermanentPatchPlan
             instruction.Operand is MethodReference called &&
             called.FullName == drawItem.FullName)
             ?? throw new InvalidOperationException("DrawItems did not contain the verified DrawItem call.");
-        VariableDefinition itemIndex = method.Body.Variables.FirstOrDefault(variable => variable.VariableType.FullName == "System.Int32")
-            ?? throw new InvalidOperationException("DrawItems did not contain the verified item-index local.");
-        Instruction loopIncrement = method.Body.Instructions.FirstOrDefault(instruction =>
-            instruction.OpCode == OpCodes.Add &&
-            instruction.Next != null &&
-            instruction.Next.OpCode.Code.ToString().StartsWith("Stloc", StringComparison.Ordinal))
-            ?? throw new InvalidOperationException("DrawItems loop increment instruction was not found.");
+        // The final DrawItem argument is the native loop index. Resolving that exact load rather
+        // than the first Int32 local avoids binding an unrelated counter introduced by a compiler
+        // or an upstream Terraria revision.
+        VariableDefinition itemIndex = method.Body.Variables.SingleOrDefault(variable =>
+            variable.VariableType.FullName == "System.Int32" && drawCall.Previous != null && drawCall.Previous.IsLdlocFor(variable))
+            ?? throw new InvalidOperationException("DrawItems did not load one verified item-index local into DrawItem.");
+        Instruction loopIncrement = method.Body.Instructions.SingleOrDefault(instruction =>
+            instruction.OpCode == OpCodes.Add && instruction.Next != null && instruction.Next.IsStlocFor(itemIndex))
+            ?? throw new InvalidOperationException("DrawItems did not contain one verified increment for the DrawItem index local.");
+        Instruction? loopContinue = loopIncrement.Previous?.Previous;
+        if (loopContinue == null || !loopContinue.IsLdlocFor(itemIndex))
+        {
+            throw new InvalidOperationException("DrawItems did not contain the verified start of the DrawItem index increment.");
+        }
         Instruction insertionPoint = drawCall;
-        while (insertionPoint.Previous != null && !(insertionPoint.Previous.OpCode == OpCodes.Ldsfld && insertionPoint.Previous.Operand is FieldReference field && field.Name == "item"))
+        while (insertionPoint != null && !(insertionPoint.OpCode == OpCodes.Ldsfld && insertionPoint.Operand is FieldReference field && field.Name == "item"))
         {
             insertionPoint = insertionPoint.Previous;
         }
-        if (!(insertionPoint.Previous?.Operand is FieldReference itemField) || itemField.Name != "item")
+        if (insertionPoint == null || !(insertionPoint.Operand is FieldReference itemField) || itemField.Name != "item")
         {
             throw new InvalidOperationException("DrawItems did not contain the verified Main.item load before DrawItem.");
+        }
+
+        // DrawItem is an instance member in the audited Terraria build, so its receiver is already
+        // on the evaluation stack immediately before Main.item. Insert before that receiver rather
+        // than leaving it live across the gate's false branch.
+        if (drawItem.HasThis)
+        {
+            Instruction receiverLoad = insertionPoint.Previous;
+            if (receiverLoad == null || receiverLoad.OpCode != OpCodes.Ldarg_0)
+            {
+                throw new InvalidOperationException("DrawItems did not contain the verified DrawItem receiver before Main.item.");
+            }
+
+            insertionPoint = receiverLoad;
         }
 
         var il = method.Body.GetILProcessor();
         il.InsertBefore(insertionPoint, LoadLocal(il, itemIndex));
         il.InsertBefore(insertionPoint, il.Create(OpCodes.Call, shouldDrawItem));
         il.InsertBefore(insertionPoint, il.Create(OpCodes.Brtrue, insertionPoint));
-        // A rejected item must still advance the native loop index. Branching to the
-        // loop condition would repeat the same item indefinitely and violates the
-        // original loop's control-flow shape.
-        il.InsertBefore(insertionPoint, il.Create(OpCodes.Br, loopIncrement));
+        // A rejected item must still execute the native increment sequence. Branching to Add
+        // would leave its operands missing; the verified local load starts that sequence.
+        il.InsertBefore(insertionPoint, il.Create(OpCodes.Br, loopContinue));
     }
 
-    private static void PatchWorldParticleDraw(ModuleDefinition module, TypeDefinition particleRendererType, MethodReference shouldDrawParticle)
+    internal static void PatchWorldParticleDraw(ModuleDefinition module, TypeDefinition particleRendererType, MethodReference shouldDrawParticle)
     {
         MethodDefinition method = particleRendererType.Methods.SingleOrDefault(candidate =>
             candidate.Name == "Draw" &&

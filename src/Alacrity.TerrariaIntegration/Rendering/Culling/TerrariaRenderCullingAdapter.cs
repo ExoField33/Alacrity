@@ -16,6 +16,7 @@ internal sealed class TerrariaRenderCullingAdapter
     private readonly PluginRenderCullingHost policies;
     private readonly Action<string, Exception> reportFailure;
     private PluginRenderCullingCategory categories;
+    private readonly TerrariaRenderCullingBounds cameraBounds = new TerrariaRenderCullingBounds();
 
     internal TerrariaRenderCullingAdapter(PluginRenderCullingHost policies, Action<string, Exception> reportFailure)
     {
@@ -80,24 +81,26 @@ internal sealed class TerrariaRenderCullingAdapter
         }
     }
 
-    private static bool IsVisible(Rectangle bounds, int margin)
+    private bool IsVisible(Rectangle bounds, int margin)
     {
         return IsVisible(new Vector2(bounds.X, bounds.Y), bounds.Width, bounds.Height, margin);
     }
 
-    private static bool IsVisible(Vector2 position, int width, int height, int margin)
+    private bool IsVisible(Vector2 position, int width, int height, int margin)
     {
-        Vector2 cameraPosition = Main.Camera.ScaledPosition;
-        Vector2 cameraSize = Main.Camera.ScaledSize;
-        int left = (int)Math.Floor(cameraPosition.X) - margin;
-        int top = (int)Math.Floor(cameraPosition.Y) - margin;
-        int right = (int)Math.Ceiling(cameraPosition.X + cameraSize.X) + margin;
-        int bottom = (int)Math.Ceiling(cameraPosition.Y + cameraSize.Y) + margin;
-        int entityLeft = (int)Math.Floor(position.X);
-        int entityTop = (int)Math.Floor(position.Y);
-        int entityRight = entityLeft + Math.Max(1, width);
-        int entityBottom = entityTop + Math.Max(1, height);
+        EnsureCameraBounds();
+        return cameraBounds.IsVisible(position.X, position.Y, width, height, margin);
+    }
 
-        return entityRight >= left && entityLeft <= right && entityBottom >= top && entityTop <= bottom;
+    /// <summary>
+    /// Camera position and scaled size change much less often than individual render candidates.
+    /// Keep the normalized pixel rectangle until either input changes; per-entity checks then only
+    /// perform their own bounds conversion and four comparisons.
+    /// </summary>
+    private void EnsureCameraBounds()
+    {
+        Vector2 position = Main.Camera.ScaledPosition;
+        Vector2 size = Main.Camera.ScaledSize;
+        cameraBounds.Update(position.X, position.Y, size.X, size.Y);
     }
 }

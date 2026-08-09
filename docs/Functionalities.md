@@ -35,8 +35,9 @@ whether an existing context service can be extended without duplicating a host b
 | `context.Terraria.Players` | Detached player name, team, life, death/ghost status, buffs, and host-derived suspected-bot state, with caller-buffer copying and generation-aware lookup. |
 | `context.Terraria.Session` | Server/world display name, capacity, and a bounded sampled ping value. |
 | `context.Terraria.VisualEffects` | Scoped dust/gore presentation policies. |
+| `context.Terraria.RenderCulling` | Scoped conservative local culling requests for verified world player, dropped-item, Dust, and common world-particle draw paths. It requires the generic `Rendering` capability, not raw renderer or UI access. |
 | `context.Terraria.NpcTargets` | Demand-gated immutable hostile NPC-to-player targeting relationships for local presentation diagnostics. |
-| `context.Terraria.WorldSections` | Bounded immutable visible client tile-section state; callers choose a small section margin rather than reading the full section grid. |
+| `context.Terraria.WorldSections` | Bounded immutable visible client tile-section state captured at the host update boundary; callers choose a small section margin rather than reading the full section grid. The first read activates capture for that activation and may return an empty/previous frame until the next update. |
 
 ## Presentation rules
 
@@ -48,7 +49,12 @@ whether an existing context service can be extended without duplicating a host b
 - Use `context.Terraria.NpcTargets` with a world overlay for reusable threat/target diagnostics.
   It never exposes live NPCs or players.
 - Use `context.Terraria.WorldSections` with a world overlay for visible-region loading diagnostics.
-  It is read-only and does not expose Terraria's mutable network section matrix.
+  It is read-only, activation-scoped, thread-safe to copy, and does not expose Terraria's mutable
+  network section matrix or read live `Main` state from plugin callbacks.
+- Use `context.Terraria.RenderCulling` only for local presentation policies. The host preserves
+  partially visible content, accounts for the current camera scale and resolution, and fails open
+  for renderer types without a verified world position. Terraria already camera-bounds tile/vine
+  drawing and projectile rendering, so plugins should not duplicate those paths.
 
 ## Extension guidance
 

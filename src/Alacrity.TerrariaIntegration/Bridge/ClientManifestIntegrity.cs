@@ -13,6 +13,8 @@ namespace AlacrityTerraria
     /// </summary>
     internal static class ClientManifestIntegrity
     {
+        private const int SupportedFormatVersion = 1;
+
         internal static bool TryValidate(string clientDirectory, string expectedHandshake, out string diagnostic)
         {
             try
@@ -25,7 +27,25 @@ namespace AlacrityTerraria
                 }
 
                 var root = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(manifestPath)) as Dictionary<string, object>;
-                if (root == null || !TryReadString(root, "bridgeHandshake", out string handshake) || !string.Equals(handshake, expectedHandshake, StringComparison.Ordinal))
+                if (root == null)
+                {
+                    diagnostic = "Client manifest has an invalid root object.";
+                    return false;
+                }
+
+                if (!TryReadInt(root, "formatVersion", out int formatVersion))
+                {
+                    diagnostic = "Client manifest formatVersion is missing or malformed. Rebuild and deploy the complete Alacrity client.";
+                    return false;
+                }
+
+                if (formatVersion != SupportedFormatVersion)
+                {
+                    diagnostic = "Client manifest formatVersion " + formatVersion + " is unsupported; this client requires formatVersion " + SupportedFormatVersion + ". Rebuild and deploy the complete Alacrity client.";
+                    return false;
+                }
+
+                if (!TryReadString(root, "bridgeHandshake", out string handshake) || !string.Equals(handshake, expectedHandshake, StringComparison.Ordinal))
                 {
                     diagnostic = "Client manifest bridge handshake does not match this facade. Rebuild/copy Alacrity assemblies together.";
                     return false;
@@ -87,6 +107,36 @@ namespace AlacrityTerraria
             }
 
             value = string.Empty;
+            return false;
+        }
+
+        private static bool TryReadInt(IDictionary<string, object> values, string name, out int value)
+        {
+            if (!values.TryGetValue(name, out object raw) || raw == null)
+            {
+                value = 0;
+                return false;
+            }
+
+            if (raw is int integer)
+            {
+                value = integer;
+                return true;
+            }
+
+            if (raw is long longValue && longValue >= int.MinValue && longValue <= int.MaxValue)
+            {
+                value = (int)longValue;
+                return true;
+            }
+
+            if (raw is decimal decimalValue && decimal.Truncate(decimalValue) == decimalValue && decimalValue >= int.MinValue && decimalValue <= int.MaxValue)
+            {
+                value = (int)decimalValue;
+                return true;
+            }
+
+            value = 0;
             return false;
         }
 

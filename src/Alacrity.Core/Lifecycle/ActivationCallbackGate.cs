@@ -6,16 +6,15 @@ namespace Alacrity.Core;
 
 /// <summary>
 /// Activation-local admission barrier for callbacks owned by a plugin. Closing the gate rejects
-/// callbacks that have not started yet, while leases already issued are allowed to finish.
+/// callbacks that have not started yet, while leases already issued are allowed to finish. The
+/// gate deliberately does not promise callback quiescence: lifecycle cleanup is scope-owned and
+/// asynchronous operations coordinate their own bounded shutdown without blocking game updates.
 /// </summary>
 internal sealed class ActivationCallbackGate
 {
     private int closed;
-    private int activeCallbacks;
 
     internal bool IsClosed => Volatile.Read(ref closed) != 0;
-
-    internal int ActiveCallbacks => Volatile.Read(ref activeCallbacks);
 
     internal bool TryEnter(out Lease lease)
     {
@@ -25,14 +24,12 @@ internal sealed class ActivationCallbackGate
             return false;
         }
 
-        Interlocked.Increment(ref activeCallbacks);
         if (Volatile.Read(ref closed) == 0)
         {
-            lease = new Lease(this);
+            lease = default;
             return true;
         }
 
-        Interlocked.Decrement(ref activeCallbacks);
         lease = default;
         return false;
     }
@@ -44,19 +41,11 @@ internal sealed class ActivationCallbackGate
 
     internal readonly struct Lease : IDisposable
     {
-        private readonly ActivationCallbackGate? owner;
-
-        internal Lease(ActivationCallbackGate owner)
-        {
-            this.owner = owner;
-        }
-
         public void Dispose()
         {
-            if (owner != null)
-            {
-                Interlocked.Decrement(ref owner.activeCallbacks);
-            }
+            // A lease marks only that admission succeeded. Callback completion is intentionally
+            // not counted here because no lifecycle path waits synchronously for arbitrary plugin
+            // callbacks; stale work is prevented by closing admission before scope release.
         }
     }
 }

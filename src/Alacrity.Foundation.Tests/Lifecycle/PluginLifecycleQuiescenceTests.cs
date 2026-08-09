@@ -8,7 +8,7 @@ using Xunit;
 public sealed class PluginLifecycleQuiescenceTests
 {
     [Fact]
-    public void CallbackAdmissionRejectsNewEntriesAfterTeardownAndLetsExistingCallbacksFinish()
+    public void CallbackAdmissionRejectsNewEntriesAfterTeardown()
     {
         var gate = new ActivationCallbackGate();
         Assert.True(gate.TryEnter(out ActivationCallbackGate.Lease running));
@@ -16,9 +16,7 @@ public sealed class PluginLifecycleQuiescenceTests
         gate.CloseAdmission();
 
         Assert.False(gate.TryEnter(out _));
-        Assert.Equal(1, gate.ActiveCallbacks);
         running.Dispose();
-        Assert.Equal(0, gate.ActiveCallbacks);
     }
 
     [Fact]

@@ -31,6 +31,7 @@ namespace AlacrityTerraria
         private static ClientPresentationStateTracker _presentationStates => BridgeState.PresentationStates;
         private static TerrariaEntitySnapshotCache _entitySnapshots => runtimeState == null ? null : runtimeState.EntitySnapshots;
         private static TerrariaSessionPresentationService _sessionPresentation => runtimeState == null ? null : runtimeState.SessionPresentation;
+        private static GameState.World.TerrariaWorldSectionSnapshotCache _worldSections => runtimeState == null ? null : runtimeState.WorldSections;
         private static PluginChatHost _chat => runtimeState == null ? null : runtimeState.Chat;
         private static TerrariaPluginChatAdapter _chatAdapter => runtimeState == null ? null : runtimeState.ChatAdapter;
         private static PluginUserInteractionHost _userInteraction => runtimeState == null ? null : runtimeState.UserInteraction;

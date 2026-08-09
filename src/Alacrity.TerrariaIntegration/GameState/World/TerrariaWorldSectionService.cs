@@ -1,95 +1,107 @@
 using System;
 using System.Collections.Generic;
 using Alacrity.PluginSdk;
-using Terraria;
 
 namespace AlacrityTerraria.GameState.World;
 
 /// <summary>
-/// Exposes a bounded, detached view of the local client's visible tile sections. It deliberately
-/// never exposes Terraria's mutable section matrix or scans the whole world for a debug overlay.
+/// Activation-scoped facade over the update-thread world-section cache. It never reads Terraria
+/// state itself, so consumers can safely copy the detached frame from any thread.
 /// </summary>
 internal sealed class TerrariaWorldSectionService : IPluginWorldSectionService, IPluginRegistration
 {
-    private const int TilesPerSectionX = 200;
-    private const int TilesPerSectionY = 150;
-    private const int PixelsPerTile = 16;
-
+    private readonly TerrariaWorldSectionSnapshotCache cache;
+    private readonly object gate = new object();
     private bool released;
+    private bool demandRegistered;
+    private int requestedMargin;
 
-    private TerrariaWorldSectionService()
+    private TerrariaWorldSectionService(TerrariaWorldSectionSnapshotCache cache)
     {
+        this.cache = cache;
     }
 
-    internal static IPluginWorldSectionService CreateService(PluginManifest manifest, IPluginResourceScope resources)
+    internal static IPluginWorldSectionService CreateService(
+        TerrariaWorldSectionSnapshotCache cache,
+        PluginManifest manifest,
+        IPluginResourceScope resources)
     {
+        if (cache == null) throw new ArgumentNullException(nameof(cache));
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
-        if ((manifest.Capabilities & PluginCapability.GameStateRead) == 0 || (manifest.Permissions & PluginPermission.ReadGameState) == 0)
+        if ((manifest.Capabilities & PluginCapability.GameStateRead) == 0 ||
+            (manifest.Permissions & PluginPermission.ReadGameState) == 0)
         {
             return new DeniedService(manifest.Id);
         }
 
-        var service = new TerrariaWorldSectionService();
+        var service = new TerrariaWorldSectionService(cache);
         try
         {
             resources.Own("world-sections", PluginResourceKind.EventSubscription, service);
+            return service;
         }
         catch
         {
             service.Dispose();
             throw;
         }
-
-        return service;
     }
 
     public string Name => "world-sections";
 
-    public bool IsReleased => released;
+    public bool IsReleased
+    {
+        get
+        {
+            lock (gate)
+            {
+                return released;
+            }
+        }
+    }
 
     public void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int margin = 0)
     {
         if (destination == null) throw new ArgumentNullException(nameof(destination));
         if (margin < 0) throw new ArgumentOutOfRangeException(nameof(margin));
-        if (released) throw new ObjectDisposedException("IPluginWorldSectionService");
-        if (Main.gameMenu || Main.maxSectionsX <= 0 || Main.maxSectionsY <= 0)
-        {
-            return;
-        }
 
-        if (Main.sectionManager == null)
+        lock (gate)
         {
-            return;
-        }
+            if (released) throw new ObjectDisposedException("IPluginWorldSectionService");
+            requestedMargin = margin;
 
-        int sectionWidthPixels = TilesPerSectionX * PixelsPerTile;
-        int sectionHeightPixels = TilesPerSectionY * PixelsPerTile;
-        float zoom = Main.GameViewMatrix == null ? 1f : Math.Max(0.1f, Main.GameViewMatrix.Zoom.X);
-        int startX = Math.Max(0, (int)Math.Floor(Main.screenPosition.X / sectionWidthPixels) - margin);
-        int startY = Math.Max(0, (int)Math.Floor(Main.screenPosition.Y / sectionHeightPixels) - margin);
-        int endX = Math.Min(Main.maxSectionsX - 1, (int)Math.Floor((Main.screenPosition.X + Main.screenWidth / zoom) / sectionWidthPixels) + margin);
-        int endY = Math.Min(Main.maxSectionsY - 1, (int)Math.Floor((Main.screenPosition.Y + Main.screenHeight / zoom) / sectionHeightPixels) + margin);
-        for (int x = startX; x <= endX; x++)
-        {
-            for (int y = startY; y <= endY; y++)
+            if (!demandRegistered)
             {
-                bool loaded = Main.sectionManager.SectionLoaded(x, y);
-                destination.Add(new PluginWorldSectionSnapshot(
-                    x,
-                    y,
-                    x * sectionWidthPixels,
-                    y * sectionHeightPixels,
-                    sectionWidthPixels,
-                    sectionHeightPixels,
-                    loaded));
+                cache.RegisterDemand(this);
+                demandRegistered = true;
             }
+
         }
+
+        cache.CopyVisibleSections(destination, margin);
+    }
+
+    internal int RequestedMargin
+    {
+        get { return System.Threading.Volatile.Read(ref requestedMargin); }
     }
 
     public void Dispose()
     {
-        released = true;
+        bool unregister;
+        lock (gate)
+        {
+            if (released) return;
+            released = true;
+            unregister = demandRegistered;
+            demandRegistered = false;
+        }
+
+        if (unregister)
+        {
+            cache.UnregisterDemand(this);
+        }
     }
 
     private sealed class DeniedService : IPluginWorldSectionService
@@ -103,7 +115,8 @@ internal sealed class TerrariaWorldSectionService : IPluginWorldSectionService, 
 
         public void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int margin = 0)
         {
-            throw new UnauthorizedAccessException("Plugin '" + owner.Value + "' must declare GameStateRead capability and ReadGameState permission before reading world section snapshots.");
+            throw new UnauthorizedAccessException(
+                "Plugin '" + owner.Value + "' must declare GameStateRead capability and ReadGameState permission before reading world section snapshots.");
         }
     }
 }

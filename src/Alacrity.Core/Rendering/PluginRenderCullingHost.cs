@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Alacrity.PluginSdk;
 
 namespace Alacrity.Core;
@@ -12,15 +13,14 @@ public sealed class PluginRenderCullingHost
 {
     private readonly object gate = new object();
     private readonly List<Entry> entries = new List<Entry>();
-    private PluginRenderCullingCategory effectiveCategories;
+    private int effectiveCategories;
 
     public IPluginRenderCullingService CreateService(PluginManifest manifest, IPluginResourceScope resources)
     {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
 
-        if ((manifest.Capabilities & PluginCapability.Rendering) == 0 ||
-            (manifest.Permissions & PluginPermission.DrawUserInterface) == 0)
+        if ((manifest.Capabilities & PluginCapability.Rendering) == 0)
         {
             return new DeniedService(manifest.Id);
         }
@@ -41,10 +41,7 @@ public sealed class PluginRenderCullingHost
 
     public PluginRenderCullingCategory GetEffectiveCategories()
     {
-        lock (gate)
-        {
-            return effectiveCategories;
-        }
+        return (PluginRenderCullingCategory)Volatile.Read(ref effectiveCategories);
     }
 
     private IPluginRegistration Register(IPluginResourceScope resources, PluginRenderCullingPolicy policy)
@@ -99,7 +96,7 @@ public sealed class PluginRenderCullingHost
             categories |= entries[index].Categories;
         }
 
-        effectiveCategories = categories;
+        Volatile.Write(ref effectiveCategories, (int)categories);
     }
 
     private sealed class ScopedService : IPluginRenderCullingService
@@ -137,7 +134,7 @@ public sealed class PluginRenderCullingHost
 
         public IPluginRegistration RegisterPolicy(PluginRenderCullingPolicy policy)
         {
-            throw new UnauthorizedAccessException("Plugin '" + owner.Value + "' must declare Rendering capability and DrawUserInterface permission before registering render-culling policies.");
+            throw new UnauthorizedAccessException("Plugin '" + owner.Value + "' must declare the Rendering capability before registering render-culling policies.");
         }
     }
 

@@ -11,10 +11,14 @@ internal enum DeploymentMutationPoint
 /// </summary>
 internal sealed class DeploymentTransaction : IDisposable
 {
+    // Test seam for deterministic backup-copy failure coverage. Production retains File.Copy.
+    internal static Action<string, string> BackupFileCopy = CopyBackupFile;
+
     private readonly string outputDirectory;
     private readonly string backupDirectory;
-    private readonly Dictionary<string, bool> existed = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CaptureState> captures = new Dictionary<string, CaptureState>(StringComparer.OrdinalIgnoreCase);
     private bool completed;
+    private bool rolledBack;
 
     internal DeploymentTransaction(string outputDirectory)
     {
@@ -26,21 +30,23 @@ internal sealed class DeploymentTransaction : IDisposable
     internal void Capture(string targetPath)
     {
         string relativePath = ClientBuildPaths.NormalizeRelativePath(Path.GetRelativePath(outputDirectory, targetPath), "Deployment target path");
-        if (existed.ContainsKey(relativePath))
+        if (captures.ContainsKey(relativePath))
         {
             return;
         }
 
-        bool fileExists = File.Exists(targetPath);
-        existed.Add(relativePath, fileExists);
-        if (!fileExists)
+        if (!File.Exists(targetPath))
         {
+            captures.Add(relativePath, CaptureState.DidNotExist);
             return;
         }
 
         string backupPath = ClientBuildPaths.ResolveUnderRoot(backupDirectory, relativePath, "Deployment backup path");
         Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
-        File.Copy(targetPath, backupPath, overwrite: false);
+        // Do not publish capture state until the copy succeeds. A caller that sees a failure can
+        // then safely leave the untouched original alone rather than treating it as recoverable.
+        BackupFileCopy(targetPath, backupPath);
+        captures.Add(relativePath, CaptureState.BackedUp);
     }
 
     internal void Commit()
@@ -50,10 +56,16 @@ internal sealed class DeploymentTransaction : IDisposable
 
     internal void RollBack()
     {
-        foreach (KeyValuePair<string, bool> entry in existed)
+        if (rolledBack)
+        {
+            return;
+        }
+
+        rolledBack = true;
+        foreach (KeyValuePair<string, CaptureState> entry in captures)
         {
             string targetPath = ClientBuildPaths.ResolveUnderRoot(outputDirectory, entry.Key, "Deployment rollback path");
-            if (!entry.Value)
+            if (entry.Value == CaptureState.DidNotExist)
             {
                 if (File.Exists(targetPath))
                 {
@@ -75,7 +87,16 @@ internal sealed class DeploymentTransaction : IDisposable
         {
             if (!completed)
             {
-                RollBack();
+                try
+                {
+                    RollBack();
+                }
+                catch
+                {
+                    // Dispose commonly runs while an earlier deployment exception is unwinding.
+                    // Preserve that original failure; the backup directory remains available until
+                    // this finally block removes the transaction's temporary state.
+                }
             }
         }
         finally
@@ -85,5 +106,16 @@ internal sealed class DeploymentTransaction : IDisposable
                 Directory.Delete(backupDirectory, recursive: true);
             }
         }
+    }
+
+    private enum CaptureState
+    {
+        DidNotExist,
+        BackedUp
+    }
+
+    private static void CopyBackupFile(string sourcePath, string destinationPath)
+    {
+        File.Copy(sourcePath, destinationPath, overwrite: false);
     }
 }

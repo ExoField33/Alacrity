@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using Xunit;
@@ -39,6 +40,52 @@ public sealed class PluginRenderCullingHostTests
         scope.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => service.RegisterPolicy(new PluginRenderCullingPolicy(PluginRenderCullingCategory.Players)));
+    }
+
+    [Fact]
+    public void RenderingCapabilityIsSufficientForLocalCullingRequests()
+    {
+        var host = new PluginRenderCullingHost();
+        using var scope = new PluginResourceScope();
+        PluginManifest manifest = new PluginManifest(
+            new PluginId("tests.render-culling-no-ui-permission"),
+            "Render Culling Tests",
+            new Version(1, 0),
+            "Tests",
+            "Tests",
+            new[] { "1.4.5.6" },
+            capabilities: PluginCapability.Rendering,
+            permissions: PluginPermission.None,
+            multiplayerSafety: MultiplayerSafety.ClientPresentationOnly);
+
+        host.CreateService(manifest, scope).RegisterPolicy(new PluginRenderCullingPolicy(PluginRenderCullingCategory.Players));
+        Assert.Equal(PluginRenderCullingCategory.Players, host.GetEffectiveCategories());
+    }
+
+    [Fact]
+    public async Task ScopeReleaseRaceCannotLeaveAnEffectiveCullingCategory()
+    {
+        var host = new PluginRenderCullingHost();
+        for (int iteration = 0; iteration < 64; iteration++)
+        {
+            var scope = new PluginResourceScope();
+            IPluginRenderCullingService service = host.CreateService(CreateManifest(), scope);
+            Task register = Task.Run(() =>
+            {
+                try
+                {
+                    service.RegisterPolicy(new PluginRenderCullingPolicy(PluginRenderCullingCategory.WorldParticles));
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Scope closure wins this registration race.
+                }
+            });
+
+            scope.Dispose();
+            await register;
+            Assert.Equal(PluginRenderCullingCategory.None, host.GetEffectiveCategories());
+        }
     }
 
     private static PluginManifest CreateManifest()

@@ -7,7 +7,8 @@ namespace Alacrity.PluginSdk;
 
 /// <summary>
 /// Immutable relationship between a hostile NPC and the player it currently targets. Values are
-/// captured by the host on the update thread and are safe to consume from presentation callbacks.
+/// captured by the host on the update thread and are safe to consume from presentation callbacks
+/// or worker threads until the caller discards the value.
 /// </summary>
 public readonly struct PluginNpcTargetSnapshot
 {
@@ -33,10 +34,17 @@ public readonly struct PluginNpcTargetSnapshot
     public bool IsBoss { get; }
 }
 
-/// <summary>Read-only hostile NPC targeting snapshots backed by a shared, demand-gated host cache.</summary>
+/// <summary>
+/// Read-only hostile NPC targeting snapshots backed by a shared, demand-gated host cache. The
+/// service is activation-scoped; calls after disable throw rather than retaining access to a later
+/// activation's data.
+/// </summary>
 public interface IPluginNpcTargetSnapshotService
 {
-    /// <summary>Appends captured targeting relationships into a caller-owned reusable buffer.</summary>
+    /// <summary>
+    /// Appends captured targeting relationships into a caller-owned reusable buffer. It does not
+    /// clear the collection and never exposes a live NPC or player object.
+    /// </summary>
     void CopyHostileNpcTargets(ICollection<PluginNpcTargetSnapshot> destination);
 }
 

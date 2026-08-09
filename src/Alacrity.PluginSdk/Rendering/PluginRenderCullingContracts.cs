@@ -18,6 +18,7 @@ public enum PluginRenderCullingCategory
 /// <summary>
 /// Immutable local presentation policy. A request only permits the host to skip work that it has
 /// verified is fully outside the current world view; unsupported renderers always remain vanilla.
+/// It is a presentation request, never direct renderer access.
 /// </summary>
 public sealed class PluginRenderCullingPolicy
 {
@@ -29,7 +30,10 @@ public sealed class PluginRenderCullingPolicy
     public PluginRenderCullingCategory Categories { get; }
 }
 
-/// <summary>Registers activation-owned local world-render culling policy requests.</summary>
+/// <summary>
+/// Registers activation-owned local world-render culling policy requests. Active policies compose
+/// as a category union; automatic scope cleanup immediately removes an activation's request.
+/// </summary>
 public interface IPluginRenderCullingService
 {
     IPluginRegistration RegisterPolicy(PluginRenderCullingPolicy policy);

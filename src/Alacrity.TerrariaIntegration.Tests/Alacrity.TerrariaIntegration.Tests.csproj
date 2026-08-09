@@ -37,7 +37,13 @@
     <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Entities\EntityGenerationTracker.cs" Link="EntityGenerationTracker.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Runtime\ClientPresentationStateTracker.cs" Link="ClientPresentationStateTracker.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Bridge\ClientManifestIntegrity.cs" Link="ClientManifestIntegrity.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\GameState\World\TerrariaWorldSectionBounds.cs" Link="TerrariaWorldSectionBounds.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\GameState\World\TerrariaWorldSectionSnapshotCache.cs" Link="TerrariaWorldSectionSnapshotCache.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\GameState\World\TerrariaWorldSectionService.cs" Link="TerrariaWorldSectionService.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Culling\TerrariaRenderCullingBounds.cs" Link="TerrariaRenderCullingBounds.cs" />
     <Compile Include="Bridge\ClientManifestIntegrityTests.cs" />
+    <Compile Include="GameState\WorldSectionSnapshotTests.cs" />
+    <Compile Include="Rendering\RenderCullingBoundsTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
