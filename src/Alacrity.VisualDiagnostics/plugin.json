@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "alacrity.visual-diagnostics",
+  "name": "Visual Diagnostics",
+  "version": "0.1.0",
+  "publisher": "ExoField",
+  "description": "Displays local world-state diagnostics",
+  "supportedGameVersions": [ "1.4.5.6" ],
+  "pluginSdkCompatibilityVersion": 2,
+  "hostCompatibilityVersion": 2,
+  "bridgeAbiVersion": 2,
+  "capabilities": [ "UserInterface", "Rendering", "GameStateRead", "Diagnostics" ],
+  "permissions": [ "DrawUserInterface", "ReadGameState" ],
+  "multiplayerSafety": "ClientPresentationOnly",
+  "changelog": "0.1.0 - Hostile aggro-line and tile-section diagnostics.",
+  "entryAssembly": "Alacrity.VisualDiagnostics.dll",
+  "entryType": "Alacrity.VisualDiagnostics.VisualDiagnosticsPlugin"
+}

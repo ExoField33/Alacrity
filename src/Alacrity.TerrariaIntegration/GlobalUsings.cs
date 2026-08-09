@@ -4,6 +4,7 @@ global using AlacrityTerraria.Chat;
 global using AlacrityTerraria.GameState.Combat;
 global using AlacrityTerraria.GameState.Entities;
 global using AlacrityTerraria.GameState.Session;
+global using AlacrityTerraria.GameState.World;
 global using AlacrityTerraria.Input;
 global using AlacrityTerraria.Persistence;
 global using AlacrityTerraria.Rendering;

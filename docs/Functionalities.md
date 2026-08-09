@@ -35,6 +35,8 @@ whether an existing context service can be extended without duplicating a host b
 | `context.Terraria.Players` | Detached player name, team, life, death/ghost status, buffs, and host-derived suspected-bot state, with caller-buffer copying and generation-aware lookup. |
 | `context.Terraria.Session` | Server/world display name, capacity, and a bounded sampled ping value. |
 | `context.Terraria.VisualEffects` | Scoped dust/gore presentation policies. |
+| `context.Terraria.NpcTargets` | Demand-gated immutable hostile NPC-to-player targeting relationships for local presentation diagnostics. |
+| `context.Terraria.WorldSections` | Bounded immutable visible client tile-section state; callers choose a small section margin rather than reading the full section grid. |
 
 ## Presentation rules
 
@@ -43,6 +45,10 @@ whether an existing context service can be extended without duplicating a host b
 - Use `context.Ui` for settings and menu contributions, including reusable hover/click icon behavior.
 - Player/NPC avatars, texture lookup, pointer capture, SpriteBatch state, and camera details remain
   host-owned TerrariaIntegration responsibilities.
+- Use `context.Terraria.NpcTargets` with a world overlay for reusable threat/target diagnostics.
+  It never exposes live NPCs or players.
+- Use `context.Terraria.WorldSections` with a world overlay for visible-region loading diagnostics.
+  It is read-only and does not expose Terraria's mutable network section matrix.
 
 ## Extension guidance
 

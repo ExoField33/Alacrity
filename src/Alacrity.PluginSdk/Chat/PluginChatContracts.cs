@@ -19,6 +19,10 @@ public interface ITerrariaServices
     IPluginVisualEffectsService VisualEffects { get; }
     /// Read-only world/server presentation data such as the display name and sampled ping.
     IPluginSessionPresentationService Session { get; }
+    /// Demand-gated hostile NPC-to-player targeting relationships for presentation diagnostics.
+    IPluginNpcTargetSnapshotService NpcTargets { get; }
+    /// Bounded visible client tile-section state for world diagnostics.
+    IPluginWorldSectionService WorldSections { get; }
 }
 
 /// Registers bounded player-chat extensions. The host owns Terraria hooks and rendering internals.

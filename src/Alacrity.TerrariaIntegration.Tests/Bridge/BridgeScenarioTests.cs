@@ -50,11 +50,13 @@ public sealed class BridgeScenarioTests
         AssertBundledPluginPackage(root, "alacrity.player-list", "Alacrity.PlayerList.dll");
         AssertBundledPluginPackage(root, "alacrity.dust-gore-toggle", "Alacrity.DustGoreToggle.dll");
         AssertBundledPluginPackage(root, "alacrity.hitboxes", "Alacrity.Hitboxes.dll");
+        AssertBundledPluginPackage(root, "alacrity.visual-diagnostics", "Alacrity.VisualDiagnostics.dll");
         string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
         Assert.Contains("Alacrity.BetterChat.dll", manifest);
         Assert.Contains("Alacrity.PlayerList.dll", manifest);
         Assert.Contains("Alacrity.DustGoreToggle.dll", manifest);
         Assert.Contains("Alacrity.Hitboxes.dll", manifest);
+        Assert.Contains("Alacrity.VisualDiagnostics.dll", manifest);
         Assert.Equal("Alacrity.PluginUiCoreBridge", AssemblyName.GetAssemblyName(bridgePath).Name);
 
         Assembly facade = Assembly.LoadFrom(facadePath);

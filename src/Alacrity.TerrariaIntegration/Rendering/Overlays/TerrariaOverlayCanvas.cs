@@ -67,6 +67,14 @@ internal sealed class TerrariaOverlayCanvas : IPluginOverlayCanvas
         DrawText(text, position.X, position.Y, color);
     }
 
+    public void DrawWorldLine(float startWorldX, float startWorldY, float endWorldX, float endWorldY, PluginOverlayColor color, float thickness = 1f)
+    {
+        EnsureWorldSpace();
+        Vector2 start = Project(startWorldX, startWorldY);
+        Vector2 end = Project(endWorldX, endWorldY);
+        DrawLine(start.X, start.Y, end.X, end.Y, color, thickness);
+    }
+
     public void DrawWorldRectangle(float worldX, float worldY, float width, float height, PluginOverlayColor color, float thickness = 1f)
     {
         EnsureWorldSpace();

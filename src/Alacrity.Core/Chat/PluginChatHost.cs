@@ -301,19 +301,44 @@ public sealed class PluginChatHost
 /// <summary>Concrete Terraria service grouping assembled by the host.</summary>
 public sealed class PluginTerrariaServices : ITerrariaServices
 {
-    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null)
+    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null, IPluginNpcTargetSnapshotService? npcTargets = null, IPluginWorldSectionService? worldSections = null)
     {
         Chat = chat ?? throw new ArgumentNullException(nameof(chat));
         Entities = entities ?? EmptyPluginEntitySnapshotService.Instance;
         VisualEffects = visualEffects ?? EmptyPluginVisualEffectsService.Instance;
         Players = players ?? EmptyPluginPlayerService.Instance;
         Session = session ?? EmptyPluginSessionPresentationService.Instance;
+        NpcTargets = npcTargets ?? EmptyPluginNpcTargetSnapshotService.Instance;
+        WorldSections = worldSections ?? EmptyPluginWorldSectionService.Instance;
     }
     public IPluginChatService Chat { get; }
     public IPluginEntitySnapshotService Entities { get; }
     public IPluginVisualEffectsService VisualEffects { get; }
     public IPluginPlayerService Players { get; }
     public IPluginSessionPresentationService Session { get; }
+    public IPluginNpcTargetSnapshotService NpcTargets { get; }
+    public IPluginWorldSectionService WorldSections { get; }
+}
+
+internal sealed class EmptyPluginNpcTargetSnapshotService : IPluginNpcTargetSnapshotService
+{
+    internal static readonly EmptyPluginNpcTargetSnapshotService Instance = new EmptyPluginNpcTargetSnapshotService();
+    private EmptyPluginNpcTargetSnapshotService() { }
+    public void CopyHostileNpcTargets(System.Collections.Generic.ICollection<PluginNpcTargetSnapshot> destination)
+    {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+    }
+}
+
+internal sealed class EmptyPluginWorldSectionService : IPluginWorldSectionService
+{
+    internal static readonly EmptyPluginWorldSectionService Instance = new EmptyPluginWorldSectionService();
+    private EmptyPluginWorldSectionService() { }
+    public void CopyVisibleSections(System.Collections.Generic.ICollection<PluginWorldSectionSnapshot> destination, int margin = 0)
+    {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+        if (margin < 0) throw new ArgumentOutOfRangeException(nameof(margin));
+    }
 }
 
 internal sealed class EmptyPluginSessionPresentationService : IPluginSessionPresentationService

@@ -34,7 +34,9 @@ namespace AlacrityTerraria
                 if (menuChanged) _extensions.Publish(new ClientMenuStateChangedEvent(Main.gameMenu, Main.GameUpdateCount, timestamp));
                 if (chatInputChanged) _extensions.Publish(new ChatInputStateChangedEvent(Main.drawingPlayerChat, Main.GameUpdateCount, timestamp));
                 _extensions.Publish(new ClientUpdatedEvent(Main.GameUpdateCount, timestamp));
-                if (Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
+                // Terraria's keyboard state remains observable while the window is unfocused. Do
+                // not turn an alt-tabbed keystroke into a client action such as Player List display.
+                if (Main.instance == null || !Main.instance.IsActive || Main.gameMenu || Main.drawingPlayerChat || Main.editSign || Main.editChest || Main.blockInput)
                     return;
                 _keybindRuntime?.Dispatch();
 

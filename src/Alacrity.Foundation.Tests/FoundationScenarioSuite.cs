@@ -2918,11 +2918,23 @@ public static class FoundationScenarioSuite
         public IPluginPlayerService Players { get; } = new TestPlayers();
         public IPluginVisualEffectsService VisualEffects { get; } = new TestVisualEffects();
         public IPluginSessionPresentationService Session { get; } = new TestSessionPresentation();
+        public IPluginNpcTargetSnapshotService NpcTargets { get; } = new TestNpcTargets();
+        public IPluginWorldSectionService WorldSections { get; } = new TestWorldSections();
     }
 
     private sealed class TestSessionPresentation : IPluginSessionPresentationService
     {
         public PluginSessionPresentationSnapshot GetCurrent() => new PluginSessionPresentationSnapshot("Tests", 255, null);
+    }
+
+    private sealed class TestNpcTargets : IPluginNpcTargetSnapshotService
+    {
+        public void CopyHostileNpcTargets(ICollection<PluginNpcTargetSnapshot> destination) { }
+    }
+
+    private sealed class TestWorldSections : IPluginWorldSectionService
+    {
+        public void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int margin = 0) { }
     }
 
     private sealed class TestChatService : IPluginChatService
@@ -3006,6 +3018,7 @@ public static class FoundationScenarioSuite
         public void DrawLine(float startX, float startY, float endX, float endY, PluginOverlayColor color, float thickness = 1f) { }
         public void DrawAsset(string approvedAssetId, float x, float y, float scale = 1f, PluginOverlayColor? tint = null) { }
         public void DrawWorldMarker(float worldX, float worldY, string text, PluginOverlayColor color) { }
+        public void DrawWorldLine(float startWorldX, float startWorldY, float endWorldX, float endWorldY, PluginOverlayColor color, float thickness = 1f) { }
         public void DrawWorldRectangle(float worldX, float worldY, float width, float height, PluginOverlayColor color, float thickness = 1f) { }
     }
 

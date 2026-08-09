@@ -24,6 +24,7 @@
     <ProjectReference Include="..\Alacrity.PlayerList\Alacrity.PlayerList.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Alacrity.DustGoreToggle\Alacrity.DustGoreToggle.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.VisualDiagnostics\Alacrity.VisualDiagnostics.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Query project target outputs instead of reconstructing target-framework output paths. -->
@@ -58,6 +59,9 @@
     <MSBuild Projects="..\Alacrity.Hitboxes\Alacrity.Hitboxes.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
       <Output TaskParameter="TargetOutputs" PropertyName="_HitboxesOutput" />
     </MSBuild>
+    <MSBuild Projects="..\Alacrity.VisualDiagnostics\Alacrity.VisualDiagnostics.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_VisualDiagnosticsOutput" />
+    </MSBuild>
 
     <ItemGroup>
       <_RuntimeAssembly Include="$(_BridgeOutput);$(_FacadeOutput);$(_BootstrapOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
@@ -76,6 +80,9 @@
       <_PluginPackage Include="$(_HitboxesOutput)">
         <PluginId>alacrity.hitboxes</PluginId>
       </_PluginPackage>
+      <_PluginPackage Include="$(_VisualDiagnosticsOutput)">
+        <PluginId>alacrity.visual-diagnostics</PluginId>
+      </_PluginPackage>
       <_PluginManifest Include="..\Alacrity.BetterChat\plugin.json">
         <PluginId>alacrity.better-chat</PluginId>
       </_PluginManifest>
@@ -87,6 +94,9 @@
       </_PluginManifest>
       <_PluginManifest Include="..\Alacrity.Hitboxes\plugin.json">
         <PluginId>alacrity.hitboxes</PluginId>
+      </_PluginManifest>
+      <_PluginManifest Include="..\Alacrity.VisualDiagnostics\plugin.json">
+        <PluginId>alacrity.visual-diagnostics</PluginId>
       </_PluginManifest>
       <_RuntimeFile Include="@(_RuntimeAssembly)">
         <RelativePath>%(_RuntimeAssembly.Filename)%(_RuntimeAssembly.Extension)</RelativePath>

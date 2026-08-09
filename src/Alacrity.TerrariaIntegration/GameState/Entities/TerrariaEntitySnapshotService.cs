@@ -24,6 +24,7 @@ internal sealed class TerrariaEntitySnapshotCache
     private int playerDemand;
     private int buffDemand;
     private int botClassificationDemand;
+    private int npcTargetDemand;
     private int botClassificationRefreshRequested;
     private long botClassificationVersion;
     private uint lastBotClassificationTick = uint.MaxValue;
@@ -36,8 +37,8 @@ internal sealed class TerrariaEntitySnapshotCache
     {
         // Plugin bootstrap precedes Terraria.Main's full static initialization. Allocate only inert
         // placeholders here; the first established update capture sizes both frames from live state.
-        current = new Snapshot(Array.Empty<PluginEntitySnapshot>(), Array.Empty<PluginEntitySnapshot>(), 0, 0, 0, 0);
-        alternate = new Snapshot(Array.Empty<PluginEntitySnapshot>(), Array.Empty<PluginEntitySnapshot>(), 0, 0, 0, 0);
+        current = new Snapshot(Array.Empty<PluginEntitySnapshot>(), Array.Empty<PluginEntitySnapshot>(), Array.Empty<PluginNpcTargetSnapshot>(), 0, 0, 0, 0, 0);
+        alternate = new Snapshot(Array.Empty<PluginEntitySnapshot>(), Array.Empty<PluginEntitySnapshot>(), Array.Empty<PluginNpcTargetSnapshot>(), 0, 0, 0, 0, 0);
     }
 
     /// <summary>Returns a coherent diagnostic view used by the integration tests and runtime telemetry.</summary>
@@ -47,7 +48,8 @@ internal sealed class TerrariaEntitySnapshotCache
             Volatile.Read(ref entityDemand),
             Volatile.Read(ref playerDemand),
             Volatile.Read(ref buffDemand),
-            Volatile.Read(ref botClassificationDemand));
+            Volatile.Read(ref botClassificationDemand),
+            Volatile.Read(ref npcTargetDemand));
     }
 
     internal void CaptureForCurrentTick()
@@ -58,9 +60,10 @@ internal sealed class TerrariaEntitySnapshotCache
         int playersRequested = Volatile.Read(ref playerDemand);
         int buffsRequested = Volatile.Read(ref buffDemand);
         int botsRequested = Volatile.Read(ref botClassificationDemand);
+        int targetsRequested = Volatile.Read(ref npcTargetDemand);
         bool meleeRequested = CombatPresentationRuntime.HasMeleeCaptureDemand;
         bool refreshBotClassification = botsRequested != 0 && ShouldRefreshBotClassification();
-        if (entitiesRequested == 0 && playersRequested == 0 && buffsRequested == 0 && botsRequested == 0 && !meleeRequested)
+        if (entitiesRequested == 0 && playersRequested == 0 && buffsRequested == 0 && botsRequested == 0 && targetsRequested == 0 && !meleeRequested)
             return;
 
         gate.EnterWriteLock();
@@ -75,7 +78,8 @@ internal sealed class TerrariaEntitySnapshotCache
                 next.ClearPlayers();
             int entityCount = entitiesRequested != 0 ? CopyLiveEntities(next.Entities) : 0;
             int meleeCount = meleeRequested ? CombatPresentationRuntime.CopyMeleeHitboxes(next.Melee) : 0;
-            next.SetCounts(entityCount, meleeCount, tick);
+            int targetCount = targetsRequested != 0 ? CopyHostileNpcTargets(next.NpcTargets) : 0;
+            next.SetCounts(entityCount, meleeCount, targetCount, tick);
             alternate = current;
             Volatile.Write(ref current, next);
             if (refreshBotClassification)
@@ -152,6 +156,26 @@ internal sealed class TerrariaEntitySnapshotCache
         return new ScopedPlayerService(this, guard);
     }
 
+    internal IPluginNpcTargetSnapshotService CreateNpcTargetService(PluginManifest manifest, IPluginResourceScope resources)
+    {
+        if (manifest == null) throw new ArgumentNullException(nameof(manifest));
+        if (resources == null) throw new ArgumentNullException(nameof(resources));
+        if (!HasReadAccess(manifest)) return new DeniedNpcTargetService(manifest.Id);
+
+        var guard = new ScopeGuard(resources);
+        try
+        {
+            resources.Own("npc-target-snapshots", PluginResourceKind.EventSubscription, guard);
+        }
+        catch
+        {
+            guard.Dispose();
+            throw;
+        }
+
+        return new ScopedNpcTargetService(this, guard);
+    }
+
     private static bool HasReadAccess(PluginManifest manifest)
     {
         return (manifest.Capabilities & PluginCapability.GameStateRead) != 0 && (manifest.Permissions & PluginPermission.ReadGameState) != 0;
@@ -190,12 +214,66 @@ internal sealed class TerrariaEntitySnapshotCache
         return count;
     }
 
+    private int CopyHostileNpcTargets(PluginNpcTargetSnapshot[] destination)
+    {
+        int count = 0;
+        int npcCount = Math.Min(Main.maxNPCs, Main.npc == null ? 0 : Main.npc.Length);
+        int playerCount = Math.Min(Main.maxPlayers, Main.player == null ? 0 : Main.player.Length);
+        for (int npcIndex = 0; npcIndex < npcCount && count < destination.Length; npcIndex++)
+        {
+            NPC npc = Main.npc[npcIndex];
+            if (!IsHostileTargetingNpc(npc))
+            {
+                continue;
+            }
+
+            int targetIndex = npc.target;
+            if (targetIndex < 0 || targetIndex >= playerCount)
+            {
+                continue;
+            }
+
+            Player target = Main.player[targetIndex];
+            if (target == null || !target.active || target.dead || target.ghost)
+            {
+                continue;
+            }
+
+            Rectangle npcBounds = npc.Hitbox;
+            Rectangle targetBounds = target.Hitbox;
+            bool isBoss = npc.boss || IsRealLifeBoss(npc);
+            destination[count++] = new PluginNpcTargetSnapshot(
+                GetHandle(PluginEntityKind.Npc, npcIndex, true),
+                GetHandle(PluginEntityKind.Player, targetIndex, true),
+                npcBounds.X + npcBounds.Width * 0.5f,
+                npcBounds.Y + npcBounds.Height * 0.5f,
+                targetBounds.X + targetBounds.Width * 0.5f,
+                targetBounds.Y + targetBounds.Height * 0.5f,
+                isBoss);
+        }
+
+        return count;
+    }
+
+    private static bool IsHostileTargetingNpc(NPC npc)
+    {
+        return npc != null && npc.active && npc.life > 0 && !npc.friendly &&
+            (npc.damage > 0 || npc.boss || npc.realLife >= 0 || npc.netID < 0);
+    }
+
+    private static bool IsRealLifeBoss(NPC npc)
+    {
+        int parent = npc.realLife;
+        return parent >= 0 && Main.npc != null && parent < Main.npc.Length && Main.npc[parent] != null && Main.npc[parent].boss;
+    }
+
     private void EnsureCapacity(Snapshot snapshot)
     {
         int entityCapacity = Math.Max(1, Main.maxPlayers + Main.maxNPCs + Main.maxProjectiles);
         int meleeCapacity = Math.Max(1, Main.maxPlayers);
         if (snapshot.Entities.Length < entityCapacity) Array.Resize(ref snapshot.Entities, entityCapacity);
         if (snapshot.Melee.Length < meleeCapacity) Array.Resize(ref snapshot.Melee, meleeCapacity);
+        if (snapshot.NpcTargets.Length < Main.maxNPCs) Array.Resize(ref snapshot.NpcTargets, Math.Max(1, Main.maxNPCs));
         if (snapshot.Players.Length < Main.maxPlayers) snapshot.ResizePlayers(Main.maxPlayers);
         if (suspectedBots.Length < Main.maxPlayers)
         {
@@ -404,6 +482,7 @@ internal sealed class TerrariaEntitySnapshotCache
             case DemandKind.Players: Interlocked.Increment(ref playerDemand); break;
             case DemandKind.Buffs: Interlocked.Increment(ref buffDemand); break;
             case DemandKind.BotClassification: Interlocked.Increment(ref botClassificationDemand); break;
+            case DemandKind.NpcTargets: Interlocked.Increment(ref npcTargetDemand); break;
             default: throw new ArgumentOutOfRangeException(nameof(kind));
         }
         return new CounterDemand(this, kind);
@@ -417,6 +496,7 @@ internal sealed class TerrariaEntitySnapshotCache
             case DemandKind.Players: Interlocked.Decrement(ref playerDemand); break;
             case DemandKind.Buffs: Interlocked.Decrement(ref buffDemand); break;
             case DemandKind.BotClassification: Interlocked.Decrement(ref botClassificationDemand); break;
+            case DemandKind.NpcTargets: Interlocked.Decrement(ref npcTargetDemand); break;
         }
     }
 
@@ -520,6 +600,61 @@ internal sealed class TerrariaEntitySnapshotCache
         private void EnsureActive() { if (guard.IsReleased) throw new ObjectDisposedException("IPluginPlayerService"); }
     }
 
+    private sealed class ScopedNpcTargetService : IPluginNpcTargetSnapshotService
+    {
+        private readonly TerrariaEntitySnapshotCache cache;
+        private readonly ScopeGuard guard;
+        private IDisposable targetDemand;
+
+        internal ScopedNpcTargetService(TerrariaEntitySnapshotCache cache, ScopeGuard guard)
+        {
+            this.cache = cache;
+            this.guard = guard;
+        }
+
+        public void CopyHostileNpcTargets(ICollection<PluginNpcTargetSnapshot> destination)
+        {
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            if (guard.IsReleased) throw new ObjectDisposedException("IPluginNpcTargetSnapshotService");
+            EnsureTargetDemand();
+            cache.gate.EnterReadLock();
+            try
+            {
+                Snapshot snapshot = cache.current;
+                for (int index = 0; index < snapshot.NpcTargetCount; index++)
+                {
+                    destination.Add(snapshot.NpcTargets[index]);
+                }
+            }
+            finally
+            {
+                cache.gate.ExitReadLock();
+            }
+        }
+
+        private void EnsureTargetDemand()
+        {
+            if (Volatile.Read(ref targetDemand) != null) return;
+            IDisposable candidate = cache.AcquireDemand(DemandKind.NpcTargets);
+            if (Interlocked.CompareExchange(ref targetDemand, candidate, null) != null)
+            {
+                candidate.Dispose();
+                return;
+            }
+
+            try
+            {
+                guard.OwnDemand(candidate);
+            }
+            catch
+            {
+                Interlocked.CompareExchange(ref targetDemand, null, candidate);
+                candidate.Dispose();
+                throw;
+            }
+        }
+    }
+
     private sealed class DeniedPlayerService : IPluginPlayerService, IPluginPlayerSnapshotDemandService
     {
         private readonly PluginId owner; internal DeniedPlayerService(PluginId owner) { this.owner = owner; }
@@ -534,6 +669,21 @@ internal sealed class TerrariaEntitySnapshotCache
         public void RefreshSuspectedBotClassification() { Deny(); }
         public long SuspectedBotClassificationVersion { get { Deny(); return 0; } }
         private void Deny() => throw new UnauthorizedAccessException("Plugin '" + owner.Value + "' must declare GameStateRead capability and ReadGameState permission before reading player snapshots.");
+    }
+
+    private sealed class DeniedNpcTargetService : IPluginNpcTargetSnapshotService
+    {
+        private readonly PluginId owner;
+
+        internal DeniedNpcTargetService(PluginId owner)
+        {
+            this.owner = owner;
+        }
+
+        public void CopyHostileNpcTargets(ICollection<PluginNpcTargetSnapshot> destination)
+        {
+            throw new UnauthorizedAccessException("Plugin '" + owner.Value + "' must declare GameStateRead capability and ReadGameState permission before reading NPC targeting snapshots.");
+        }
     }
 
     private sealed class DeniedService : IPluginEntitySnapshotService, IPluginMeleeCollisionSnapshotService
@@ -551,16 +701,18 @@ internal sealed class TerrariaEntitySnapshotCache
 
     private sealed class Snapshot
     {
-        internal Snapshot(PluginEntitySnapshot[] entities, PluginEntitySnapshot[] melee, int playerCapacity, int entityCount, int meleeCount, uint tick) { Entities = entities; Melee = melee; Players = new PluginPlayerSnapshot[playerCapacity]; Buffs = new PluginBuffSnapshot[playerCapacity][]; BuffCounts = new int[playerCapacity]; SetCounts(entityCount, meleeCount, tick); }
+        internal Snapshot(PluginEntitySnapshot[] entities, PluginEntitySnapshot[] melee, PluginNpcTargetSnapshot[] npcTargets, int playerCapacity, int entityCount, int meleeCount, int npcTargetCount, uint tick) { Entities = entities; Melee = melee; NpcTargets = npcTargets; Players = new PluginPlayerSnapshot[playerCapacity]; Buffs = new PluginBuffSnapshot[playerCapacity][]; BuffCounts = new int[playerCapacity]; SetCounts(entityCount, meleeCount, npcTargetCount, tick); }
         internal PluginEntitySnapshot[] Entities;
         internal PluginEntitySnapshot[] Melee;
+        internal PluginNpcTargetSnapshot[] NpcTargets;
         internal PluginPlayerSnapshot[] Players;
         internal PluginBuffSnapshot[][] Buffs;
         internal int[] BuffCounts;
         internal int EntityCount { get; private set; }
         internal int MeleeCount { get; private set; }
+        internal int NpcTargetCount { get; private set; }
         internal uint Tick { get; private set; }
-        internal void SetCounts(int entityCount, int meleeCount, uint tick) { EntityCount = entityCount; MeleeCount = meleeCount; Tick = tick; }
+        internal void SetCounts(int entityCount, int meleeCount, int npcTargetCount, uint tick) { EntityCount = entityCount; MeleeCount = meleeCount; NpcTargetCount = npcTargetCount; Tick = tick; }
         internal void ResizePlayers(int capacity) { Array.Resize(ref Players, capacity); Array.Resize(ref Buffs, capacity); Array.Resize(ref BuffCounts, capacity); }
         internal void ClearPlayers()
         {
@@ -579,7 +731,7 @@ internal sealed class TerrariaEntitySnapshotCache
         public void Dispose() { if (released) return; released = true; demand.Dispose(); }
     }
 
-    private enum DemandKind { Entities, Players, Buffs, BotClassification }
+    private enum DemandKind { Entities, Players, Buffs, BotClassification, NpcTargets }
 
     private sealed class CounterDemand : IDisposable
     {
@@ -597,16 +749,18 @@ internal sealed class TerrariaEntitySnapshotCache
 /// <summary>Immutable demand counters for verifying that lazy snapshot readers do not over-acquire work.</summary>
 internal readonly struct TerrariaSnapshotDemandCounts
 {
-    internal TerrariaSnapshotDemandCounts(int entities, int players, int buffs, int botClassification)
+    internal TerrariaSnapshotDemandCounts(int entities, int players, int buffs, int botClassification, int npcTargets)
     {
         Entities = entities;
         Players = players;
         Buffs = buffs;
         BotClassification = botClassification;
+        NpcTargets = npcTargets;
     }
 
     internal int Entities { get; }
     internal int Players { get; }
     internal int Buffs { get; }
     internal int BotClassification { get; }
+    internal int NpcTargets { get; }
 }

@@ -50,6 +50,7 @@
     <Compile Include="GameState\Combat\CombatCollisionCapture.cs" />
     <Compile Include="GameState\Entities\TerrariaEntitySnapshotService.cs" />
     <Compile Include="GameState\Entities\EntityGenerationTracker.cs" />
+    <Compile Include="GameState\World\TerrariaWorldSectionService.cs" />
     <Compile Include="Rendering\Overlays\TerrariaOverlayAdapter.cs" />
     <Compile Include="Input\PluginUserInteractionBackend.cs" />
     <Compile Include="Rendering\Hud\TerrariaHudAdapter.cs" />

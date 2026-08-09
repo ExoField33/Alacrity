@@ -123,6 +123,9 @@ public interface IPluginOverlayCanvas
     /// <summary>Queues a host-projected world marker.</summary>
     void DrawWorldMarker(float worldX, float worldY, string text, PluginOverlayColor color);
 
+    /// <summary>Draws a host-projected line between two world-space points during the world phase.</summary>
+    void DrawWorldLine(float startWorldX, float startWorldY, float endWorldX, float endWorldY, PluginOverlayColor color, float thickness = 1f);
+
     /// <summary>Draws an outlined world-space rectangle after host-owned world-to-screen conversion.</summary>
     void DrawWorldRectangle(float worldX, float worldY, float width, float height, PluginOverlayColor color, float thickness = 1f);
 }
