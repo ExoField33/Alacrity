@@ -17,6 +17,7 @@ internal sealed class TerrariaPluginEnabledStateStore
 {
     private readonly string statePath;
     private readonly string legacyPath;
+    private readonly object persistGate = new object();
     private bool restored;
 
     internal TerrariaPluginEnabledStateStore(string root)
@@ -50,17 +51,30 @@ internal sealed class TerrariaPluginEnabledStateStore
     {
         try
         {
-            string directory = Path.GetDirectoryName(statePath);
-            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-            PluginPackageRuntimeRecord[] records = runtime.Registry.Records
-                .Where(record => record.State != PluginPackageLifecycleState.Uninstalled)
-                .OrderBy(record => record.Manifest.Id.Value, StringComparer.Ordinal)
-                .ToArray();
-            string json = "{\n  \"plugins\": [\n" + string.Join(",\n", records.Select(record => "    { \"id\": \"" + record.Manifest.Id.Value + "\", \"enabled\": " + (record.State == PluginPackageLifecycleState.Enabled ? "true" : "false") + " }")) + "\n  ]\n}\n";
-            string temporaryPath = statePath + ".tmp";
-            File.WriteAllText(temporaryPath, json);
-            if (File.Exists(statePath)) File.Replace(temporaryPath, statePath, null);
-            else File.Move(temporaryPath, statePath);
+            lock (persistGate)
+            {
+                string directory = Path.GetDirectoryName(statePath);
+                if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+                PluginPackageRuntimeRecord[] records = runtime.Registry.Records
+                    .Where(record => record.State != PluginPackageLifecycleState.Uninstalled)
+                    .OrderBy(record => record.Manifest.Id.Value, StringComparer.Ordinal)
+                    .ToArray();
+                string json = "{\n  \"plugins\": [\n" + string.Join(",\n", records.Select(record => "    { \"id\": \"" + record.Manifest.Id.Value + "\", \"enabled\": " + (record.State == PluginPackageLifecycleState.Enabled ? "true" : "false") + " }")) + "\n  ]\n}\n";
+                string temporaryPath = statePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    File.WriteAllText(temporaryPath, json);
+                    if (File.Exists(statePath))
+                        File.Replace(temporaryPath, statePath, null);
+                    else
+                        File.Move(temporaryPath, statePath);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryPath))
+                        File.Delete(temporaryPath);
+                }
+            }
         }
         catch (Exception exception)
         {

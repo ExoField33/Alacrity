@@ -21,6 +21,12 @@ namespace AlacrityTerraria
             return _chatAdapter != null && _chatAdapter.HasInputEditors();
         }
 
+        /// <summary>Returns whether a generic editor currently owns a native chat-navigation action.</summary>
+        public static bool ShouldHandleChatInputAction(string actionId)
+        {
+            return _chatAdapter != null && _chatAdapter.HasInputActionHandler(actionId);
+        }
+
         /// <summary>Legacy ABI name retained for focused player-chat input.</summary>
         public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
         {
@@ -31,6 +37,12 @@ namespace AlacrityTerraria
         public static string ProcessChatInput(string text, bool allowMultiLine)
         {
             return _chatAdapter == null ? text : _chatAdapter.ProcessInput(text, allowMultiLine);
+        }
+
+        /// <summary>Notifies generic editors after Terraria has accepted a non-empty player-chat submission.</summary>
+        public static void RecordSubmittedChatInput(string text)
+        {
+            _chatAdapter?.RecordSubmittedInput(text);
         }
 
         /// <summary>Legacy ABI name retained for draw-only chat formatting.</summary>

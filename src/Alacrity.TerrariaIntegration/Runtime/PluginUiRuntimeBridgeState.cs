@@ -49,6 +49,12 @@ internal sealed class PluginUiRuntimeBridgeState
 
     internal string IngameHoveredPluginActionId { get; set; }
 
+    /// <summary>
+    /// Immediate-mode in-game plugin settings capture. A non-empty value owns the primary mouse
+    /// button until release so dragging a slider or scrollbar cannot activate Terraria's settings UI.
+    /// </summary>
+    internal string IngamePointerCaptureId { get; set; }
+
     internal uint IconInteractionInputTick { get; set; } = uint.MaxValue;
 
     internal bool IconInteractionWasDown { get; set; }

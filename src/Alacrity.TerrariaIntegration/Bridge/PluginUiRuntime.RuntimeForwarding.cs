@@ -374,6 +374,12 @@ namespace AlacrityTerraria
             return EnsureChatBridge() && State.HasChatInputEditors != null && State.HasChatInputEditors();
         }
 
+        /// <summary>Returns whether a generic editor owns an action that Terraria would otherwise process first.</summary>
+        public static bool ShouldHandleChatInputAction(string actionId)
+        {
+            return !string.IsNullOrWhiteSpace(actionId) && EnsureChatBridge() && State.ShouldHandleChatInputAction != null && State.ShouldHandleChatInputAction(actionId);
+        }
+
         public static string ProcessPlayerChatInput(string text, bool allowMultiLine)
         {
             return ProcessChatInput(text, allowMultiLine);
@@ -382,6 +388,13 @@ namespace AlacrityTerraria
         public static string ProcessChatInput(string text, bool allowMultiLine)
         {
             return EnsureChatBridge() && State.ProcessChatInput != null ? State.ProcessChatInput(text, allowMultiLine) : text;
+        }
+
+        /// <summary>Forwards one accepted player-chat submission to generic activation-scoped editors.</summary>
+        public static void RecordSubmittedChatInput(string text)
+        {
+            if (!string.IsNullOrEmpty(text) && EnsureChatBridge() && State.RecordSubmittedChatInput != null)
+                State.RecordSubmittedChatInput(text);
         }
 
         public static string FormatPlayerChatText(string text)
@@ -671,8 +684,12 @@ namespace AlacrityTerraria
                 Delegate callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "HasChatInputEditors", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); return false; }
                 State.HasChatInputEditors = (Func<bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ShouldHandleChatInputAction", typeof(bool), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.ShouldHandleChatInputAction = (Func<string, bool>)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ProcessChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 State.ProcessChatInput = (Func<string, bool, string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "RecordSubmittedChatInput", typeof(void), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action<string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.RecordSubmittedChatInput = (Action<string>)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "FormatChatInputForDraw", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 State.FormatChatInputForDraw = (Func<string, string>)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "DecorateChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
@@ -736,7 +753,9 @@ namespace AlacrityTerraria
         private static void ClearChatDelegates()
         {
             State.HasChatInputEditors = null;
+            State.ShouldHandleChatInputAction = null;
             State.ProcessChatInput = null;
+            State.RecordSubmittedChatInput = null;
             State.FormatChatInputForDraw = null;
             State.DecorateChatMessage = null;
             State.ShouldDisplayNetworkChatMessage = null;

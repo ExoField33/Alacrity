@@ -60,33 +60,39 @@ public sealed class ChatInputSnapshot
 /// Normalized host input action. Plugins never receive raw keyboard state.
 public sealed class ChatInputAction
 {
-    public ChatInputAction(string id, bool control = false, bool shift = false, string? text = null)
+    public ChatInputAction(string id, bool control = false, bool shift = false, string? text = null, int scrollLines = 0)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("An input action ID is required.", nameof(id)) : id;
         Control = control;
         Shift = shift;
         Text = text;
+        ScrollLines = scrollLines;
     }
     public string Id { get; }
     public bool Control { get; }
     public bool Shift { get; }
     public string? Text { get; }
+    /// <summary>Normalized wheel movement in chat lines. It is non-zero only for a host-generated scroll action.</summary>
+    public int ScrollLines { get; }
 }
 
 /// Replacement state returned by a chat editor.
 public sealed class ChatInputEditResult
 {
-    public ChatInputEditResult(string text, int caret, int selectionAnchor, bool handled)
+    public ChatInputEditResult(string text, int caret, int selectionAnchor, bool handled, int chatScrollLines = 0)
     {
         Text = text ?? string.Empty;
         Caret = Math.Max(0, Math.Min(caret, Text.Length));
         SelectionAnchor = selectionAnchor < 0 ? -1 : Math.Max(0, Math.Min(selectionAnchor, Text.Length));
         Handled = handled;
+        ChatScrollLines = chatScrollLines;
     }
     public string Text { get; }
     public int Caret { get; }
     public int SelectionAnchor { get; }
     public bool Handled { get; }
+    /// <summary>Requested host-owned visible-chat offset. Plugins never receive the native chat monitor.</summary>
+    public int ChatScrollLines { get; }
     public static ChatInputEditResult Unhandled(ChatInputSnapshot snapshot) => new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, false);
 }
 
@@ -102,6 +108,17 @@ public sealed class ChatInputEditorDescriptor
 }
 
 public interface IChatInputEditor { ChatInputEditResult Edit(ChatInputSnapshot snapshot, ChatInputAction action); }
+
+/// <summary>
+/// Optional editor capability used when Terraria must decide whether to suppress a native input
+/// behavior before dispatching the normalized action. Implementations may change their answer as
+/// activation-scoped settings change.
+/// </summary>
+public interface IChatInputActionAvailability
+{
+    /// <summary>Returns whether this editor currently owns the supplied normalized action.</summary>
+    bool CanHandle(ChatInputAction action);
+}
 
 public sealed class ChatMessageSnapshot
 {

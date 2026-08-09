@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "alacrity.better-chat",
   "name": "Better Chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "ExoField",
-  "description": "Vanilla-compatible chat editing, selection, and clickable links.",
+  "description": "Chat editing, selection, clickable links, scrollable chat, and chat history via up and down arrow keys.",
   "supportedGameVersions": [ "1.4.5.6" ],
   "pluginSdkCompatibilityVersion": 2,
   "hostCompatibilityVersion": 2,
@@ -12,7 +12,7 @@
   "capabilities": [ "UserInterface", "Input" ],
   "permissions": [ "DrawUserInterface", "Clipboard", "OpenExternalLinks" ],
   "multiplayerSafety": "ClientOnly",
-  "changelog": "0.1.0 - Initial Better Chat migration.",
+  "changelog": "0.1.1 - Added chat history and ability to move through the chat via the scrollwheel",
   "entryAssembly": "Alacrity.BetterChat.dll",
   "entryType": "Alacrity.BetterChat.BetterChatPlugin"
 }

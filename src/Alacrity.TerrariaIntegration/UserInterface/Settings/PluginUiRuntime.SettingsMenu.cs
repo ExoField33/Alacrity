@@ -92,7 +92,7 @@ public static partial class PluginUiRuntime
                     var slider = new UIKeybindingSliderItem(
                         () => control.DisplayName + ": " + ReadSettingValue(control),
                         () => Normalize(control.GetSlider(), control.Minimum, control.Maximum),
-                        value => control.SetSlider(Denormalize(value, control.Minimum, control.Maximum, control.Step)),
+                        value => SetMenuSliderValue(control, value),
                         () => { }, control.Id.GetHashCode(), new Color(73, 94, 171, 255) * 0.9f) { Width = StyleDimension.Fill, Height = new StyleDimension(34f, 0f) };
                     slider.SetSnapPoint("PluginSetting", snapIndex, null, null);
                     list.Add(slider);
@@ -180,6 +180,18 @@ public static partial class PluginUiRuntime
             {
                 float result = min + MathHelper.Clamp(value, 0f, 1f) * (max - min);
                 return step <= 0f ? result : min + (float)Math.Round((result - min) / step) * step;
+            }
+
+            private static void SetMenuSliderValue(PluginSettingControl control, float normalizedValue)
+            {
+                float current = control.GetSlider();
+                float next = Denormalize(normalizedValue, control.Minimum, control.Maximum, control.Step);
+                if (Math.Abs(current - next) <= 0.0001f)
+                    return;
+
+                control.SetSlider(next);
+                if (control.Step > 0f)
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
             }
 
             private void SetupGamepadPoints(SpriteBatch spriteBatch)

@@ -4,7 +4,7 @@ using Mono.Cecil.Cil;
 // Patch-domain implementation is separate from the command-line entry point.
 internal static partial class PermanentPatchPlan
 {
-    private static void PatchBetterChatInput(TypeDefinition mainType, MethodReference isActive, MethodReference process)
+    private static void PatchBetterChatInput(TypeDefinition mainType, MethodReference isActive, MethodReference process, MethodReference handlesInputAction)
     {
         var method = mainType.Methods.Single(candidate => candidate.Name == "GetInputText" && candidate.ReturnType.FullName == "System.String" && candidate.Parameters.Select(parameter => parameter.ParameterType.FullName).SequenceEqual(new[] { "System.String", "System.Boolean" }));
         var drawingChat = mainType.Fields.Single(field => field.Name == "drawingPlayerChat" && field.FieldType.FullName == "System.Boolean");
@@ -18,9 +18,40 @@ internal static partial class PermanentPatchPlan
         il.InsertBefore(first, il.Create(OpCodes.Ldarg_1));
         il.InsertBefore(first, il.Create(OpCodes.Call, process));
         il.InsertBefore(first, il.Create(OpCodes.Ret));
+
+        var updateChat = mainType.Methods.Single(candidate => candidate.Name == "DoUpdate_HandleChat" && candidate.ReturnType.FullName == "System.Void" && candidate.Parameters.Count == 0);
+        var nativeOffset = updateChat.Body.Instructions.FirstOrDefault(instruction =>
+            instruction.OpCode == OpCodes.Callvirt &&
+            instruction.Operand is MethodReference target &&
+            target.Name == "Offset" &&
+            target.DeclaringType.FullName == "Terraria.GameContent.UI.Chat.IChatMonitor")
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native chat offset call was not found.");
+        var afterNativeOffset = nativeOffset.Next
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native chat offset has no continuation.");
+        var navigationStart = updateChat.Body.Instructions.FirstOrDefault(instruction =>
+            instruction.OpCode == OpCodes.Ldsfld &&
+            instruction.Operand is FieldReference field &&
+            field.Name == "imeCompositionActive" &&
+            instruction.Offset < nativeOffset.Offset)
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native navigation gate was not found.");
+        Instruction[] navigationEntryBranches = updateChat.Body.Instructions
+            .Where(instruction => ReferenceEquals(instruction.Operand, navigationStart))
+            .ToArray();
+        if (navigationEntryBranches.Length == 0)
+            throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native navigation entry branch was not found.");
+        var navigationIl = updateChat.Body.GetILProcessor();
+        Instruction actionAvailabilityStart = navigationIl.Create(OpCodes.Ldstr, "up");
+        navigationIl.InsertBefore(navigationStart, actionAvailabilityStart);
+        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Call, handlesInputAction));
+        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Brtrue, afterNativeOffset));
+        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Ldstr, "down"));
+        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Call, handlesInputAction));
+        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Brtrue, afterNativeOffset));
+        foreach (Instruction branch in navigationEntryBranches)
+            branch.Operand = actionAvailabilityStart;
     }
 
-    private static void PatchPluginChatCommands(TypeDefinition mainType, MethodReference tryHandlePluginCommand)
+    private static void PatchPluginChatCommands(TypeDefinition mainType, MethodReference tryHandlePluginCommand, MethodReference recordSubmittedChatInput)
     {
         var method = mainType.Methods.Single(candidate => candidate.Name == "DoUpdate_HandleChat" && candidate.ReturnType.FullName == "System.Void" && candidate.Parameters.Count == 0);
         var chatText = mainType.Fields.Single(field => field.Name == "chatText" && field.FieldType.FullName == "System.String");
@@ -34,6 +65,8 @@ internal static partial class PermanentPatchPlan
             instruction.Next?.OpCode == OpCodes.Stsfld && instruction.Next.Operand is FieldReference field && field.FullName == chatText.FullName)
             ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat close-chat path was not found.");
         var il = method.Body.GetILProcessor();
+        il.InsertBefore(submitCheck, il.Create(OpCodes.Ldsfld, chatText));
+        il.InsertBefore(submitCheck, il.Create(OpCodes.Call, recordSubmittedChatInput));
         il.InsertBefore(submitCheck, il.Create(OpCodes.Ldsfld, chatText));
         il.InsertBefore(submitCheck, il.Create(OpCodes.Call, tryHandlePluginCommand));
         il.InsertBefore(submitCheck, il.Create(OpCodes.Brfalse, submitCheck));

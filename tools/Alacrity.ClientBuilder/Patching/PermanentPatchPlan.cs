@@ -88,8 +88,12 @@ internal static partial class PermanentPatchPlan
         PatchBetterChatInput(
             mainType,
             ImportRuntimeMethod(module, sourceExecutablePath, "IsBetterChatActive", "System.Boolean"),
-            ImportRuntimeMethod(module, sourceExecutablePath, "ProcessPlayerChatInput", "System.String", "System.String", "System.Boolean"));
-        PatchPluginChatCommands(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "TryHandlePluginChatCommand", "System.Boolean", "System.String"));
+            ImportRuntimeMethod(module, sourceExecutablePath, "ProcessPlayerChatInput", "System.String", "System.String", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldHandleChatInputAction", "System.Boolean", "System.String"));
+        PatchPluginChatCommands(
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryHandlePluginChatCommand", "System.Boolean", "System.String"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "RecordSubmittedChatInput", "System.Void", "System.String"));
         PatchBetterChatStartup(programType, ImportRuntimeMethod(module, sourceExecutablePath, "BootstrapPluginRuntime", "System.Void"));
         PatchBetterChatDraw(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "FormatPlayerChatText", "System.String", "System.String"));
     }

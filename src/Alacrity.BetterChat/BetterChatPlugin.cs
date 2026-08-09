@@ -11,8 +11,15 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
     private IPluginContext? context;
     private IPluginSetting<bool>? clickableLinksSetting;
     private IPluginSetting<bool>? chatVisibilitySetting;
+    private IPluginSetting<bool>? scrollChatSetting;
+    private IPluginSetting<int>? scrollChatSensitivitySetting;
+    private IPluginSetting<bool>? chatHistorySetting;
     private bool clickableLinks = true;
     private bool chatVisibility = true;
+    private bool scrollChat = true;
+    private int scrollChatSensitivity = 1;
+    private bool chatHistory = true;
+    private Editor? editor;
 
     public void Initialize(IPluginContext context)
     {
@@ -20,25 +27,56 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         ReadChatVisibility(context.Settings);
         clickableLinksSetting = context.Settings.Register(new PluginSettingDefinition<bool>("clickableLinks", true));
         chatVisibilitySetting = context.Settings.Register(new PluginSettingDefinition<bool>("chat-visibility", true));
+        scrollChatSetting = context.Settings.Register(new PluginSettingDefinition<bool>("scrollChat", true));
+        scrollChatSensitivitySetting = context.Settings.Register(new PluginSettingDefinition<int>("scrollChatSensitivity", 1, value => Clamp(value, 1, 4)));
+        chatHistorySetting = context.Settings.Register(new PluginSettingDefinition<bool>("chatHistory", true));
         clickableLinks = clickableLinksSetting.Value;
         chatVisibility = chatVisibilitySetting.Value;
+        scrollChat = scrollChatSetting.Value;
+        scrollChatSensitivity = scrollChatSensitivitySetting.Value;
+        chatHistory = chatHistorySetting.Value;
         clickableLinksSetting.Subscribe(value => clickableLinks = value);
         chatVisibilitySetting.Subscribe(value => chatVisibility = value);
+        scrollChatSetting.Subscribe(value => scrollChat = value);
+        scrollChatSensitivitySetting.Subscribe(value => scrollChatSensitivity = value);
+        chatHistorySetting.Subscribe(value => chatHistory = value);
 
         context.Ui.RegisterSettingsPage(new PluginUiContribution("better-chat", "Better Chat"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("clickable-links", "Clickable Links", clickableLinksSetting).InPage("better-chat"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("chat-visibility", "Chat Visibility", chatVisibilitySetting).InPage("better-chat"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("scroll-chat", "Scroll Chat", scrollChatSetting).InPage("better-chat"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("scroll-chat-sensitivity", "Scroll Sensitivity", 1f, 4f, 1f, scrollChatSensitivitySetting, FormatScrollSensitivity).InPage("better-chat"));
+        context.Ui.RegisterSettingsControl(PluginSettingControl.Toggle("chat-history", "Chat History", chatHistorySetting).InPage("better-chat"));
 
-        context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), new Editor());
+        editor = new Editor(this);
+        context.Terraria.Chat.RegisterInputEditor(new ChatInputEditorDescriptor("better-chat-editor"), editor);
         context.Terraria.Chat.RegisterMessageDecorator(new ChatMessageDecoratorDescriptor("better-chat-links"), new LinkDecorator(this));
         context.Terraria.Chat.RegisterMessageFilter(new ChatMessageFilterDescriptor("better-chat-visibility"), new VisibilityFilter(this));
         context.Terraria.Chat.RegisterLinkHandler(new ChatLinkHandlerDescriptor(Uri.UriSchemeHttp), new LinkHandler(this));
         context.Terraria.Chat.RegisterLinkHandler(new ChatLinkHandlerDescriptor(Uri.UriSchemeHttps), new LinkHandler(this));
+        context.Events.Subscribe<ClientMenuStateChangedEvent>(OnClientMenuStateChanged);
     }
 
     public void Enable() { }
-    public void Disable() { }
-    public void Shutdown() { clickableLinksSetting = null; chatVisibilitySetting = null; context = null; }
+    public void Disable() { editor?.ClearHistory(); }
+    public void Shutdown()
+    {
+        editor?.ClearHistory();
+        editor = null;
+        clickableLinksSetting = null;
+        chatVisibilitySetting = null;
+        scrollChatSetting = null;
+        scrollChatSensitivitySetting = null;
+        chatHistorySetting = null;
+        context = null;
+    }
+
+    private void OnClientMenuStateChanged(ClientMenuStateChangedEvent change)
+    {
+        // BetterChat history belongs to the current world/server visit and must not survive a return to menus.
+        if (change.IsGameMenu)
+            editor?.ClearHistory();
+    }
 
     private static bool ReadChatVisibility(IPluginSettings settings)
     {
@@ -59,6 +97,16 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
 
     private bool TryOpenExternalLink(Uri uri) => context != null && context.UserInteraction.TryOpenExternalLink(uri);
 
+    private static int Clamp(int value, int minimum, int maximum)
+    {
+        return value < minimum ? minimum : value > maximum ? maximum : value;
+    }
+
+    private static string FormatScrollSensitivity(float value)
+    {
+        return ((int)Math.Round(value)).ToString();
+    }
+
     private sealed class VisibilityFilter : IChatMessageFilter
     {
         private readonly BetterChatPlugin plugin;
@@ -69,10 +117,63 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
         }
     }
 
-    private sealed class Editor : IChatInputEditor
+    private sealed class Editor : IChatInputEditor, IChatInputActionAvailability
     {
+        private readonly BetterChatPlugin plugin;
+        private readonly List<string> history = new List<string>();
+        private int historyIndex = -1;
+        private string historyDraft = string.Empty;
+
+        public Editor(BetterChatPlugin plugin)
+        {
+            this.plugin = plugin ?? throw new ArgumentNullException(nameof(plugin));
+        }
+
+        public bool CanHandle(ChatInputAction action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            switch (action.Id)
+            {
+                case "up":
+                case "down":
+                    return plugin.scrollChat || plugin.chatHistory;
+                case "scroll":
+                    return plugin.scrollChat;
+                default:
+                    return false;
+            }
+        }
+
         public ChatInputEditResult Edit(ChatInputSnapshot snapshot, ChatInputAction action)
         {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            if (action.Id == "submit")
+            {
+                RecordHistory(snapshot.Text);
+                return ChatInputEditResult.Unhandled(snapshot);
+            }
+
+            if (action.Id == "scroll")
+            {
+                if (!plugin.scrollChat || action.ScrollLines == 0)
+                    return ChatInputEditResult.Unhandled(snapshot);
+
+                int lines = action.ScrollLines * plugin.scrollChatSensitivity;
+                return new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, true, lines);
+            }
+
+            if (action.Id == "up" || action.Id == "down")
+            {
+                if (plugin.chatHistory)
+                    return NavigateHistory(snapshot, action.Id == "up");
+
+                return plugin.scrollChat
+                    ? new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, true)
+                    : ChatInputEditResult.Unhandled(snapshot);
+            }
+
             int caret = snapshot.Caret;
             int anchor = snapshot.SelectionAnchor;
             bool selecting = action.Shift;
@@ -87,6 +188,66 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
                 default: return ChatInputEditResult.Unhandled(snapshot);
             }
             return new ChatInputEditResult(snapshot.Text, caret, anchor, true);
+        }
+
+        internal void ClearHistory()
+        {
+            history.Clear();
+            historyIndex = -1;
+            historyDraft = string.Empty;
+        }
+
+        private void RecordHistory(string text)
+        {
+            if (!plugin.chatHistory || string.IsNullOrWhiteSpace(text))
+                return;
+
+            history.Add(text);
+            historyIndex = -1;
+            historyDraft = string.Empty;
+        }
+
+        private ChatInputEditResult NavigateHistory(ChatInputSnapshot snapshot, bool previous)
+        {
+            if (historyIndex >= 0 && !string.Equals(snapshot.Text, history[historyIndex], StringComparison.Ordinal))
+            {
+                historyIndex = -1;
+                historyDraft = snapshot.Text;
+            }
+
+            if (history.Count == 0)
+                return new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, true);
+
+            if (previous)
+            {
+                if (historyIndex < 0)
+                {
+                    historyDraft = snapshot.Text;
+                    historyIndex = history.Count - 1;
+                }
+                else if (historyIndex > 0)
+                {
+                    historyIndex--;
+                }
+            }
+            else
+            {
+                if (historyIndex < 0)
+                    return new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, true);
+
+                if (historyIndex < history.Count - 1)
+                {
+                    historyIndex++;
+                }
+                else
+                {
+                    historyIndex = -1;
+                    return new ChatInputEditResult(historyDraft, historyDraft.Length, -1, true);
+                }
+            }
+
+            string entry = history[historyIndex];
+            return new ChatInputEditResult(entry, entry.Length, -1, true);
         }
         private static int PreviousWord(string text, int index) { while (index > 0 && char.IsWhiteSpace(text, PreviousUnit(text, index))) index = PreviousUnit(text, index); while (index > 0 && !char.IsWhiteSpace(text, PreviousUnit(text, index))) index = PreviousUnit(text, index); return index; }
         private static int NextWord(string text, int index) { while (index < text.Length && !char.IsWhiteSpace(text, index)) index = NextUnit(text, index); while (index < text.Length && char.IsWhiteSpace(text, index)) index = NextUnit(text, index); return index; }

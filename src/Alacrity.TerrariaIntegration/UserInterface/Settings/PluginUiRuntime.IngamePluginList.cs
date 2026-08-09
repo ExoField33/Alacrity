@@ -48,7 +48,7 @@ namespace AlacrityTerraria
 
         private static void DrawIngamePluginRow(SpriteBatch spriteBatch, Rectangle row, PluginManagerRow plugin, ref string hoveredActionId)
         {
-            bool rowHovered = row.Contains(Main.mouseX, Main.mouseY);
+            bool rowHovered = !HasIngamePointerCapture && row.Contains(Main.mouseX, Main.mouseY);
             Utils.DrawInvBG(spriteBatch, row.X, row.Y, row.Width, row.Height, rowHovered ? ResourcePackHoverBackground : ResourcePackBackground);
             Utils.DrawBorderString(spriteBatch, plugin.Name, new Vector2(row.Center.X, row.Y + 9), Color.White, 0.8f, 0.5f, 0f, -1);
             if (!string.IsNullOrWhiteSpace(plugin.Warning))
@@ -62,8 +62,9 @@ namespace AlacrityTerraria
             int buttonX = row.Center.X - buttonsWidth / 2;
             var description = new Rectangle(buttonX, buttonY, buttonWidth, buttonHeight);
             var settings = new Rectangle(buttonX + buttonWidth + buttonGap, buttonY, buttonWidth, buttonHeight);
-            bool descriptionHovered = description.Contains(Main.mouseX, Main.mouseY);
-            bool settingsHovered = settings.Contains(Main.mouseX, Main.mouseY);
+            bool allowInteraction = !HasIngamePointerCapture;
+            bool descriptionHovered = allowInteraction && description.Contains(Main.mouseX, Main.mouseY);
+            bool settingsHovered = allowInteraction && settings.Contains(Main.mouseX, Main.mouseY);
             if (descriptionHovered)
                 hoveredActionId = plugin.Id.Value + ":description";
             else if (settingsHovered)

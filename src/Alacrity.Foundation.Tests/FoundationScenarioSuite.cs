@@ -223,6 +223,7 @@ public static class FoundationScenarioSuite
             BetterChatUrlDecorationHandlesBalancedAndTrailingPunctuation();
             BetterChatCachesDefaultsWithoutRewritingSettings();
             BetterChatMigratesLegacyVisibilityToToggle();
+            BetterChatHistoryIsScopedToTheCurrentSession();
             DustGoreTogglePublishesScopedPolicyAndManagesExceptions();
             HitboxesPublishesScopedPresentationPolicy();
             PlayerListPublishesPresentationSettingsAndDefaults();
@@ -1704,6 +1705,55 @@ public static class FoundationScenarioSuite
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void BetterChatHistoryIsScopedToTheCurrentSession()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "alacrity-better-chat-history-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var manifest = new PluginManifest(new PluginId("alacrity.better-chat"), "Better Chat", new Version(1, 0), "Tests", "Better chat history test", new[] { "1.4.5.6" }, capabilities: PluginCapability.UserInterface | PluginCapability.Input, permissions: PluginPermission.DrawUserInterface | PluginPermission.Clipboard | PluginPermission.OpenExternalLinks);
+            var extensions = new PluginExtensionHost();
+            var chat = new PluginChatHost();
+            var factory = new PluginHostContextFactory(root, new PluginServiceHub(), extensions, new PluginCommandHost(), chat: chat);
+            PluginHostContext context = factory.Create(manifest, new TestLogger(), new TestMultiplayerSession());
+            new BetterChatPlugin().Initialize(context);
+
+            chat.Edit(new ChatInputSnapshot("first", 5, -1), new ChatInputAction("submit"));
+            chat.Edit(new ChatInputSnapshot("second", 6, -1), new ChatInputAction("submit"));
+
+            ChatInputEditResult newest = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("up"));
+            ChatInputEditResult previous = chat.Edit(new ChatInputSnapshot(newest.Text, newest.Caret, newest.SelectionAnchor), new ChatInputAction("up"));
+            ChatInputEditResult restoredDraft = chat.Edit(new ChatInputSnapshot(previous.Text, previous.Caret, previous.SelectionAnchor), new ChatInputAction("down"));
+            ChatInputEditResult restored = chat.Edit(new ChatInputSnapshot(restoredDraft.Text, restoredDraft.Caret, restoredDraft.SelectionAnchor), new ChatInputAction("down"));
+            Assert(newest.Handled && newest.Text == "second" && previous.Text == "first", "Chat History must traverse previously submitted messages in newest-first order.");
+            Assert(restored.Handled && restored.Text == "draft", "Chat History must restore the in-progress draft after the newest history entry.");
+
+            Assert(chat.HasInputActionHandler(new ChatInputAction("up")), "Scroll Chat or Chat History must claim Terraria's native Up/Down chat navigation while enabled.");
+            ChatInputEditResult defaultScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", scrollLines: 1));
+            Assert(defaultScroll.Handled && defaultScroll.ChatScrollLines == 1, "Scroll Chat sensitivity must default to one visible chat line per wheel step.");
+            context.Settings.Set("scrollChatSensitivity", 9);
+            ChatInputEditResult clampedScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", scrollLines: -1));
+            Assert(clampedScroll.Handled && clampedScroll.ChatScrollLines == -4, "Scroll Chat sensitivity must clamp persisted values to the supported one-to-four line range.");
+            context.Settings.Set("scrollChat", false);
+            context.Settings.Set("chatHistory", false);
+            Assert(!chat.HasInputActionHandler(new ChatInputAction("up")), "Disabling both input features must return Up/Down chat navigation to vanilla Terraria.");
+            context.Settings.Set("scrollChat", true);
+            Assert(chat.HasInputActionHandler(new ChatInputAction("scroll", scrollLines: 1)), "Scroll Chat must claim normalized wheel actions while enabled.");
+
+            extensions.Publish(new ClientMenuStateChangedEvent(true, 0, TimeSpan.Zero));
+            context.Settings.Set("chatHistory", true);
+            ChatInputEditResult cleared = chat.Edit(new ChatInputSnapshot(string.Empty, 0, -1), new ChatInputAction("up"));
+            Assert(cleared.Handled && cleared.Text == string.Empty, "Returning to the game menu must clear BetterChat history for the next world/server session.");
+            context.Resources.Dispose();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 

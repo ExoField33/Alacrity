@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Runtime.Serialization.Json;
@@ -119,6 +120,9 @@ public sealed class PluginDataStore : IPluginStorage
 /// <summary>Schema-aware persistent settings backed by the plugin's separate mutable data root.</summary>
 public sealed class PluginSettingsStore : IPluginSettings
 {
+    // Contexts from an old and a new activation can overlap briefly during lifecycle teardown.
+    // Serialize writes by destination so those independent stores cannot race File.Replace.
+    private static readonly ConcurrentDictionary<string, object> WriteGates = new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
     private readonly object gate = new object();
     private readonly string path;
     private Dictionary<string, string> values;
@@ -257,19 +261,69 @@ public sealed class PluginSettingsStore : IPluginSettings
 
     private Dictionary<string, string> Load()
     {
-        if (!File.Exists(path)) return new Dictionary<string, string>(StringComparer.Ordinal);
-        try
+        object writeGate = WriteGates.GetOrAdd(path, _ => new object());
+        lock (writeGate)
         {
-            using (var stream = File.OpenRead(path))
-                return (Dictionary<string, string>)new DataContractJsonSerializer(typeof(Dictionary<string, string>)).ReadObject(stream)!;
+            if (!File.Exists(path))
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+
+            try
+            {
+                // A newly created activation can read settings while an older activation is still
+                // completing its final write. Share deletion explicitly and take the same path lock
+                // as Persist so the atomic replace never fails because of our own reader.
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    return (Dictionary<string, string>)new DataContractJsonSerializer(typeof(Dictionary<string, string>)).ReadObject(stream)!;
+            }
+            catch
+            {
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+            }
         }
-        catch { return new Dictionary<string, string>(StringComparer.Ordinal); }
     }
     private void Persist()
     {
-        var temporary = path + ".tmp";
-        using (var stream = File.Create(temporary)) new DataContractJsonSerializer(typeof(Dictionary<string, string>)).WriteObject(stream, values);
-        if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+        object writeGate = WriteGates.GetOrAdd(path, _ => new object());
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        lock (writeGate)
+        {
+            try
+            {
+                using (var stream = File.Create(temporary))
+                    new DataContractJsonSerializer(typeof(Dictionary<string, string>)).WriteObject(stream, values);
+
+                ReplaceOrMove(temporary, path);
+            }
+            finally
+            {
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+            }
+        }
+    }
+
+    private static void ReplaceOrMove(string temporary, string destination)
+    {
+        const int maximumAttempts = 4;
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (File.Exists(destination))
+                    File.Replace(temporary, destination, null);
+                else
+                    File.Move(temporary, destination);
+                return;
+            }
+            catch (IOException) when (attempt + 1 < maximumAttempts)
+            {
+                System.Threading.Thread.Sleep(10 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException) when (attempt + 1 < maximumAttempts)
+            {
+                System.Threading.Thread.Sleep(10 * (attempt + 1));
+            }
+        }
     }
     private int ReadSchemaVersion()
     {

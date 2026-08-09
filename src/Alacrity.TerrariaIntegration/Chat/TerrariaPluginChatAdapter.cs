@@ -43,6 +43,42 @@ internal sealed class TerrariaPluginChatAdapter
         }
     }
 
+    /// <summary>Checks whether a registered editor currently owns a native chat action.</summary>
+    internal bool HasInputActionHandler(string actionId)
+    {
+        if (string.IsNullOrWhiteSpace(actionId))
+            return false;
+
+        try
+        {
+            ensureRuntime();
+            return chat.HasInputEditors && chat.HasInputActionHandler(new ChatInputAction(actionId));
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat extension action ownership", exception);
+            return false;
+        }
+    }
+
+    /// <summary>Records a successfully submitted player-chat line after Terraria has normalized it.</summary>
+    internal void RecordSubmittedInput(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        try
+        {
+            ensureRuntime();
+            if (chat.HasInputEditors)
+                chat.Edit(new ChatInputSnapshot(text, text.Length, -1), new ChatInputAction("submit"));
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat extension submitted input", exception);
+        }
+    }
+
     internal string ProcessInput(string text, bool allowMultiLine)
     {
         try

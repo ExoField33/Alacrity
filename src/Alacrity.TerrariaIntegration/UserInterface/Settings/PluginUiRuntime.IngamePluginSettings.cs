@@ -19,7 +19,8 @@ namespace AlacrityTerraria
     /// partial bridge type only because the existing patched ABI calls its facade methods.
     /// </summary>
     public static partial class PluginUiRuntime
-    {        private static void DrawIngamePluginSettingsPage(SpriteBatch spriteBatch, Rectangle bounds, PluginManagerRow plugin)
+    {
+        private static void DrawIngamePluginSettingsPage(SpriteBatch spriteBatch, Rectangle bounds, PluginManagerRow plugin)
         {
             Utils.DrawBorderString(spriteBatch, plugin.Name + " Settings", new Vector2(bounds.Center.X, bounds.Y + 16), Color.White, 0.9f, 0.5f, 0f, -1);
             var controls = _extensions.GetSettingsControls(plugin.Id);
@@ -39,7 +40,7 @@ namespace AlacrityTerraria
             foreach (var page in pages)
             {
                 var hitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
-                bool hovered = hitArea.Contains(Main.mouseX, Main.mouseY);
+                bool hovered = !HasIngamePointerCapture && hitArea.Contains(Main.mouseX, Main.mouseY);
                 anySettingHovered |= hovered;
                 if (hovered && _ingameHoveredSettingId != page.Id)
                     SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
@@ -75,7 +76,9 @@ namespace AlacrityTerraria
                 Utils.DrawBorderString(spriteBatch, control.DisplayName, new Vector2(bounds.X + 46, y), Color.White, 0.7f, 0f, 0f, -1);
                 var copy = new Rectangle(bounds.Right - 73, y - 5, 25, 22);
                 var paste = new Rectangle(bounds.Right - 42, y - 5, 25, 22);
-                bool copyHover = copy.Contains(Main.mouseX, Main.mouseY), pasteHover = paste.Contains(Main.mouseX, Main.mouseY);
+                bool allowHover = !HasIngamePointerCapture;
+                bool copyHover = allowHover && copy.Contains(Main.mouseX, Main.mouseY);
+                bool pasteHover = allowHover && paste.Contains(Main.mouseX, Main.mouseY);
                 anyHovered |= copyHover || pasteHover;
                 DrawIngameClipboardButton(spriteBatch, copy, "Images/UI/CharCreation/Copy", copyHover, "Copy color hex (" + control.GetColor().ToHex() + ")");
                 DrawIngameClipboardButton(spriteBatch, paste, "Images/UI/CharCreation/Paste", pasteHover, pasteHover ? GetColorPasteTooltip() : "Paste color hex");
@@ -86,15 +89,29 @@ namespace AlacrityTerraria
             if (control.Kind == PluginSettingControlKind.Slider)
             {
                 var bar = new Rectangle(bounds.Right - 150, y - 2, 132, 14);
-                bool hovered = bar.Contains(Main.mouseX, Main.mouseY);
-                anyHovered |= hovered;
+                // Only one plugin settings page is visible at a time, so the owner-local control
+                // ID is enough to identify its primary-pointer capture without allocating a key.
+                string captureId = control.Id;
+                bool captured = IsIngamePointerCaptured(captureId);
+                bool hovered = captured || (!HasIngamePointerCapture && bar.Contains(Main.mouseX, Main.mouseY));
+                if (!captured && hovered && Main.mouseLeft)
+                {
+                    BeginIngamePointerCapture(captureId);
+                    captured = true;
+                }
+
+                anyHovered |= hovered || captured;
                 DrawIngameSlider(spriteBatch, bar, NormalizeSlider(control));
                 Utils.DrawBorderString(spriteBatch, control.DisplayName + ": " + ReadSettingValue(control), new Vector2(bounds.X + 18, y), Color.White, 0.7f, 0f, 0f, -1);
-                if (hovered && Main.mouseLeft) control.SetSlider(DenormalizeSlider((Main.mouseX - bar.X) / (float)bar.Width, control));
+                if (captured && Main.mouseLeft)
+                {
+                    SetIngameSliderValue(control, (Main.mouseX - bar.X) / (float)bar.Width);
+                    ConsumeIngamePointer();
+                }
                 return 32;
             }
             var hitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
-            bool hover = hitArea.Contains(Main.mouseX, Main.mouseY);
+            bool hover = !HasIngamePointerCapture && hitArea.Contains(Main.mouseX, Main.mouseY);
             anyHovered |= hover;
             if (hover && _ingameHoveredSettingId != control.Id) SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
             if (hover) _ingameHoveredSettingId = control.Id;
@@ -135,6 +152,29 @@ namespace AlacrityTerraria
         {
             float result = control.Minimum + MathHelper.Clamp(value, 0f, 1f) * (control.Maximum - control.Minimum);
             return control.Step <= 0f ? result : control.Minimum + (float)Math.Round((result - control.Minimum) / control.Step) * control.Step;
+        }
+
+        private static void SetIngameSliderValue(PluginSettingControl control, float normalizedValue)
+        {
+            try
+            {
+                float current = control.GetSlider();
+                float next = DenormalizeSlider(normalizedValue, control);
+                if (Math.Abs(current - next) <= 0.0001f)
+                    return;
+
+                control.SetSlider(next);
+                // Discrete controls provide feedback at each real setting point. Continuous controls
+                // intentionally stay quiet so a drag cannot become a stream of UI sounds.
+                if (control.Step > 0f)
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+            }
+            catch (Exception exception)
+            {
+                // A persistence failure is local to this setting; it must not escape the draw hook
+                // and make the version-locked facade restore Terraria's General category.
+                ShowHoverText("Unable to change plugin setting: " + exception.Message);
+            }
         }
 
         private static bool HasSettings(PluginId pluginId) => _extensions.GetSettingsControls(pluginId).Count != 0 || _extensions.GetSettingsPages(pluginId).Any(page => page.IsInteractive);
@@ -420,6 +460,7 @@ namespace AlacrityTerraria
             int thumbY = trackY + (int)((trackHeight - thumbHeight) * (_ingameScroll / maxScroll));
             var thumb = new Rectangle(trackX - 1, thumbY, 6, thumbHeight);
             spriteBatch.Draw(_ingameBlankTexture, thumb, new Color(180, 170, 255, 220));
+            UpdateIngamePluginListScrollbarCapture(track, thumb, thumbHeight, maxScroll);
         }
 
         private static void DrawIngameDescriptionScrollbar(SpriteBatch spriteBatch, Rectangle bounds, int contentHeight, int visibleHeight)
@@ -432,7 +473,88 @@ namespace AlacrityTerraria
             float maxScroll = contentHeight - visibleHeight;
             int thumbY = trackY + (int)((trackHeight - thumbHeight) * (_ingameDescriptionScroll / maxScroll));
             Utils.DrawInvBG(spriteBatch, trackX, trackY, 5, trackHeight, ResourcePackBorder);
-            Utils.DrawInvBG(spriteBatch, trackX, thumbY, 5, thumbHeight, ResourcePackHoverBackground);
+            var track = new Rectangle(trackX, trackY, 5, trackHeight);
+            var thumb = new Rectangle(trackX, thumbY, 5, thumbHeight);
+            Utils.DrawInvBG(spriteBatch, thumb.X, thumb.Y, thumb.Width, thumb.Height, ResourcePackHoverBackground);
+            UpdateIngameDescriptionScrollbarCapture(track, thumb, thumbHeight, maxScroll);
+        }
+
+        private static bool HasIngamePointerCapture => !string.IsNullOrEmpty(_ingamePointerCaptureId);
+
+        private static bool IsIngamePointerCaptured(string id)
+        {
+            return string.Equals(_ingamePointerCaptureId, id, StringComparison.Ordinal);
+        }
+
+        private static void UpdateIngamePointerCapture()
+        {
+            if (!Main.mouseLeft)
+            {
+                _ingamePointerCaptureId = null;
+                return;
+            }
+
+            if (HasIngamePointerCapture)
+                ConsumeIngamePointer();
+        }
+
+        private static void BeginIngamePointerCapture(string id)
+        {
+            if (HasIngamePointerCapture || string.IsNullOrEmpty(id))
+                return;
+
+            _ingamePointerCaptureId = id;
+            _ingameHoveredSettingId = id;
+            ConsumeIngamePointer();
+        }
+
+        private static void ConsumeIngamePointer()
+        {
+            Main.mouseLeftRelease = false;
+            if (Main.myPlayer >= 0 && Main.myPlayer < Main.player.Length && Main.player[Main.myPlayer] != null)
+                Main.player[Main.myPlayer].mouseInterface = true;
+        }
+
+        private static void UpdateIngamePluginListScrollbarCapture(Rectangle track, Rectangle thumb, int thumbHeight, float maxScroll)
+        {
+            const string captureId = "plugin-list-scrollbar";
+            bool captured = IsIngamePointerCaptured(captureId);
+            if (!captured && !HasIngamePointerCapture && Main.mouseLeft && thumb.Contains(Main.mouseX, Main.mouseY))
+            {
+                BeginIngamePointerCapture(captureId);
+                captured = true;
+            }
+
+            if (!captured || !Main.mouseLeft)
+                return;
+
+            int travel = track.Height - thumbHeight;
+            float fraction = travel <= 0
+                ? 0f
+                : MathHelper.Clamp((Main.mouseY - track.Y - thumbHeight / 2f) / travel, 0f, 1f);
+            _ingameScroll = fraction * maxScroll;
+            ConsumeIngamePointer();
+        }
+
+        private static void UpdateIngameDescriptionScrollbarCapture(Rectangle track, Rectangle thumb, int thumbHeight, float maxScroll)
+        {
+            const string captureId = "plugin-description-scrollbar";
+            bool captured = IsIngamePointerCaptured(captureId);
+            if (!captured && !HasIngamePointerCapture && Main.mouseLeft && thumb.Contains(Main.mouseX, Main.mouseY))
+            {
+                BeginIngamePointerCapture(captureId);
+                captured = true;
+            }
+
+            if (!captured || !Main.mouseLeft)
+                return;
+
+            int travel = track.Height - thumbHeight;
+            float fraction = travel <= 0
+                ? 0f
+                : MathHelper.Clamp((Main.mouseY - track.Y - thumbHeight / 2f) / travel, 0f, 1f);
+            _ingameDescriptionScroll = fraction * maxScroll;
+            ConsumeIngamePointer();
         }
 
         private static void EnsureIngameBlankTexture(SpriteBatch spriteBatch)

@@ -9,6 +9,7 @@ using Alacrity.PluginSdk;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
 using Terraria;
+using Terraria.GameInput;
 using Terraria.UI.Chat;
 
 namespace AlacrityTerraria
@@ -30,6 +31,9 @@ namespace AlacrityTerraria
         internal static string Process(PluginChatHost host, IPluginUserInteractionService userInteraction, string oldString, bool allowMultiLine)
         {
             string text = oldString ?? string.Empty;
+            if (!FocusHelper.AllowUIInputs)
+                return text;
+
             SynchronizeCaret(text);
             Main.inputTextEnter = false;
             Main.inputTextEscape = false;
@@ -83,11 +87,23 @@ namespace AlacrityTerraria
 
             text = Edit(host, text, navigation, oldNavigation, Keys.Left, "left", control, shift);
             text = Edit(host, text, navigation, oldNavigation, Keys.Right, "right", control, shift);
+            text = Edit(host, text, navigation, oldNavigation, Keys.Up, "up", control, shift);
+            text = Edit(host, text, navigation, oldNavigation, Keys.Down, "down", control, shift);
             if (Pressed(navigation, oldNavigation, Keys.Home)) text = Apply(host, text, "home", control, shift);
             if (Pressed(navigation, oldNavigation, Keys.End)) text = Apply(host, text, "end", control, shift);
             if (Repeated(navigation, oldNavigation, Keys.Back)) text = HasSelection ? DeleteSelection(text) : RemoveBefore(text, control);
             if (Repeated(navigation, oldNavigation, Keys.Delete)) text = HasSelection ? DeleteSelection(text) : RemoveAfter(text, control);
             if (Pressed(navigation, oldNavigation, Keys.Escape)) Main.inputTextEscape = true;
+
+            int scrollLines = PlayerInput.ScrollWheelDelta / 120;
+            if (scrollLines != 0 && Apply(host, text, "scroll", control, shift, scrollLines, out string scrolledText))
+            {
+                text = scrolledText;
+                // Chat owns this wheel tick while focused. Clearing the shared delta keeps the
+                // later player-update hotbar path from selecting an item as well.
+                PlayerInput.ScrollWheelDelta = 0;
+                PlayerInput.ScrollWheelDeltaForUI = 0;
+            }
 
             Main.keyCount = 0;
             Main.oldInputText = current;
@@ -200,12 +216,25 @@ namespace AlacrityTerraria
 
         private static string Apply(PluginChatHost host, string text, string action, bool control, bool shift)
         {
-            ChatInputEditResult result = host.Edit(new ChatInputSnapshot(text, _caret, _selectionAnchor), new ChatInputAction(action, control, shift));
+            Apply(host, text, action, control, shift, 0, out string resultText);
+            return resultText;
+        }
+
+        private static bool Apply(PluginChatHost host, string text, string action, bool control, bool shift, int scrollLines, out string resultText)
+        {
+            ChatInputEditResult result = host.Edit(new ChatInputSnapshot(text, _caret, _selectionAnchor), new ChatInputAction(action, control, shift, null, scrollLines));
             if (!result.Handled)
-                return text;
+            {
+                resultText = text;
+                return false;
+            }
+
             _caret = result.Caret;
             _selectionAnchor = result.SelectionAnchor;
-            return result.Text;
+            if (result.ChatScrollLines != 0)
+                Main.chatMonitor.Offset(result.ChatScrollLines);
+            resultText = result.Text;
+            return true;
         }
 
         private static string Insert(string text, string value)

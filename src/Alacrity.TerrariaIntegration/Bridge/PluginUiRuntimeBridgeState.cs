@@ -50,7 +50,9 @@ namespace AlacrityTerraria
         internal Func<string, bool> TryHandlePluginChatCommand;
         internal Func<bool> HandlePluginMenuInput;
         internal Func<bool> HasChatInputEditors;
+        internal Func<string, bool> ShouldHandleChatInputAction;
         internal Func<string, bool, string> ProcessChatInput;
+        internal Action<string> RecordSubmittedChatInput;
         internal Func<string, string> FormatChatInputForDraw;
         internal Func<object, Color, string, object> DecorateChatMessage;
         internal Func<byte, bool> ShouldDisplayNetworkChatMessage;

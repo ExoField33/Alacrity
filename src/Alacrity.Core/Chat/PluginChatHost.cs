@@ -109,6 +109,38 @@ public sealed class PluginChatHost
         return ChatInputEditResult.Unhandled(snapshot);
     }
 
+    /// <summary>
+    /// Returns whether an active editor currently owns an action Terraria would otherwise process
+    /// before the generic editor pipeline runs.
+    /// </summary>
+    public bool HasInputActionHandler(ChatInputAction action)
+    {
+        if (action == null) throw new ArgumentNullException(nameof(action));
+
+        EditorEntry[] current = Volatile.Read(ref editorSnapshot);
+        foreach (EditorEntry entry in current)
+        {
+            if (!(entry.Editor is IChatInputActionAvailability availability) || !entry.TryEnter(out ActivationCallbackGate.Lease lease))
+                continue;
+
+            try
+            {
+                using (lease)
+                {
+                    if (availability.CanHandle(action))
+                        return true;
+                }
+            }
+            catch (Exception exception)
+            {
+                ReportFailure(entry, "input-action availability", exception);
+                entry.Dispose();
+            }
+        }
+
+        return false;
+    }
+
     public IReadOnlyList<ChatTextSpan> Decorate(ChatMessageSnapshot message)
     {
         DecoratorEntry[] current = Volatile.Read(ref decoratorSnapshot);

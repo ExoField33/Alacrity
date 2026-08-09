@@ -44,12 +44,15 @@ namespace AlacrityTerraria
             _ingameDescriptionScroll = 0f;
             _ingameHoveredSettingId = null;
             _ingameHoveredPluginActionId = null;
+            _ingamePointerCaptureId = null;
         }
 
         public static void DrawIngamePluginSettings(SpriteBatch spriteBatch)
         {
             if (spriteBatch == null)
                 return;
+
+            UpdateIngamePointerCapture();
 
             // IngameOptions.Draw creates the standard right settings pane at this exact location:
             // 670x480 window, right half inset by 20px horizontally and 50px vertically.

@@ -129,6 +129,12 @@ namespace AlacrityTerraria
             get => BridgeState.IngameHoveredPluginActionId;
             set => BridgeState.IngameHoveredPluginActionId = value;
         }
+
+        private static string _ingamePointerCaptureId
+        {
+            get => BridgeState.IngamePointerCaptureId;
+            set => BridgeState.IngamePointerCaptureId = value;
+        }
         private static TerrariaPluginEnabledStateStore _enabledStateStore => runtimeState == null ? null : runtimeState.EnabledStateStore;
         private static TerrariaVisualEffectsAdapter _visualEffects => runtimeState == null ? null : runtimeState.VisualEffects;
         private static Rendering.Culling.TerrariaRenderCullingAdapter _renderCulling => runtimeState == null ? null : runtimeState.RenderCulling;

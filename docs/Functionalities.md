@@ -30,7 +30,7 @@ whether an existing context service can be extended without duplicating a host b
 
 | Service | Current purpose |
 | --- | --- |
-| `context.Terraria.Chat` | Input editors, message decorators/filters, and link handlers. |
+| `context.Terraria.Chat` | Input editors, message decorators/filters, and link handlers. Editors can optionally claim normalized native actions such as Up/Down or scroll and request a host-owned visible-chat offset without receiving raw Terraria input or chat-monitor objects. |
 | `context.Terraria.Entities` | Shared immutable active entity snapshots with counts, caller-buffer copying, slot lookup, generation-aware handle lookup, and optional scoped melee capture demand. |
 | `context.Terraria.Players` | Detached player name, team, life, death/ghost status, buffs, and host-derived suspected-bot state, with caller-buffer copying and generation-aware lookup. |
 | `context.Terraria.Session` | Server/world display name, capacity, and a bounded sampled ping value. |
