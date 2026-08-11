@@ -52,6 +52,7 @@ public sealed class BridgeScenarioTests
         AssertBundledPluginPackage(root, "alacrity.hitboxes", "Alacrity.Hitboxes.dll");
         AssertBundledPluginPackage(root, "alacrity.visual-diagnostics", "Alacrity.VisualDiagnostics.dll");
         AssertBundledPluginPackage(root, "alacrity.off-screen-culling", "Alacrity.OffScreenCulling.dll");
+        AssertBundledPluginPackage(root, "alacrity.kinesin", "Alacrity.Kinesin.dll");
         string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
         Assert.Contains("Alacrity.BetterChat.dll", manifest);
         Assert.Contains("Alacrity.PlayerList.dll", manifest);

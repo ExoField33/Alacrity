@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "alacrity.kinesin",
+  "name": "Kinesin",
+  "version": "0.5.0",
+  "publisher": "ExoField",
+  "description": "Applies behavior-preserving engine performance optimizations.",
+  "supportedGameVersions": [ "1.4.5.6" ],
+  "pluginSdkCompatibilityVersion": 2,
+  "hostCompatibilityVersion": 2,
+  "bridgeAbiVersion": 2,
+  "capabilities": [ "UserInterface", "Rendering" ],
+  "permissions": [ "DrawUserInterface" ],
+  "multiplayerSafety": "ClientPresentationOnly",
+  "changelog": "0.5.0 - Reduce painted-tile preparation and dense clothing-entity discovery work.",
+  "entryAssembly": "Alacrity.Kinesin.dll",
+  "entryType": "Alacrity.Kinesin.KinesinPlugin"
+}

@@ -30,14 +30,15 @@ whether an existing context service can be extended without duplicating a host b
 
 | Service | Current purpose |
 | --- | --- |
-| `context.Terraria.Chat` | Input editors, message decorators/filters, and link handlers. Editors can optionally claim normalized native actions such as Up/Down or scroll and request a host-owned visible-chat offset without receiving raw Terraria input or chat-monitor objects. |
+| `context.Terraria.Chat` | Input editors, message decorators/filters, and link handlers. Editors can optionally claim normalized native actions such as Up/Down or scroll and request a host-owned, bounded visible-chat offset without receiving raw Terraria input or chat-monitor objects. |
 | `context.Terraria.Entities` | Shared immutable active entity snapshots with counts, caller-buffer copying, slot lookup, generation-aware handle lookup, and optional scoped melee capture demand. |
 | `context.Terraria.Players` | Detached player name, team, life, death/ghost status, buffs, and host-derived suspected-bot state, with caller-buffer copying and generation-aware lookup. |
 | `context.Terraria.Session` | Server/world display name, capacity, and a bounded sampled ping value. |
 | `context.Terraria.VisualEffects` | Scoped dust/gore presentation policies. |
 | `context.Terraria.RenderCulling` | Scoped conservative local culling requests for verified world player, dropped-item, Dust, and common world-particle draw paths. It requires the generic `Rendering` capability, not raw renderer or UI access. |
+| `context.Terraria.RenderingOptimizations` | Scoped requests for verified, host-owned local renderer preparation/presentation optimizations, including painted-tile preparation, clothing-entity rendering, waterfall presentation, TileDrawing common-path, and draw-orchestration reductions. Plugins select documented policy categories; they never receive raw renderer, texture, or graphics-device access. |
 | `context.Terraria.NpcTargets` | Demand-gated immutable hostile NPC-to-player targeting relationships for local presentation diagnostics. |
-| `context.Terraria.WorldSections` | Bounded immutable visible client tile-section state captured at the host update boundary; callers choose a small section margin rather than reading the full section grid. The first read activates capture for that activation and may return an empty/previous frame until the next update. |
+| `context.Terraria.WorldSections` | Bounded immutable visible client tile-section state captured at the host update boundary; callers choose a margin from `0` through `PluginWorldSectionLimits.MaximumMargin` (currently `8`) rather than reading the full section grid. The first read activates capture for that activation and may return an empty/previous frame until the next update. |
 
 ## Presentation rules
 
@@ -55,6 +56,9 @@ whether an existing context service can be extended without duplicating a host b
   partially visible content, accounts for the current camera scale and resolution, and fails open
   for renderer types without a verified world position. Terraria already camera-bounds tile/vine
   drawing and projectile rendering, so plugins should not duplicate those paths.
+- Use `context.Terraria.RenderingOptimizations` only for explicitly documented, version-verified
+  optimization categories. Policies compose by category union and fail closed to unchanged vanilla
+  work when the integration bridge is unavailable.
 
 ## Extension guidance
 

@@ -4,15 +4,54 @@ using Mono.Cecil.Cil;
 // Patch-domain implementation is separate from the command-line entry point.
 internal static partial class PermanentPatchPlan
 {
-    internal static void ApplyPermanentAlacrityPatches(ModuleDefinition module, string sourceExecutablePath)
+    // This is the authoritative set of facade members imported by the concrete patch plan.
+    // PermanentPatchCatalog validates it bidirectionally against each patch target inventory.
+    private static readonly string[] ImportedBridgeMethods =
     {
-        ApplyPermanentStartupAndMenu(module, sourceExecutablePath);
-        ApplyPermanentInputAndKeybinds(module, sourceExecutablePath);
-        ApplyPermanentRenderingAndCombat(module, sourceExecutablePath);
-        ApplyPermanentRenderCulling(module, sourceExecutablePath);
-        ApplyPermanentVisualEffects(module, sourceExecutablePath);
-        ApplyPermanentChatInputAndCommands(module, sourceExecutablePath);
-        ApplyPermanentChatDisplayAndInteraction(module, sourceExecutablePath);
+        "OpenPluginManager",
+        "OpenIngamePluginSettings",
+        "DrawIngamePluginSettings",
+        "DrawAlacrityVersion",
+        "HandleInput",
+        "UpdatePluginKeybinds",
+        "EnsurePluginKeybindStateShape",
+        "AppendPluginKeybindControls",
+        "DrawNotifications",
+        "DrawHitboxes",
+        "CaptureSwingHitbox",
+        "ShouldRunDustSystem",
+        "ShouldCreateDust",
+        "ShouldUpdateDustInstance",
+        "ShouldDrawDustInstance",
+        "ShouldRunGoreSystem",
+        "IsPaintPreparationOptimizationEnabled",
+        "IsPaintExtraPreparationRelevant",
+        "IsClothingEntityPresentationOptimizationEnabled",
+        "IsWaterfallPresentationOptimizationEnabled",
+        "IsTileDrawingPresentationOptimizationEnabled",
+        "IsDrawOrchestrationOptimizationEnabled",
+        "ShouldDrawWorldPlayer",
+        "ShouldDrawWorldItem",
+        "ShouldDrawWorldParticle",
+        "IsBetterChatActive",
+        "ProcessPlayerChatInput",
+        "ShouldHandleChatInputAction",
+        "TryHandlePluginChatCommand",
+        "RecordSubmittedChatInput",
+        "BootstrapPluginRuntime",
+        "FormatPlayerChatText",
+        "HandleChatSnippetHover",
+        "HandleChatSnippetClick",
+        "GetChatSnippetVisibleColor",
+        "CopyChatSnippetContext",
+        "DecorateChatMessage",
+        "ShouldDisplayNetworkChatMessage",
+        "ShouldDisplayLocalChatMessage"
+    };
+
+    internal static IReadOnlyList<string> GetImportedBridgeMethods()
+    {
+        return ImportedBridgeMethods;
     }
 
     internal static void ApplyPermanentStartupAndMenu(ModuleDefinition module, string sourceExecutablePath)
@@ -79,6 +118,42 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawWorldPlayer", "System.Boolean", "Terraria.Player"),
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawWorldItem", "System.Boolean", "System.Int32"),
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawWorldParticle", "System.Boolean", "Terraria.Graphics.Renderers.ParticleRenderer", "Terraria.Graphics.Renderers.IParticle"));
+    }
+
+    internal static void ApplyPermanentPaintedTilePreparation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchPaintedTilePreparation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsPaintPreparationOptimizationEnabled", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsPaintExtraPreparationRelevant", "System.Boolean", "System.Int32"));
+    }
+
+    internal static void ApplyPermanentClothingEntityPresentation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchClothingEntityPresentation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsClothingEntityPresentationOptimizationEnabled", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentWaterfallPresentation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchWaterfallPresentation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsWaterfallPresentationOptimizationEnabled", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentTileDrawingPresentation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchTileDrawingPresentation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsTileDrawingPresentationOptimizationEnabled", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentDrawOrchestration(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchDrawOrchestration(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "IsDrawOrchestrationOptimizationEnabled", "System.Boolean"));
     }
 
     internal static void ApplyPermanentChatInputAndCommands(ModuleDefinition module, string sourceExecutablePath)

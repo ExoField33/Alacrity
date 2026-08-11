@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace Alacrity.Core;
 
@@ -9,16 +10,27 @@ internal sealed class PluginFailureWindow
     private int count;
     private DateTime windowStartedUtc;
     private DateTime retryAtUtc;
-    private State state;
+    private int state;
 
-    internal bool CanInvoke(DateTime now)
+    /// <summary>
+    /// Keeps the normal render path clock-free. The caller only supplies a clock when this entry
+    /// has failed before and may need to decide whether its retry cooldown has elapsed.
+    /// </summary>
+    internal bool CanInvoke(Func<DateTime> utcNow, out DateTime now)
     {
+        if ((State)Volatile.Read(ref state) == State.Normal)
+        {
+            now = default;
+            return true;
+        }
+
+        now = utcNow();
         lock (gate)
         {
-            if (state == State.Normal) return true;
-            if (state == State.Trial) return false;
+            if ((State)state == State.Normal) return true;
+            if ((State)state == State.Trial) return false;
             if (now < retryAtUtc) return false;
-            state = State.Trial;
+            Volatile.Write(ref state, (int)State.Trial);
             return true;
         }
     }
@@ -27,9 +39,9 @@ internal sealed class PluginFailureWindow
     {
         lock (gate)
         {
-            if (state == State.Trial)
+            if ((State)state == State.Trial)
             {
-                state = State.SuspendedUntil;
+                Volatile.Write(ref state, (int)State.SuspendedUntil);
                 retryAtUtc = now + window;
                 return;
             }
@@ -37,7 +49,7 @@ internal sealed class PluginFailureWindow
             else count++;
             if (count >= 3)
             {
-                state = State.SuspendedUntil;
+                Volatile.Write(ref state, (int)State.SuspendedUntil);
                 retryAtUtc = now + window;
             }
         }
@@ -45,7 +57,18 @@ internal sealed class PluginFailureWindow
 
     internal void RecordSuccess()
     {
-        lock (gate) { count = 0; windowStartedUtc = default; retryAtUtc = default; state = State.Normal; }
+        if ((State)Volatile.Read(ref state) == State.Normal && Volatile.Read(ref count) == 0)
+        {
+            return;
+        }
+
+        lock (gate)
+        {
+            count = 0;
+            windowStartedUtc = default;
+            retryAtUtc = default;
+            Volatile.Write(ref state, (int)State.Normal);
+        }
     }
 
     private enum State { Normal, SuspendedUntil, Trial }

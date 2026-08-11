@@ -30,6 +30,7 @@ internal static class ClientBuildPipeline
             var temporaryOutput = Path.Combine(temporaryDirectory, "Alacrity.exe");
 
             List<ClientPatchResult> patchResults;
+            var originalAssemblyReferences = new HashSet<string>(StringComparer.Ordinal);
             using (var resolver = PermanentPatchPlan.CreateResolver(temporarySource))
             using (var module = ModuleDefinition.ReadModule(temporarySource, new ReaderParameters
             {
@@ -38,6 +39,11 @@ internal static class ClientBuildPipeline
                 ReadingMode = ReadingMode.Deferred
             }))
             {
+                for (int index = 0; index < module.AssemblyReferences.Count; index++)
+                {
+                    originalAssemblyReferences.Add(module.AssemblyReferences[index].Name);
+                }
+
                 patchResults = PermanentPatchCatalog.ApplyAll(module, temporarySource);
                 module.Write(temporaryOutput);
             }
@@ -51,6 +57,8 @@ internal static class ClientBuildPipeline
             }))
             {
                 BridgeAbiCatalog.ValidatePatchedExecutable(patched, temporaryDirectory);
+                ValidatePatchedAssemblyReferences(patched, originalAssemblyReferences);
+                ValidatePatchedGenericAccessorMetadata(patched);
             }
 
             var manifest = new ClientBuildManifest
@@ -79,6 +87,60 @@ internal static class ClientBuildPipeline
             {
                 System.IO.Directory.Delete(temporaryDirectory, recursive: true);
             }
+        }
+    }
+
+    // Patches may add the staged bridge facade, but must never leak the net8 builder's reference
+    // assemblies into the net472 executable. Terraria discovers that mistake only in its delayed
+    // ForceJIT pass, which would otherwise turn a build-time error into a startup crash.
+    private static void ValidatePatchedAssemblyReferences(ModuleDefinition patched, ISet<string> originalReferences)
+    {
+        for (int index = 0; index < patched.AssemblyReferences.Count; index++)
+        {
+            string name = patched.AssemblyReferences[index].Name;
+            if (originalReferences.Contains(name) ||
+                string.Equals(name, patched.Assembly.Name.Name, StringComparison.Ordinal) ||
+                string.Equals(name, BridgeAbiContractCatalog.FacadeAssemblyName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            throw new ClientBuildException(
+                "Permanent patches introduced an unsupported assembly reference into Terraria.exe: " + name +
+                ". Patches must reuse the target executable's type references.");
+        }
+    }
+
+    // The target's List<T>.get_Item reference must retain its generic !0 return signature.
+    // A concrete return type appears harmless in Cecil but produces a delayed ForceJIT
+    // MissingMethodException after Terraria has already started.
+    private static void ValidatePatchedGenericAccessorMetadata(ModuleDefinition patched)
+    {
+        TypeDefinition main = patched.Types.Single(candidate => candidate.FullName == "Terraria.Main");
+        MethodDefinition helper = main.Methods.Single(candidate => candidate.Name == "AlacrityShouldSortProjectileCache");
+        MethodReference? itemAccessor = null;
+
+        for (int index = 0; index < helper.Body.Instructions.Count; index++)
+        {
+            if (helper.Body.Instructions[index].Operand is not MethodReference candidate ||
+                !string.Equals(candidate.Name, "get_Item", StringComparison.Ordinal) ||
+                !string.Equals(candidate.DeclaringType.FullName, "System.Collections.Generic.List`1<System.Int32>", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (itemAccessor is not null)
+            {
+                throw new ClientBuildException("The patched projectile-cache helper contains multiple List<Int32>.get_Item calls.");
+            }
+
+            itemAccessor = candidate;
+        }
+
+        if (itemAccessor is null || itemAccessor.ReturnType is not GenericParameter)
+        {
+            throw new ClientBuildException(
+                "The patched projectile-cache helper did not preserve Terraria's generic List<Int32>.get_Item metadata.");
         }
     }
 
@@ -198,9 +260,20 @@ internal static class ClientBuildPipeline
             ValidatePublishedDeployment(outputDirectory, manifest);
             transaction.Commit();
         }
-        catch
+        catch (Exception deploymentFailure)
         {
-            transaction.RollBack();
+            try
+            {
+                transaction.RollBack();
+            }
+            catch (Exception rollbackFailure)
+            {
+                throw new ClientBuildException(
+                    "Client deployment failed: " + deploymentFailure.Message +
+                    " Rollback also failed: " + rollbackFailure.Message,
+                    new AggregateException(deploymentFailure, rollbackFailure));
+            }
+
             throw;
         }
     }

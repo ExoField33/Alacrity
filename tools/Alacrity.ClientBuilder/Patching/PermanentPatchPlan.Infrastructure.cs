@@ -51,6 +51,7 @@ internal static partial class PermanentPatchPlan
 
     private static MethodReference ImportRuntimeMethod(ModuleDefinition module, string sourceExecutablePath, string name, string returnType, params string[] parameterTypes)
     {
+        PermanentPatchCatalog.ValidateImportedBridgeMethod(name);
         var facadePath = Path.Combine(Path.GetDirectoryName(sourceExecutablePath)!, "bin", "Alacrity.PluginUiRuntime.dll");
         if (!File.Exists(facadePath))
         {

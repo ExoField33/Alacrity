@@ -47,6 +47,12 @@ namespace AlacrityTerraria
         internal Func<int, bool> ShouldDrawWorldItem;
         internal Func<ParticleRenderer, IParticle, bool> ShouldDrawWorldParticle;
         internal Func<bool> ShouldRunGoreSystem;
+        internal Func<bool> IsPaintPreparationOptimizationEnabled;
+        internal Func<int, bool> IsPaintExtraPreparationRelevant;
+        internal Func<bool> IsClothingEntityPresentationOptimizationEnabled;
+        internal Func<bool> IsWaterfallPresentationOptimizationEnabled;
+        internal Func<bool> IsTileDrawingPresentationOptimizationEnabled;
+        internal Func<bool> IsDrawOrchestrationOptimizationEnabled;
         internal Func<string, bool> TryHandlePluginChatCommand;
         internal Func<bool> HandlePluginMenuInput;
         internal Func<bool> HasChatInputEditors;

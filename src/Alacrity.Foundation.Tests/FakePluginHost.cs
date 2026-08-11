@@ -22,13 +22,19 @@ internal sealed class FakePluginHost : IDisposable
         Extensions = new PluginExtensionHost();
         Commands = new PluginCommandHost();
         Services = new PluginServiceHub();
-        contexts = new PluginHostContextFactory(root, Services, Extensions, Commands, notifications: Notifications);
+        Overlays = new PluginOverlayHost();
+        Hud = new PluginHudHost();
+        RenderingOptimizations = new PluginRenderingOptimizationHost();
+        contexts = new PluginHostContextFactory(root, Services, Extensions, Commands, overlays: Overlays, notifications: Notifications, hud: Hud, renderingOptimizations: RenderingOptimizations);
     }
 
     internal PluginNotificationCenter Notifications { get; }
     internal PluginExtensionHost Extensions { get; }
     internal PluginCommandHost Commands { get; }
     internal PluginServiceHub Services { get; }
+    internal PluginOverlayHost Overlays { get; }
+    internal PluginHudHost Hud { get; }
+    internal PluginRenderingOptimizationHost RenderingOptimizations { get; }
     /// <summary>Plugin-attributed log output captured by the framework-neutral test host.</summary>
     internal IReadOnlyList<string> Diagnostics => diagnostics;
     /// <summary>Current host-rendered notifications, captured through the real notification center.</summary>

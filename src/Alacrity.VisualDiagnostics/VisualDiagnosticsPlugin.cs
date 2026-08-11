@@ -11,6 +11,8 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
     private readonly List<PluginWorldSectionSnapshot> sections = new List<PluginWorldSectionSnapshot>(32);
     private IPluginNpcTargetSnapshotService? npcTargets;
     private IPluginWorldSectionService? worldSections;
+    private IPluginOverlayService? overlays;
+    private IPluginRegistration? overlayRegistration;
     private IPluginSetting<bool>? showAggroLinesSetting;
     private IPluginSetting<bool>? showSectionsSetting;
     private IPluginSetting<string>? aggroColorSetting;
@@ -27,6 +29,7 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
         if (context == null) throw new ArgumentNullException(nameof(context));
         npcTargets = context.Terraria.NpcTargets;
         worldSections = context.Terraria.WorldSections;
+        overlays = context.Overlays;
 
         showAggroLinesSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showHostileNpcAggroLines", false));
         showSectionsSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showTileSections", false));
@@ -35,8 +38,8 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
         aggroThicknessSetting = context.Settings.Register(new PluginSettingDefinition<int>("aggroLineThickness", 2, value => Clamp(value, 1, 10)));
         ReadSettings();
 
-        showAggroLinesSetting.Subscribe(value => showAggroLines = value);
-        showSectionsSetting.Subscribe(value => showSections = value);
+        showAggroLinesSetting.Subscribe(value => { showAggroLines = value; UpdateOverlayRegistration(); });
+        showSectionsSetting.Subscribe(value => { showSections = value; UpdateOverlayRegistration(); });
         aggroColorSetting.Subscribe(value => aggroColor = ReadColor(value, aggroColor));
         bossAggroColorSetting.Subscribe(value => bossAggroColor = ReadColor(value, bossAggroColor));
         aggroThicknessSetting.Subscribe(value => aggroThickness = Clamp(value, 1, 10));
@@ -47,7 +50,7 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("aggro-line-color", "Aggro Line Color", aggroColorSetting, aggroColor).InPage("visual-diagnostics"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("boss-aggro-line-color", "Boss Aggro Line Color", bossAggroColorSetting, bossAggroColor).InPage("visual-diagnostics"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Slider("aggro-line-thickness", "Aggro Line Thickness", 1f, 10f, 1f, aggroThicknessSetting, value => ((int)Math.Round(value)).ToString()).InPage("visual-diagnostics"));
-        context.Overlays.Register(new PluginOverlayDescriptor("world-diagnostics", PluginOverlayLayer.WorldMarkers), Draw);
+        UpdateOverlayRegistration();
     }
 
     public void Enable() { }
@@ -56,6 +59,9 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
     {
         targets.Clear();
         sections.Clear();
+        overlayRegistration?.Dispose();
+        overlayRegistration = null;
+        overlays = null;
         npcTargets = null;
         worldSections = null;
     }
@@ -77,6 +83,22 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
         aggroColor = ReadColor(aggroColorSetting!.Value, aggroColor);
         bossAggroColor = ReadColor(bossAggroColorSetting!.Value, bossAggroColor);
         aggroThickness = Clamp(aggroThicknessSetting!.Value, 1, 10);
+    }
+
+    /// <summary>Default-off diagnostics do not retain a world-overlay callback.</summary>
+    private void UpdateOverlayRegistration()
+    {
+        if (!showAggroLines && !showSections)
+        {
+            overlayRegistration?.Dispose();
+            overlayRegistration = null;
+            return;
+        }
+
+        if ((overlayRegistration == null || overlayRegistration.IsReleased) && overlays != null)
+        {
+            overlayRegistration = overlays.Register(new PluginOverlayDescriptor("world-diagnostics", PluginOverlayLayer.WorldMarkers), Draw);
+        }
     }
 
     private void Draw(IPluginOverlayCanvas canvas, PluginOverlayFrame frame)

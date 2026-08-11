@@ -26,6 +26,13 @@ public sealed class VisualDiagnosticsPluginTests
 
         Assert.Single(host.GetSettingsPages(manifest.Id));
         Assert.Equal(5, host.GetSettingsControls(manifest.Id).Count);
+        Assert.False(host.Overlays.HasRegistrations(PluginOverlaySpace.World));
+
+        PluginSettingControl aggro = Assert.Single(host.GetSettingsControls(manifest.Id), control => control.Id == "hostile-npc-aggro-lines");
+        aggro.SetToggle!(true);
+        Assert.True(host.Overlays.HasRegistrations(PluginOverlaySpace.World));
+        aggro.SetToggle!(false);
+        Assert.False(host.Overlays.HasRegistrations(PluginOverlaySpace.World));
 
         context.Resources.Dispose();
         Assert.Empty(host.GetSettingsPages(manifest.Id));

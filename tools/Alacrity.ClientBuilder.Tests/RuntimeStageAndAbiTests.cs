@@ -22,7 +22,14 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     public void PermanentPatchCatalogHasStableUniqueOperationContracts()
     {
         PermanentPatchCatalog.ValidateCatalog();
+        PermanentPatchCatalog.ValidateBridgeImports(PermanentPatchPlan.GetImportedBridgeMethods());
         var definitions = PermanentPatchCatalog.GetDefinitions();
+        ClientPatchTarget navigation = definitions
+            .SelectMany(definition => definition.Operations)
+            .SelectMany(operation => operation.Targets)
+            .Single(target => target.Id == "chat.native-navigation");
+        Assert.Equal(2, navigation.ExpectedBridgeCallCount);
+        Assert.Contains("ShouldHandleChatInputAction", navigation.BridgeMethods);
         foreach (ClientPatchDefinition definition in definitions)
         {
             foreach (ClientPatchOperation operation in definition.Operations)
@@ -40,9 +47,14 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 "patch.runtime.startup-and-menu",
                 "patch.runtime.input-and-keybinds",
                 "patch.runtime.rendering-and-combat",
-                "patch.runtime.render-culling",
-                "patch.runtime.visual-effects",
-                "patch.runtime.chat-input-and-commands",
+                 "patch.runtime.render-culling",
+                 "patch.runtime.visual-effects",
+                 "patch.runtime.painted-tile-preparation",
+                 "patch.runtime.clothing-entity-presentation",
+                 "patch.runtime.waterfall-presentation",
+                 "patch.runtime.tile-drawing-presentation",
+                 "patch.runtime.draw-orchestration",
+                 "patch.runtime.chat-input-and-commands",
                 "patch.runtime.chat-display-and-interaction"
             },
             definitions.Select(definition => definition.Id));
@@ -52,9 +64,14 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 "runtime.startup-and-menu",
                 "runtime.input-and-keybinds",
                 "runtime.rendering-and-combat",
-                "render.culling",
-                "runtime.visual-effects",
-                "runtime.chat-input-and-commands",
+                 "render.culling",
+                 "runtime.visual-effects",
+                 "render.painted-tile-preparation",
+                 "render.clothing-entity-presentation",
+                 "render.waterfall-presentation",
+                 "render.tile-drawing-presentation",
+                 "render.draw-orchestration",
+                 "runtime.chat-input-and-commands",
                 "runtime.chat-display-and-interaction"
             },
             definitions.SelectMany(definition => definition.Operations).Select(operation => operation.Id));
@@ -71,6 +88,108 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 Assert.False(string.IsNullOrWhiteSpace(target.Postcondition));
             });
         });
+    }
+
+    [Fact]
+    public void PaintedTilePreparationPatchCoversEverySharedRequestPath()
+    {
+        ClientPatchDefinition definition = PermanentPatchCatalog.GetDefinitions()
+            .Single(candidate => candidate.Id == "patch.runtime.painted-tile-preparation");
+        ClientPatchOperation operation = Assert.Single(definition.Operations);
+
+        Assert.Equal("render.painted-tile-preparation", operation.Id);
+        Assert.Equal(
+            new[]
+            {
+                "paint.pending-tile",
+                "paint.pending-cage",
+                "paint.pending-wall",
+                "paint.pending-tree-top",
+                "paint.pending-tree-branch",
+                "paint.lazy-unpainted-scan",
+                "paint.extra-preparation-prefilter"
+            },
+            operation.Targets.Select(target => target.Id));
+        Assert.All(operation.Targets.Take(6), target =>
+            Assert.Contains("IsPaintPreparationOptimizationEnabled", target.BridgeMethods));
+        Assert.Equal(
+            new[] { "IsPaintExtraPreparationRelevant" },
+            operation.Targets[6].BridgeMethods);
+    }
+
+    [Fact]
+    public void TileDrawingPresentationPatchDocumentsOnlyVerifiedNativeFastPaths()
+    {
+        ClientPatchDefinition definition = PermanentPatchCatalog.GetDefinitions()
+            .Single(candidate => candidate.Id == "patch.runtime.tile-drawing-presentation");
+        ClientPatchOperation operation = Assert.Single(definition.Operations);
+
+        Assert.Equal("render.tile-drawing-presentation", operation.Id);
+        Assert.Equal(
+            new[]
+            {
+                "tile-drawing.activation-state",
+                "tile-drawing.liquid-layer",
+                "tile-drawing.unused-light"
+            },
+            operation.Targets.Select(target => target.Id));
+        Assert.Equal(
+            new[] { "IsTileDrawingPresentationOptimizationEnabled" },
+            operation.BridgeMethods);
+        Assert.Equal(
+            new[] { "IsTileDrawingPresentationOptimizationEnabled" },
+            operation.Targets[0].BridgeMethods);
+        Assert.Empty(operation.Targets[1].BridgeMethods);
+        Assert.Empty(operation.Targets[2].BridgeMethods);
+    }
+
+    [Fact]
+    public void WaterfallPresentationPatchDocumentsIdleDiscoveryReuseAndInvalidation()
+    {
+        ClientPatchDefinition definition = PermanentPatchCatalog.GetDefinitions()
+            .Single(candidate => candidate.Id == "patch.runtime.waterfall-presentation");
+        ClientPatchOperation operation = Assert.Single(definition.Operations);
+
+        Assert.Equal(
+            new[]
+            {
+                "waterfall.discovery-reuse",
+                "waterfall.discovery-invalidation",
+                "waterfall.layer-state",
+                "waterfall.solid-tile",
+                "waterfall.empty-pass"
+            },
+            operation.Targets.Select(target => target.Id));
+        Assert.Contains(
+            "IsWaterfallPresentationOptimizationEnabled",
+            operation.Targets[0].BridgeMethods);
+        Assert.Empty(operation.Targets[1].BridgeMethods);
+    }
+
+    [Fact]
+    public void DrawOrchestrationPatchSeparatesItsLightingAndProjectileFastPaths()
+    {
+        ClientPatchDefinition definition = PermanentPatchCatalog.GetDefinitions()
+            .Single(candidate => candidate.Id == "patch.runtime.draw-orchestration");
+        ClientPatchOperation operation = Assert.Single(definition.Operations);
+
+        Assert.Equal("render.draw-orchestration", operation.Id);
+        Assert.Equal(
+            new[]
+            {
+                "draw.render-now-lighting-area",
+                "draw.baby-bird-cache-fast-path",
+                "draw.stardust-dragon-cache-fast-path"
+            },
+            operation.Targets.Select(target => target.Id));
+        Assert.Equal(
+            new[] { "IsDrawOrchestrationOptimizationEnabled" },
+            operation.BridgeMethods);
+        Assert.Equal(
+            new[] { "IsDrawOrchestrationOptimizationEnabled" },
+            operation.Targets[0].BridgeMethods);
+        Assert.Empty(operation.Targets[1].BridgeMethods);
+        Assert.Empty(operation.Targets[2].BridgeMethods);
     }
 
     [Fact]

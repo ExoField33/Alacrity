@@ -12,6 +12,8 @@ namespace AlacrityTerraria.Chat;
 /// </summary>
 internal sealed class TerrariaPluginChatAdapter
 {
+    private static readonly ChatInputAction UpAction = new ChatInputAction("up");
+    private static readonly ChatInputAction DownAction = new ChatInputAction("down");
     private readonly PluginChatHost chat;
     private readonly Action ensureRuntime;
     private readonly Func<IPluginUserInteractionService> activeEditorInteraction;
@@ -52,7 +54,12 @@ internal sealed class TerrariaPluginChatAdapter
         try
         {
             ensureRuntime();
-            return chat.HasInputEditors && chat.HasInputActionHandler(new ChatInputAction(actionId));
+            ChatInputAction action = actionId == "up"
+                ? UpAction
+                : actionId == "down"
+                    ? DownAction
+                    : new ChatInputAction(actionId);
+            return chat.HasInputEditors && chat.HasInputActionHandler(action);
         }
         catch (Exception exception)
         {

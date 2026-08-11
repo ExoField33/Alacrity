@@ -26,6 +26,8 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     private IPluginPlayerService? players;
     private IPluginPlayerSnapshotDemandService? playerSnapshotDemand;
     private IPluginSessionPresentationService? session;
+    private IPluginHudService? hud;
+    private IPluginRegistration? hudRegistration;
     private IPluginRegistration? botClassificationDemand;
     private readonly List<PluginPlayerSnapshot> playerSnapshots = new List<PluginPlayerSnapshot>(256);
     private readonly List<Row> rows = new List<Row>(256);
@@ -65,6 +67,7 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
 
         players = context.Terraria.Players;
         session = context.Terraria.Session;
+        hud = context.Hud;
         playerSnapshotDemand = players as IPluginPlayerSnapshotDemandService;
 
         RegisterSettings(context);
@@ -198,7 +201,6 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
         context.Ui.RegisterIconInteraction(new PluginIconInteractionDescriptor("sort", PluginIconHoverEffect.HighlightAndExpand, 1.12f, new PluginColor(190, 190, 190), new PluginColor(255, 255, 255), null, GetSortTooltip), CycleSortMode);
         context.Ui.RegisterIconInteraction(new PluginIconInteractionDescriptor("bot-filter", PluginIconHoverEffect.HighlightAndExpand, 1.12f, new PluginColor(190, 190, 190), new PluginColor(255, 255, 255), null, GetBotFilterTooltip), ToggleBotFiltering);
         context.Keybinds.Register(new PluginKeybindDescriptor("display-player-list", "T", "Display Player List", PluginKeybindActivation.Hold), HandleDisplayKeybind);
-        context.Hud.Register(new PluginHudWidgetDescriptor("player-list", 100), DrawHud);
         context.Services.Publish<IPlayerListService>(this);
     }
 
@@ -218,6 +220,9 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
 
     private void ReleaseRuntimeServices()
     {
+        hudRegistration?.Dispose();
+        hudRegistration = null;
+        hud = null;
         botClassificationDemand?.Dispose();
         botClassificationDemand = null;
         playerSnapshotDemand = null;
@@ -274,9 +279,26 @@ public sealed class PlayerListPlugin : IAlacrityPlugin, IPlayerListService
     {
         bool wasVisible = visible;
         visible = isVisible;
+        UpdateHudRegistration();
         if (!wasVisible && isVisible)
         {
             OnListShown();
+        }
+    }
+
+    /// <summary>The retained HUD host sees this widget only while the player list is visible.</summary>
+    private void UpdateHudRegistration()
+    {
+        if (!visible)
+        {
+            hudRegistration?.Dispose();
+            hudRegistration = null;
+            return;
+        }
+
+        if ((hudRegistration == null || hudRegistration.IsReleased) && hud != null)
+        {
+            hudRegistration = hud.Register(new PluginHudWidgetDescriptor("player-list", 100), DrawHud);
         }
     }
 

@@ -6,9 +6,10 @@ namespace Alacrity.Hitboxes;
 /// <summary>Renders host-provided collision snapshots through the framework-neutral overlay service.</summary>
 public sealed class HitboxesPlugin : IAlacrityPlugin
 {
-    private IPluginContext? context;
     private IPluginEntitySnapshotService? entities;
     private IPluginMeleeCollisionSnapshotService? meleeSnapshots;
+    private IPluginOverlayService? overlays;
+    private IPluginRegistration? overlayRegistration;
     private IPluginRegistration? meleeCaptureDemand;
     private IPluginSetting<bool>? showPlayersSetting;
     private IPluginSetting<bool>? showNpcsSetting;
@@ -37,7 +38,11 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
 
     public void Initialize(IPluginContext context)
     {
-        this.context = context ?? throw new ArgumentNullException(nameof(context));
+        if (context == null)
+        {
+            throw new ArgumentNullException(nameof(context));
+        }
+
         entities = context.Terraria.Entities;
         meleeSnapshots = entities as IPluginMeleeCollisionSnapshotService;
         showPlayersSetting = context.Settings.Register(new PluginSettingDefinition<bool>("showPlayerHitboxes", false));
@@ -51,13 +56,23 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
         friendlyProjectileColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("friendlyProjectileHitboxColor", friendlyProjectileColor.ToHex()));
         hostileProjectileColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("hostileProjectileHitboxColor", hostileProjectileColor.ToHex()));
         swingColorSetting = context.Settings.Register(new PluginSettingDefinition<string>("swingHitboxColor", swingColor.ToHex()));
-        showPlayers = showPlayersSetting.Value; showNpcs = showNpcsSetting.Value; showProjectiles = showProjectilesSetting.Value;
-        showFriendlyProjectiles = showFriendlyProjectilesSetting.Value; showHostileProjectiles = showHostileProjectilesSetting.Value; showSwings = showSwingsSetting.Value;
+        overlays = context.Overlays;
+        showPlayers = showPlayersSetting.Value;
+        showNpcs = showNpcsSetting.Value;
+        showProjectiles = showProjectilesSetting.Value;
+        showFriendlyProjectiles = showFriendlyProjectilesSetting.Value;
+        showHostileProjectiles = showHostileProjectilesSetting.Value;
+        showSwings = showSwingsSetting.Value;
         UpdateMeleeCaptureDemand();
+        UpdateOverlayRegistration();
         playerColor = ReadColor(playerColorSetting.Value, playerColor); npcColor = ReadColor(npcColorSetting.Value, npcColor);
         friendlyProjectileColor = ReadColor(friendlyProjectileColorSetting.Value, friendlyProjectileColor); hostileProjectileColor = ReadColor(hostileProjectileColorSetting.Value, hostileProjectileColor); swingColor = ReadColor(swingColorSetting.Value, swingColor);
-        showPlayersSetting.Subscribe(value => showPlayers = value); showNpcsSetting.Subscribe(value => showNpcs = value); showProjectilesSetting.Subscribe(value => showProjectiles = value);
-        showFriendlyProjectilesSetting.Subscribe(value => showFriendlyProjectiles = value); showHostileProjectilesSetting.Subscribe(value => showHostileProjectiles = value); showSwingsSetting.Subscribe(value => { showSwings = value; UpdateMeleeCaptureDemand(); });
+        showPlayersSetting.Subscribe(value => { showPlayers = value; UpdateOverlayRegistration(); });
+        showNpcsSetting.Subscribe(value => { showNpcs = value; UpdateOverlayRegistration(); });
+        showProjectilesSetting.Subscribe(value => { showProjectiles = value; UpdateOverlayRegistration(); });
+        showFriendlyProjectilesSetting.Subscribe(value => showFriendlyProjectiles = value);
+        showHostileProjectilesSetting.Subscribe(value => showHostileProjectiles = value);
+        showSwingsSetting.Subscribe(value => { showSwings = value; UpdateMeleeCaptureDemand(); UpdateOverlayRegistration(); });
         playerColorSetting.Subscribe(value => playerColor = ReadColor(value, playerColor)); npcColorSetting.Subscribe(value => npcColor = ReadColor(value, npcColor));
         friendlyProjectileColorSetting.Subscribe(value => friendlyProjectileColor = ReadColor(value, friendlyProjectileColor)); hostileProjectileColorSetting.Subscribe(value => hostileProjectileColor = ReadColor(value, hostileProjectileColor)); swingColorSetting.Subscribe(value => swingColor = ReadColor(value, swingColor));
 
@@ -73,7 +88,6 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("friendly-projectile-hitbox-color", "Friendly Projectile Color", friendlyProjectileColorSetting, friendlyProjectileColor).InPage("hitboxes"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("hostile-projectile-hitbox-color", "Hostile Projectile Color", hostileProjectileColorSetting, hostileProjectileColor).InPage("hitboxes"));
         context.Ui.RegisterSettingsControl(PluginSettingControl.Color("swing-hitbox-color", "Swing Hitbox Color", swingColorSetting, swingColor).InPage("hitboxes"));
-        context.Overlays.Register(new PluginOverlayDescriptor("hitbox-overlay", PluginOverlayLayer.WorldMarkers), DrawOverlay);
     }
 
     public void Enable() { }
@@ -81,6 +95,9 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     {
         meleeCaptureDemand?.Dispose();
         meleeCaptureDemand = null;
+        overlayRegistration?.Dispose();
+        overlayRegistration = null;
+        overlays = null;
         meleeSnapshots = null;
         entities = null;
         entityBuffer.Clear();
@@ -88,15 +105,18 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
     }
     public void Shutdown()
     {
-        entityBuffer.Clear();
-        swingBuffer.Clear();
-        meleeCaptureDemand?.Dispose();
-        meleeCaptureDemand = null;
-        meleeSnapshots = null;
-        entities = null;
-        showPlayersSetting = null; showNpcsSetting = null; showProjectilesSetting = null; showFriendlyProjectilesSetting = null; showHostileProjectilesSetting = null; showSwingsSetting = null;
-        playerColorSetting = null; npcColorSetting = null; friendlyProjectileColorSetting = null; hostileProjectileColorSetting = null; swingColorSetting = null;
-        context = null;
+        Disable();
+        showPlayersSetting = null;
+        showNpcsSetting = null;
+        showProjectilesSetting = null;
+        showFriendlyProjectilesSetting = null;
+        showHostileProjectilesSetting = null;
+        showSwingsSetting = null;
+        playerColorSetting = null;
+        npcColorSetting = null;
+        friendlyProjectileColorSetting = null;
+        hostileProjectileColorSetting = null;
+        swingColorSetting = null;
     }
 
     private static PluginColor ReadColor(string value, PluginColor fallback) => PluginColor.TryParseHex(value, out PluginColor parsed) ? parsed : fallback;
@@ -112,6 +132,23 @@ public sealed class HitboxesPlugin : IAlacrityPlugin
         {
             meleeCaptureDemand?.Dispose();
             meleeCaptureDemand = null;
+        }
+    }
+
+    /// <summary>Only active visual modes retain a world-overlay registration.</summary>
+    private void UpdateOverlayRegistration()
+    {
+        bool active = showPlayers || showNpcs || showProjectiles || showSwings;
+        if (!active)
+        {
+            overlayRegistration?.Dispose();
+            overlayRegistration = null;
+            return;
+        }
+
+        if ((overlayRegistration == null || overlayRegistration.IsReleased) && overlays != null)
+        {
+            overlayRegistration = overlays.Register(new PluginOverlayDescriptor("hitbox-overlay", PluginOverlayLayer.WorldMarkers), DrawOverlay);
         }
     }
 

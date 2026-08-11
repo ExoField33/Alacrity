@@ -64,7 +64,7 @@ internal sealed class TerrariaWorldSectionService : IPluginWorldSectionService, 
     public void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int margin = 0)
     {
         if (destination == null) throw new ArgumentNullException(nameof(destination));
-        if (margin < 0) throw new ArgumentOutOfRangeException(nameof(margin));
+        TerrariaWorldSectionBounds.ValidateMargin(margin);
 
         lock (gate)
         {
@@ -115,6 +115,8 @@ internal sealed class TerrariaWorldSectionService : IPluginWorldSectionService, 
 
         public void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int margin = 0)
         {
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            TerrariaWorldSectionBounds.ValidateMargin(margin);
             throw new UnauthorizedAccessException(
                 "Plugin '" + owner.Value + "' must declare GameStateRead capability and ReadGameState permission before reading world section snapshots.");
         }

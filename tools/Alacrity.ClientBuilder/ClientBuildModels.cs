@@ -6,6 +6,11 @@ internal sealed class ClientBuildException : InvalidOperationException
         : base(message)
     {
     }
+
+    internal ClientBuildException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }
 
 internal sealed class ClientBuildOptions

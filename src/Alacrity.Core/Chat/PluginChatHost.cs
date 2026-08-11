@@ -333,7 +333,7 @@ public sealed class PluginChatHost
 /// <summary>Concrete Terraria service grouping assembled by the host.</summary>
 public sealed class PluginTerrariaServices : ITerrariaServices
 {
-    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null, IPluginNpcTargetSnapshotService? npcTargets = null, IPluginWorldSectionService? worldSections = null, IPluginRenderCullingService? renderCulling = null)
+    public PluginTerrariaServices(IPluginChatService chat, IPluginEntitySnapshotService? entities = null, IPluginVisualEffectsService? visualEffects = null, IPluginPlayerService? players = null, IPluginSessionPresentationService? session = null, IPluginNpcTargetSnapshotService? npcTargets = null, IPluginWorldSectionService? worldSections = null, IPluginRenderCullingService? renderCulling = null, IPluginRenderingOptimizationService? renderingOptimizations = null)
     {
         Chat = chat ?? throw new ArgumentNullException(nameof(chat));
         Entities = entities ?? EmptyPluginEntitySnapshotService.Instance;
@@ -343,6 +343,7 @@ public sealed class PluginTerrariaServices : ITerrariaServices
         NpcTargets = npcTargets ?? EmptyPluginNpcTargetSnapshotService.Instance;
         WorldSections = worldSections ?? EmptyPluginWorldSectionService.Instance;
         RenderCulling = renderCulling ?? EmptyPluginRenderCullingService.Instance;
+        RenderingOptimizations = renderingOptimizations ?? EmptyPluginRenderingOptimizationService.Instance;
     }
     public IPluginChatService Chat { get; }
     public IPluginEntitySnapshotService Entities { get; }
@@ -352,6 +353,21 @@ public sealed class PluginTerrariaServices : ITerrariaServices
     public IPluginNpcTargetSnapshotService NpcTargets { get; }
     public IPluginWorldSectionService WorldSections { get; }
     public IPluginRenderCullingService RenderCulling { get; }
+    public IPluginRenderingOptimizationService RenderingOptimizations { get; }
+}
+
+internal sealed class EmptyPluginRenderingOptimizationService : IPluginRenderingOptimizationService
+{
+    internal static readonly EmptyPluginRenderingOptimizationService Instance = new EmptyPluginRenderingOptimizationService();
+
+    private EmptyPluginRenderingOptimizationService()
+    {
+    }
+
+    public IPluginRegistration RegisterPolicy(PluginRenderingOptimizationPolicy policy)
+    {
+        throw new NotSupportedException("Rendering optimizations are unavailable in this host.");
+    }
 }
 
 internal sealed class EmptyPluginRenderCullingService : IPluginRenderCullingService

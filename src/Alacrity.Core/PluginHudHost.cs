@@ -14,7 +14,6 @@ public sealed class PluginHudHost
     private readonly TimeSpan failureInterval;
     private readonly Func<DateTime> utcNow;
     private Entry[] snapshot = Array.Empty<Entry>();
-    private bool snapshotDirty = true;
     private long sequence;
 
     public PluginHudHost(TimeSpan? failureInterval = null, Func<DateTime>? utcNow = null)
@@ -40,22 +39,12 @@ public sealed class PluginHudHost
     public void Dispatch(IPluginHudRenderer renderer, PluginHudFrame frame)
     {
         if (renderer == null) throw new ArgumentNullException(nameof(renderer));
-        Entry[] active;
-        lock (gate)
-        {
-            if (snapshotDirty)
-            {
-                snapshot = entries.OrderBy(entry => entry.Descriptor.Order).ThenBy(entry => entry.Sequence).ToArray();
-                snapshotDirty = false;
-            }
-            active = snapshot;
-        }
+        Entry[] active = System.Threading.Volatile.Read(ref snapshot);
         var transaction = renderer as IPluginHudRenderTransaction;
         for (int index = 0; index < active.Length; index++)
         {
             Entry entry = active[index];
-            DateTime now = utcNow();
-            if (!entry.CanInvoke(now)) continue;
+            if (!entry.CanInvoke(utcNow, out DateTime now)) continue;
             if (!entry.TryEnter(out ActivationCallbackGate.Lease lease)) continue;
             transaction?.BeginWidget();
             try
@@ -70,8 +59,9 @@ public sealed class PluginHudHost
             catch (Exception exception)
             {
                 transaction?.RollbackWidget();
+                if (now == default) now = utcNow();
                 entry.RecordFailure(now, failureInterval);
-                if (ShouldReport(entry.Owner, entry.Descriptor.Id))
+                if (ShouldReport(entry.Owner, entry.Descriptor.Id, now))
                     entry.Logger?.Error("HUD widget '" + entry.Descriptor.Id + "' failed for plugin '" + entry.Owner.Value + "'.", exception);
             }
         }
@@ -109,7 +99,7 @@ public sealed class PluginHudHost
             else
             {
                 entries.Add(entry);
-                snapshotDirty = true;
+                RebuildSnapshot();
             }
         }
         if (releaseAfterCommit)
@@ -121,12 +111,17 @@ public sealed class PluginHudHost
         return entry;
     }
 
-    private bool ShouldReport(PluginId owner, string widgetId)
+    /// <summary>Returns whether any widget is active without taking the mutation lock.</summary>
+    public bool HasRegistrations()
+    {
+        return System.Threading.Volatile.Read(ref snapshot).Length != 0;
+    }
+
+    private bool ShouldReport(PluginId owner, string widgetId, DateTime now)
     {
         lock (gate)
         {
             string key = owner.Value + ":" + widgetId;
-            DateTime now = utcNow();
             if (lastFailure.TryGetValue(key, out DateTime previous) && now - previous < failureInterval) return false;
             lastFailure[key] = now;
             return true;
@@ -136,7 +131,18 @@ public sealed class PluginHudHost
     private void Remove(Entry entry)
     {
         lock (gate)
-            if (entries.Remove(entry)) snapshotDirty = true;
+        {
+            if (entries.Remove(entry))
+            {
+                RebuildSnapshot();
+            }
+        }
+    }
+
+    private void RebuildSnapshot()
+    {
+        Entry[] ordered = entries.OrderBy(entry => entry.Descriptor.Order).ThenBy(entry => entry.Sequence).ToArray();
+        System.Threading.Volatile.Write(ref snapshot, ordered);
     }
 
     private sealed class ScopedService : IPluginHudService
@@ -169,7 +175,7 @@ public sealed class PluginHudHost
         internal Entry(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, long sequence, Action<Entry> remove, IPluginLogger? logger, ActivationCallbackGate? callbackGate) { Owner = owner; Descriptor = descriptor; Draw = draw; Sequence = sequence; this.remove = remove; this.logger = logger; this.callbackGate = callbackGate; }
         internal PluginId Owner { get; } internal PluginHudWidgetDescriptor Descriptor { get; } internal Action<IPluginHudCanvas, PluginHudFrame> Draw { get; } internal long Sequence { get; }
         internal IPluginLogger? Logger => logger;
-        internal bool CanInvoke(DateTime now) => failures.CanInvoke(now);
+        internal bool CanInvoke(Func<DateTime> utcNow, out DateTime now) => failures.CanInvoke(utcNow, out now);
         internal bool TryEnter(out ActivationCallbackGate.Lease lease)
         {
             if (IsReleased) { lease = default; return false; }

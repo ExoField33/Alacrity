@@ -1,3 +1,4 @@
+using System;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -26,29 +27,30 @@ internal static partial class PermanentPatchPlan
             target.Name == "Offset" &&
             target.DeclaringType.FullName == "Terraria.GameContent.UI.Chat.IChatMonitor")
             ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native chat offset call was not found.");
-        var afterNativeOffset = nativeOffset.Next
-            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native chat offset has no continuation.");
-        var navigationStart = updateChat.Body.Instructions.FirstOrDefault(instruction =>
-            instruction.OpCode == OpCodes.Ldsfld &&
+        var upKeyCheck = updateChat.Body.Instructions.FirstOrDefault(instruction =>
+            instruction.OpCode == OpCodes.Ldsflda &&
             instruction.Operand is FieldReference field &&
-            field.Name == "imeCompositionActive" &&
-            instruction.Offset < nativeOffset.Offset)
-            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native navigation gate was not found.");
-        Instruction[] navigationEntryBranches = updateChat.Body.Instructions
-            .Where(instruction => ReferenceEquals(instruction.Operand, navigationStart))
-            .ToArray();
-        if (navigationEntryBranches.Length == 0)
-            throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native navigation entry branch was not found.");
+            field.Name == "keyState" &&
+            instruction.Next?.OpCode == OpCodes.Ldc_I4_S &&
+            Convert.ToInt32(instruction.Next.Operand) == 38)
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native Up navigation branch was not found.");
+        var downKeyCheck = updateChat.Body.Instructions.FirstOrDefault(instruction =>
+            instruction.Offset > upKeyCheck.Offset &&
+            instruction.OpCode == OpCodes.Ldsflda &&
+            instruction.Operand is FieldReference field &&
+            field.Name == "keyState" &&
+            instruction.Next?.OpCode == OpCodes.Ldc_I4_S &&
+            Convert.ToInt32(instruction.Next.Operand) == 40)
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 DoUpdate_HandleChat native Down navigation branch was not found.");
         var navigationIl = updateChat.Body.GetILProcessor();
-        Instruction actionAvailabilityStart = navigationIl.Create(OpCodes.Ldstr, "up");
-        navigationIl.InsertBefore(navigationStart, actionAvailabilityStart);
-        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Call, handlesInputAction));
-        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Brtrue, afterNativeOffset));
-        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Ldstr, "down"));
-        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Call, handlesInputAction));
-        navigationIl.InsertBefore(navigationStart, navigationIl.Create(OpCodes.Brtrue, afterNativeOffset));
-        foreach (Instruction branch in navigationEntryBranches)
-            branch.Operand = actionAvailabilityStart;
+        // Vanilla treats Up and Down as independent branches. Preserve that structure: owning Up
+        // only skips the native Up branch, while a non-owned Down branch still reaches vanilla.
+        navigationIl.InsertBefore(upKeyCheck, navigationIl.Create(OpCodes.Ldstr, "up"));
+        navigationIl.InsertBefore(upKeyCheck, navigationIl.Create(OpCodes.Call, handlesInputAction));
+        navigationIl.InsertBefore(upKeyCheck, navigationIl.Create(OpCodes.Brtrue, downKeyCheck));
+        navigationIl.InsertBefore(downKeyCheck, navigationIl.Create(OpCodes.Ldstr, "down"));
+        navigationIl.InsertBefore(downKeyCheck, navigationIl.Create(OpCodes.Call, handlesInputAction));
+        navigationIl.InsertBefore(downKeyCheck, navigationIl.Create(OpCodes.Brtrue, nativeOffset));
     }
 
     private static void PatchPluginChatCommands(TypeDefinition mainType, MethodReference tryHandlePluginCommand, MethodReference recordSubmittedChatInput)

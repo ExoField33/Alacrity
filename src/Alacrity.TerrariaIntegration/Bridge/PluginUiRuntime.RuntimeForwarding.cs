@@ -325,6 +325,54 @@ namespace AlacrityTerraria
             return InvokeGate(callback, "Gore-system gate");
         }
 
+        /// <summary>Returns whether the generic paint-preparation optimization policy is active.</summary>
+        public static bool IsPaintPreparationOptimizationEnabled()
+        {
+            Func<bool> callback = State.IsPaintPreparationOptimizationEnabled;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.IsPaintPreparationOptimizationEnabled;
+            return callback != null && InvokeOptionalGate(callback, "Paint-preparation optimization gate");
+        }
+
+        /// <summary>Preserves vanilla extra preparation whenever the optional optimization is unavailable.</summary>
+        public static bool IsPaintExtraPreparationRelevant(int tileType)
+        {
+            Func<int, bool> callback = State.IsPaintExtraPreparationRelevant;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.IsPaintExtraPreparationRelevant;
+            return callback == null || InvokeOptionalGate(callback, tileType, "Paint extra-preparation gate");
+        }
+
+        /// <summary>Returns whether the generic clothing-entity presentation policy is active.</summary>
+        public static bool IsClothingEntityPresentationOptimizationEnabled()
+        {
+            Func<bool> callback = State.IsClothingEntityPresentationOptimizationEnabled;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.IsClothingEntityPresentationOptimizationEnabled;
+            return callback != null && InvokeOptionalGate(callback, "Clothing-entity presentation optimization gate");
+        }
+
+        /// <summary>Returns whether the generic waterfall presentation policy is active.</summary>
+        public static bool IsWaterfallPresentationOptimizationEnabled()
+        {
+            Func<bool> callback = State.IsWaterfallPresentationOptimizationEnabled;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.IsWaterfallPresentationOptimizationEnabled;
+            return callback != null && InvokeOptionalGate(callback, "Waterfall presentation optimization gate");
+        }
+
+        /// <summary>Returns whether the generic TileDrawing presentation policy is active.</summary>
+        public static bool IsTileDrawingPresentationOptimizationEnabled()
+        {
+            Func<bool> callback = State.IsTileDrawingPresentationOptimizationEnabled;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.IsTileDrawingPresentationOptimizationEnabled;
+            return callback != null && InvokeOptionalGate(callback, "TileDrawing presentation optimization gate");
+        }
+
+        /// <summary>Returns whether the generic top-level draw-orchestration policy is active.</summary>
+        public static bool IsDrawOrchestrationOptimizationEnabled()
+        {
+            Func<bool> callback = State.IsDrawOrchestrationOptimizationEnabled;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.IsDrawOrchestrationOptimizationEnabled;
+            return callback != null && InvokeOptionalGate(callback, "Draw-orchestration optimization gate");
+        }
+
         private static bool InvokeGate(Func<bool> callback, string operation)
         {
             if (callback == null) return true;
@@ -332,9 +380,21 @@ namespace AlacrityTerraria
             catch (Exception exception) { RecordFailure(operation, exception); return true; }
         }
 
+        private static bool InvokeOptionalGate(Func<bool> callback, string operation)
+        {
+            try { return callback(); }
+            catch (Exception exception) { RecordFailure(operation, exception); return false; }
+        }
+
         private static bool InvokeGate<T>(Func<T, bool> callback, T value, string operation)
         {
             if (callback == null) return true;
+            try { return callback(value); }
+            catch (Exception exception) { RecordFailure(operation, exception); return true; }
+        }
+
+        private static bool InvokeOptionalGate<T>(Func<T, bool> callback, T value, string operation)
+        {
             try { return callback(value); }
             catch (Exception exception) { RecordFailure(operation, exception); return true; }
         }
@@ -631,6 +691,12 @@ namespace AlacrityTerraria
             if (TryResolveOptionalCapability(bridgeType, "world-item-culling", "ShouldDrawWorldItem", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) State.ShouldDrawWorldItem = (Func<int, bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "world-particle-culling", "ShouldDrawWorldParticle", typeof(Func<ParticleRenderer, IParticle, bool>), typeof(bool), new[] { typeof(ParticleRenderer), typeof(IParticle) }, out callback)) State.ShouldDrawWorldParticle = (Func<ParticleRenderer, IParticle, bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "gore-system", "ShouldRunGoreSystem", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.ShouldRunGoreSystem = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "paint-preparation", "IsPaintPreparationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsPaintPreparationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "paint-extra-preparation", "IsPaintExtraPreparationRelevant", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) State.IsPaintExtraPreparationRelevant = (Func<int, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "clothing-entity-presentation", "IsClothingEntityPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsClothingEntityPresentationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "waterfall-presentation", "IsWaterfallPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsWaterfallPresentationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "tile-drawing-presentation", "IsTileDrawingPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsTileDrawingPresentationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "draw-orchestration", "IsDrawOrchestrationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsDrawOrchestrationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) State.TryHandlePluginChatCommand = (Func<string, bool>)callback;
         }
 
@@ -734,6 +800,12 @@ namespace AlacrityTerraria
             State.ShouldDrawWorldItem = null;
             State.ShouldDrawWorldParticle = null;
             State.ShouldRunGoreSystem = null;
+            State.IsPaintPreparationOptimizationEnabled = null;
+            State.IsPaintExtraPreparationRelevant = null;
+            State.IsClothingEntityPresentationOptimizationEnabled = null;
+            State.IsWaterfallPresentationOptimizationEnabled = null;
+            State.IsTileDrawingPresentationOptimizationEnabled = null;
+            State.IsDrawOrchestrationOptimizationEnabled = null;
             State.TryHandlePluginChatCommand = null;
             State.BootstrapPluginRuntime = null;
             State.ShutdownPluginRuntime = null;

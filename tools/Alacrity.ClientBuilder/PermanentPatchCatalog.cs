@@ -70,6 +70,24 @@ internal sealed class ClientPatchTarget
             : "Every listed PluginUiRuntime ABI call must be present exactly once after Cecil write/reopen validation, except all-return capture sites which require one call before every return.";
     }
 
+    internal ClientPatchTarget(
+        string id,
+        string typeName,
+        string memberSignature,
+        string anchor,
+        string injection,
+        int expectedBridgeCallCount,
+        params string[] bridgeMethods)
+        : this(id, typeName, memberSignature, anchor, injection, bridgeMethods)
+    {
+        if (expectedBridgeCallCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedBridgeCallCount));
+        }
+
+        ExpectedBridgeCallCount = expectedBridgeCallCount;
+    }
+
     internal string Id { get; }
     internal string TypeName { get; }
     internal string MemberSignature { get; }
@@ -78,6 +96,7 @@ internal sealed class ClientPatchTarget
     internal string Precondition { get; }
     internal string Postcondition { get; }
     internal IReadOnlyList<string> BridgeMethods { get; }
+    internal int ExpectedBridgeCallCount { get; } = 1;
 }
 
 /// <summary>Inspectable target and ABI contract for one independently applied patch set.</summary>
@@ -116,7 +135,7 @@ internal sealed class ClientPatchOperation
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r4";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r13";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
@@ -172,13 +191,65 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("effects.gore-create", "Terraria.Gore", "NewGore(...)", "method entry", "return sentinel", "ShouldRunGoreSystem"),
             new ClientPatchTarget("effects.gore-update", "Terraria.Gore", "Update()", "method entry", "return gate", "ShouldRunGoreSystem")),
         CreateDefinition(
+            "patch.runtime.painted-tile-preparation",
+            PermanentPatchPlan.ApplyPermanentPaintedTilePreparation,
+            "render.painted-tile-preparation",
+            "Terraria.GameContent.TilePaintSystemV2 / Terraria.GameContent.Drawing.TileDrawing",
+            "Deduplicates unready paint holders, bypasses unpainted lazy-scan work, and avoids non-foliage extra-preparation work while a generic rendering optimization policy is active",
+            new ClientPatchTarget("paint.pending-tile", "Terraria.GameContent.TilePaintSystemV2", "RequestTile(...)", "the verified IsReady branch and pending request-list insertion", "gate duplicate enqueue by a holder-local pending field", "IsPaintPreparationOptimizationEnabled"),
+            new ClientPatchTarget("paint.pending-cage", "Terraria.GameContent.TilePaintSystemV2", "RequestCageTop(...)", "the verified IsReady branch and pending request-list insertion", "gate duplicate enqueue by a holder-local pending field", "IsPaintPreparationOptimizationEnabled"),
+            new ClientPatchTarget("paint.pending-wall", "Terraria.GameContent.TilePaintSystemV2", "RequestWall(...)", "the verified IsReady branch and pending request-list insertion", "gate duplicate enqueue by a holder-local pending field", "IsPaintPreparationOptimizationEnabled"),
+            new ClientPatchTarget("paint.pending-tree-top", "Terraria.GameContent.TilePaintSystemV2", "RequestTreeTop(...)", "the verified IsReady branch and pending request-list insertion", "gate duplicate enqueue by a holder-local pending field", "IsPaintPreparationOptimizationEnabled"),
+            new ClientPatchTarget("paint.pending-tree-branch", "Terraria.GameContent.TilePaintSystemV2", "RequestTreeBranch(...)", "the verified IsReady branch and pending request-list insertion", "gate duplicate enqueue by a holder-local pending field", "IsPaintPreparationOptimizationEnabled"),
+            new ClientPatchTarget("paint.lazy-unpainted-scan", "Terraria.GameContent.Drawing.TileDrawing", "PrepareForAreaDrawing(System.Int32, System.Int32, System.Int32, System.Int32, System.Boolean)", "the verified active-tile and wall asset-load entries in the lazy painted-area scan", "skip only unpainted lazy tile/wall preparation while preserving the native non-lazy continuation", "IsPaintPreparationOptimizationEnabled"),
+            new ClientPatchTarget("paint.extra-preparation-prefilter", "Terraria.GameContent.Drawing.TileDrawing", "MakeExtraPreparations(Terraria.Tile, System.Int32, System.Int32)", "method entry before the verified tree-only type switch", "return immediately for ordinary types only while the generic optimization is active", "IsPaintExtraPreparationRelevant")),
+        CreateDefinition(
+            "patch.runtime.clothing-entity-presentation",
+            PermanentPatchPlan.ApplyPermanentClothingEntityPresentation,
+            "render.clothing-entity-presentation",
+            "Terraria.GameContent.Drawing.TileDrawing / Terraria.DataStructures.TileEntity",
+            "Reserve discovery-map capacity, deduplicate repeated multi-tile discovery, skip empty hat-rack presentation, and use the IDs already resolved during tile drawing",
+            new ClientPatchTarget("clothing.dictionary-capacity", "Terraria.GameContent.Drawing.TileDrawing", ".ctor(Terraria.GameContent.TilePaintSystemV2)", "the exact default Dictionary<Point, Int32> constructors assigned to clothing position fields", "replace each with a capacity-reserving constructor"),
+            new ClientPatchTarget("clothing.discovery-deduplication", "Terraria.GameContent.Drawing.TileDrawing", "ClearCachedTileDraws(System.Boolean)", "the verified solid-layer cache reset followed by display-doll/hat-rack ContainsKey branches", "capture the policy once and skip repeated lookups for consecutive segments resolving to the same clothing entity point", "IsClothingEntityPresentationOptimizationEnabled"),
+            new ClientPatchTarget("clothing.post-draw", "Terraria.GameContent.Drawing.TileDrawing", "PostDrawTiles(System.Boolean)", "the consecutive verified DrawEntities_HatRacks and DrawEntities_DisplayDolls calls in the solid-layer branch", "replace both calls with policy-gated ID-based draw paths and skip transparent empty hat racks", "IsClothingEntityPresentationOptimizationEnabled")),
+        CreateDefinition(
+            "patch.runtime.waterfall-presentation",
+            PermanentPatchPlan.ApplyPermanentWaterfallPresentation,
+            "render.waterfall-presentation",
+            "Terraria.WaterfallManager",
+            "Version-locked idle discovery reuse plus local waterfall state, camera, and solidity reductions",
+            new ClientPatchTarget("waterfall.discovery-reuse", "Terraria.WaterfallManager", "FindWaterfalls(System.Boolean)", "the verified scheduled discovery-counter reset before native area scanning", "reuse the last native source set only for an unchanged view with no tracked geometry mutation or active liquid work", "IsWaterfallPresentationOptimizationEnabled"),
+            new ClientPatchTarget("waterfall.discovery-invalidation", "Terraria.WorldGen", "PlaceTile(System.Int32,System.Int32,System.Int32,System.Boolean,System.Boolean,System.Int32,System.Int32)", "the verified local placement, removal, slope, actuation, liquid-transform, and received-tile-change paths", "mark the cached discovery result dirty so the next scheduled lookup executes the native scan"),
+            new ClientPatchTarget("waterfall.layer-state", "Terraria.WaterfallManager", "DrawWaterfall(System.Int32,System.Single)", "the verified per-invocation camera/tile state reads and two TileBatch.SetLayer calls inside the rain and normal segment loops", "cache frame-local state and unchanged layer/stack selections only while the generic optimization policy is active", "IsWaterfallPresentationOptimizationEnabled"),
+            new ClientPatchTarget("waterfall.solid-tile", "Terraria.WaterfallManager", "DrawWaterfall(System.Int32,System.Single)", "all verified WorldGen.SolidTile(Tile) calls with non-null tile preparation", "use the equivalent guarded local solidity fast path only while the generic optimization policy is active", "IsWaterfallPresentationOptimizationEnabled"),
+            new ClientPatchTarget("waterfall.empty-pass", "Terraria.WaterfallManager", "DrawWaterfall(System.Int32,System.Single)", "the verified currentMax zero path and native ambient-state assignments", "preserve empty-pass ambient state and return before route-loop setup", "IsWaterfallPresentationOptimizationEnabled")),
+        CreateDefinition(
+            "patch.runtime.tile-drawing-presentation",
+            PermanentPatchPlan.ApplyPermanentTileDrawingPresentation,
+            "render.tile-drawing-presentation",
+            "Terraria.GameContent.Drawing.TileDrawing",
+            "Version-locked reduction for TileDrawing's unconditional glow-light lookup",
+            new ClientPatchTarget("tile-drawing.activation-state", "Terraria.GameContent.Drawing.TileDrawing", "Draw(System.Boolean,System.Boolean,System.Int32)", "method entry before TileDrawing caches frame-local drawing state", "capture the generic optimization policy once for native helper fast paths", "IsTileDrawingPresentationOptimizationEnabled"),
+            new ClientPatchTarget("tile-drawing.liquid-layer", "Terraria.GameContent.Drawing.TileDrawing", "DrawLiquidBehindTiles(System.Int32)", "the one verified TileBatch.SetLayer call repeated for each visible liquid-behind tile", "preserve the first native layer selection and skip only unchanged selections during this dedicated pass"),
+            new ClientPatchTarget("tile-drawing.unused-light", "Terraria.GameContent.Drawing.TileDrawing", "GetTileDrawData(System.Int32,System.Int32,Terraria.Tile,System.UInt16,...)", "the single verified Lighting.GetColor(Int32, Int32) assignment consumed only by glow tile types 637 and 638", "avoid the lighting lookup for all other native tile types")),
+        CreateDefinition(
+            "patch.runtime.draw-orchestration",
+            PermanentPatchPlan.ApplyPermanentDrawOrchestration,
+            "render.draw-orchestration",
+            "Terraria.Main",
+            "Version-locked reductions for repeated draw orchestration work and transient draw-cache allocations",
+            new ClientPatchTarget("draw.render-now-lighting-area", "Terraria.Main", "DoDraw(Microsoft.Xna.Framework.GameTime)", "the consecutive renderNow Lighting.LightTiles(GetAreaToLight()) calls after camera update", "reuse the first unchanged area only while the generic draw-orchestration policy is active", "IsDrawOrchestrationOptimizationEnabled"),
+            new ClientPatchTarget("draw.baby-bird-cache-fast-path", "Terraria.Main", "SortBabyBirdProjectiles(...)", "the unique one-parameter private sort method before native temporary-list allocation", "skip native sorting when projectile type 759 is absent and the captured generic policy is active"),
+            new ClientPatchTarget("draw.stardust-dragon-cache-fast-path", "Terraria.Main", "SortStardustDragonProjectiles(...)", "the unique one-parameter private sort method before native temporary-list allocation", "skip native sorting when projectile type 628 is absent and the captured generic policy is active")),
+        CreateDefinition(
             "patch.runtime.chat-input-and-commands",
             PermanentPatchPlan.ApplyPermanentChatInputAndCommands,
             "runtime.chat-input-and-commands",
             "Terraria.Main / Terraria.Program",
             "Chat editing, command consumption, startup, and input formatting",
             new ClientPatchTarget("chat.input-edit", "Terraria.Main", "GetInputText(String, Boolean)", "method entry guarded by Main.drawingPlayerChat", "early return through generic chat editor", "IsBetterChatActive", "ProcessPlayerChatInput"),
-            new ClientPatchTarget("chat.command-dispatch", "Terraria.Main", "DoUpdate_HandleChat()", "Main.chatText non-empty comparison and native close-chat path", "consume handled command before network send", "TryHandlePluginChatCommand"),
+            new ClientPatchTarget("chat.native-navigation", "Terraria.Main", "DoUpdate_HandleChat()", "verified independent Up and Down key branches before IChatMonitor.Offset", "guard each native direction independently without suppressing the other", 2, "ShouldHandleChatInputAction"),
+            new ClientPatchTarget("chat.command-dispatch", "Terraria.Main", "DoUpdate_HandleChat()", "Main.chatText non-empty comparison and native close-chat path", "record accepted input and consume handled command before network send", "RecordSubmittedChatInput", "TryHandlePluginChatCommand"),
             new ClientPatchTarget("chat.bootstrap", "Terraria.Program", "LaunchGame(String[], Boolean)", "method entry", "insert before first instruction", "BootstrapPluginRuntime"),
             new ClientPatchTarget("chat.input-format", "Terraria.Main", "DrawPlayerChat()", "verified chatText capture into string local 2 and cursor literal/append region", "format input and remove vanilla cursor append", "FormatPlayerChatText")),
         CreateDefinition(
@@ -275,6 +346,7 @@ internal static class PermanentPatchCatalog
     internal static void ValidateCatalog()
     {
         ValidateDefinitions(Definitions);
+        ValidateBridgeImports(PermanentPatchPlan.GetImportedBridgeMethods());
         for (var definitionIndex = 0; definitionIndex < Definitions.Length; definitionIndex++)
         {
             var operations = Definitions[definitionIndex].Operations;
@@ -285,6 +357,65 @@ internal static class PermanentPatchCatalog
                     throw new ClientBuildException("Permanent patch catalog operation " + operations[operationIndex].Id + " has no detailed target inventory.");
                 }
             }
+        }
+    }
+
+    internal static void ValidateImportedBridgeMethod(string bridgeMethod)
+    {
+        if (string.IsNullOrWhiteSpace(bridgeMethod))
+        {
+            throw new ClientBuildException("Permanent patch plan attempted to import a missing bridge method name.");
+        }
+
+        for (int definitionIndex = 0; definitionIndex < Definitions.Length; definitionIndex++)
+        {
+            IReadOnlyList<ClientPatchOperation> operations = Definitions[definitionIndex].Operations;
+            for (int operationIndex = 0; operationIndex < operations.Count; operationIndex++)
+            {
+                if (operations[operationIndex].BridgeMethods.Contains(bridgeMethod, StringComparer.Ordinal))
+                {
+                    return;
+                }
+            }
+        }
+
+        throw new ClientBuildException("Permanent patch plan imports bridge method '" + bridgeMethod + "' without a catalog target postcondition.");
+    }
+
+    internal static void ValidateBridgeImports(IReadOnlyList<string> importedBridgeMethods)
+    {
+        if (importedBridgeMethods == null)
+        {
+            throw new ArgumentNullException(nameof(importedBridgeMethods));
+        }
+
+        var imports = new HashSet<string>(importedBridgeMethods, StringComparer.Ordinal);
+        if (imports.Count != importedBridgeMethods.Count)
+        {
+            throw new ClientBuildException("Permanent patch plan imports the same bridge method more than once in its authoritative import catalog.");
+        }
+
+        var targets = new HashSet<string>(StringComparer.Ordinal);
+        for (int definitionIndex = 0; definitionIndex < Definitions.Length; definitionIndex++)
+        {
+            IReadOnlyList<ClientPatchOperation> operations = Definitions[definitionIndex].Operations;
+            for (int operationIndex = 0; operationIndex < operations.Count; operationIndex++)
+            {
+                IReadOnlyList<string> bridgeMethods = operations[operationIndex].BridgeMethods;
+                for (int methodIndex = 0; methodIndex < bridgeMethods.Count; methodIndex++)
+                {
+                    targets.Add(bridgeMethods[methodIndex]);
+                }
+            }
+        }
+
+        if (!imports.SetEquals(targets))
+        {
+            string missingFromCatalog = string.Join(", ", imports.Except(targets).OrderBy(value => value, StringComparer.Ordinal));
+            string missingFromPlan = string.Join(", ", targets.Except(imports).OrderBy(value => value, StringComparer.Ordinal));
+            throw new ClientBuildException(
+                "Permanent patch bridge catalog drift detected. Missing catalog targets: [" + missingFromCatalog +
+                "]; catalog-only targets: [" + missingFromPlan + "].");
         }
     }
 
@@ -546,7 +677,7 @@ internal static class PermanentPatchCatalog
     {
         bool allReturns = target.Anchor.IndexOf("every return", StringComparison.OrdinalIgnoreCase) >= 0 ||
             target.Injection.IndexOf("every return", StringComparison.OrdinalIgnoreCase) >= 0;
-        int expected = allReturns ? CountReturns(targetMethods) : 1;
+        int expected = allReturns ? CountReturns(targetMethods) : target.ExpectedBridgeCallCount;
         int actual = CountBridgeMethodCalls(targetMethods, bridgeMethod);
         if (actual != expected)
         {

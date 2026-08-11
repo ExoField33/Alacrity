@@ -45,14 +45,14 @@ public sealed class PluginOverlayHost
     public void Dispatch(IPluginOverlayCanvas canvas, PluginOverlayFrame frame, PluginOverlaySpace space, IPluginLogger? diagnostics = null)
     {
         if (canvas == null) throw new ArgumentNullException(nameof(canvas));
-        if (!Enum.IsDefined(typeof(PluginOverlaySpace), space)) throw new ArgumentOutOfRangeException(nameof(space));
+        if (!IsValidOverlaySpace(space)) throw new ArgumentOutOfRangeException(nameof(space));
         Entry[][] snapshots = Volatile.Read(ref phaseSnapshots);
         Entry[] snapshot = snapshots[(int)space];
         if (snapshot.Length == 0) return;
-        foreach (Entry entry in snapshot)
+        for (int index = 0; index < snapshot.Length; index++)
         {
-            DateTime now = utcNow();
-            if (!entry.CanInvoke(now)) continue;
+            Entry entry = snapshot[index];
+            if (!entry.CanInvoke(utcNow, out DateTime now)) continue;
             if (!entry.TryEnter(out ActivationCallbackGate.Lease lease)) continue;
             try
             {
@@ -64,7 +64,8 @@ public sealed class PluginOverlayHost
             }
             catch (Exception exception)
             {
-                bool report = ShouldReport(entry.Owner, entry.Descriptor.Id);
+                if (now == default) now = utcNow();
+                bool report = ShouldReport(entry.Owner, entry.Descriptor.Id, now);
                 entry.RecordFailure(now, failureInterval);
                 if (report) (entry.Logger ?? diagnostics)?.Error("Overlay '" + entry.Descriptor.Id + "' in layer " + entry.Descriptor.Layer + " failed for plugin '" + entry.Owner.Value + "'.", exception);
             }
@@ -79,7 +80,7 @@ public sealed class PluginOverlayHost
     /// <summary>Returns whether the specified draw phase has active registrations without allocating.</summary>
     public bool HasRegistrations(PluginOverlaySpace space)
     {
-        if (!Enum.IsDefined(typeof(PluginOverlaySpace), space)) throw new ArgumentOutOfRangeException(nameof(space));
+        if (!IsValidOverlaySpace(space)) throw new ArgumentOutOfRangeException(nameof(space));
         return Volatile.Read(ref phaseSnapshots)[(int)space].Length != 0;
     }
 
@@ -130,12 +131,11 @@ public sealed class PluginOverlayHost
         return registration;
     }
 
-    private bool ShouldReport(PluginId owner, string overlayId)
+    private bool ShouldReport(PluginId owner, string overlayId, DateTime now)
     {
         lock (gate)
         {
             string key = owner.Value + ":" + overlayId;
-            DateTime now = utcNow();
             if (lastFailure.TryGetValue(key, out DateTime previous) && now - previous < failureInterval) return false;
             lastFailure[key] = now;
             return true;
@@ -170,6 +170,11 @@ public sealed class PluginOverlayHost
         return new[] { Array.Empty<Entry>(), Array.Empty<Entry>(), Array.Empty<Entry>() };
     }
 
+    private static bool IsValidOverlaySpace(PluginOverlaySpace space)
+    {
+        return (uint)space <= (uint)PluginOverlaySpace.Menu;
+    }
+
     private sealed class Service : IPluginOverlayService
     {
         private readonly PluginOverlayHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources; private readonly IPluginLogger? logger; private readonly ScopeGuard guard;
@@ -191,7 +196,7 @@ public sealed class PluginOverlayHost
         public Action<IPluginOverlayCanvas, PluginOverlayFrame> Draw { get; }
         public IPluginLogger? Logger { get; }
         public long Sequence { get; }
-        public bool CanInvoke(DateTime now) => failures.CanInvoke(now);
+        public bool CanInvoke(Func<DateTime> utcNow, out DateTime now) => failures.CanInvoke(utcNow, out now);
         public bool TryEnter(out ActivationCallbackGate.Lease lease)
         {
             if (callbackGate == null) { lease = default; return true; }

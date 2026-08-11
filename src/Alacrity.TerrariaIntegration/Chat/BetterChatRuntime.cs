@@ -27,6 +27,7 @@ namespace AlacrityTerraria
         private static readonly ConditionalWeakTable<TextSnippet, ChatLineContext> ChatLines = new ConditionalWeakTable<TextSnippet, ChatLineContext>();
         private const int RepeatDelayMilliseconds = 320;
         private const int RepeatIntervalMilliseconds = 38;
+        internal const int MaximumChatScrollLinesPerAction = 16;
 
         internal static string Process(PluginChatHost host, IPluginUserInteractionService userInteraction, string oldString, bool allowMultiLine)
         {
@@ -231,8 +232,9 @@ namespace AlacrityTerraria
 
             _caret = result.Caret;
             _selectionAnchor = result.SelectionAnchor;
-            if (result.ChatScrollLines != 0)
-                Main.chatMonitor.Offset(result.ChatScrollLines);
+            int boundedScrollLines = Math.Max(-MaximumChatScrollLinesPerAction, Math.Min(MaximumChatScrollLinesPerAction, result.ChatScrollLines));
+            if (boundedScrollLines != 0)
+                Main.chatMonitor.Offset(boundedScrollLines);
             resultText = result.Text;
             return true;
         }

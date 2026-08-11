@@ -13,6 +13,9 @@ internal sealed class DeploymentTransaction : IDisposable
 {
     // Test seam for deterministic backup-copy failure coverage. Production retains File.Copy.
     internal static Action<string, string> BackupFileCopy = CopyBackupFile;
+    // Test seam for deterministic restoration failures. It also keeps rollback's completion state
+    // honest: a failed restore may be retried while its backups still exist.
+    internal static Action<string, string> RestoreFileCopy = RestoreBackupFile;
 
     private readonly string outputDirectory;
     private readonly string backupDirectory;
@@ -60,8 +63,6 @@ internal sealed class DeploymentTransaction : IDisposable
         {
             return;
         }
-
-        rolledBack = true;
         foreach (KeyValuePair<string, CaptureState> entry in captures)
         {
             string targetPath = ClientBuildPaths.ResolveUnderRoot(outputDirectory, entry.Key, "Deployment rollback path");
@@ -77,8 +78,10 @@ internal sealed class DeploymentTransaction : IDisposable
 
             string backupPath = ClientBuildPaths.ResolveUnderRoot(backupDirectory, entry.Key, "Deployment backup path");
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-            File.Copy(backupPath, targetPath, overwrite: true);
+            RestoreFileCopy(backupPath, targetPath);
         }
+
+        rolledBack = true;
     }
 
     public void Dispose()
@@ -117,5 +120,10 @@ internal sealed class DeploymentTransaction : IDisposable
     private static void CopyBackupFile(string sourcePath, string destinationPath)
     {
         File.Copy(sourcePath, destinationPath, overwrite: false);
+    }
+
+    private static void RestoreBackupFile(string sourcePath, string destinationPath)
+    {
+        File.Copy(sourcePath, destinationPath, overwrite: true);
     }
 }

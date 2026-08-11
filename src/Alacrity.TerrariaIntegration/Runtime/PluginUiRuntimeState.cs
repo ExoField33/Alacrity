@@ -38,6 +38,7 @@ internal sealed class PluginUiRuntimeState
         ChatAdapter = new TerrariaPluginChatAdapter(Chat, ensureChatRuntime, getActiveChatInteraction, reportFailure);
         VisualEffects = new TerrariaVisualEffectsAdapter(services.VisualEffects.Policies, reportFailure);
         RenderCulling = new TerrariaRenderCullingAdapter(services.RenderCulling.Policies, reportFailure);
+        RenderingOptimizations = services.RenderingOptimizations.Policies;
         EnabledStateStore = new TerrariaPluginEnabledStateStore(root);
         KeybindRuntime = new TerrariaKeybindRuntime(root, Extensions, Notifications, reportFailure);
         Operations = new TerrariaPluginOperationCoordinator(Runtime, persistEnabledState, publishNotification);
@@ -62,6 +63,7 @@ internal sealed class PluginUiRuntimeState
     internal PluginUserInteractionHost UserInteraction { get; }
     internal TerrariaVisualEffectsAdapter VisualEffects { get; }
     internal TerrariaRenderCullingAdapter RenderCulling { get; }
+    internal PluginRenderingOptimizationHost RenderingOptimizations { get; }
     internal TerrariaPluginEnabledStateStore EnabledStateStore { get; }
     internal TerrariaPluginOperationCoordinator Operations { get; }
     internal TerrariaKeybindRuntime KeybindRuntime { get; }

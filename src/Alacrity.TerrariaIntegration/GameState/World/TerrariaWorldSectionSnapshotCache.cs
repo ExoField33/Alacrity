@@ -20,20 +20,28 @@ internal sealed class TerrariaWorldSectionSnapshotCache
 
     private readonly ReaderWriterLockSlim gate = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     private readonly List<TerrariaWorldSectionService> consumers = new List<TerrariaWorldSectionService>();
-    private Snapshot current = Snapshot.Empty;
-    private Snapshot alternate = Snapshot.Empty;
+    // These are intentionally distinct mutable buffers. A shared empty singleton would let a
+    // later capture overwrite the frame still being read through the other buffer.
+    private Snapshot current = new Snapshot(Array.Empty<PluginWorldSectionSnapshot>());
+    private Snapshot alternate = new Snapshot(Array.Empty<PluginWorldSectionSnapshot>());
     private uint capturedTick = uint.MaxValue;
     private int capturedFrameCount;
+    private int consumerCount;
 
     /// <summary>Captures at most once per simulation tick and returns immediately without consumers.</summary>
     internal void CaptureForCurrentTick()
     {
+        if (Volatile.Read(ref consumerCount) == 0)
+        {
+            return;
+        }
+
         gate.EnterUpgradeableReadLock();
         try
         {
             // Reading Main is avoided entirely until at least one activation has consumed this
             // capability. Installed-but-idle diagnostics therefore add no recurring section work.
-            if (consumers.Count == 0)
+            if (Volatile.Read(ref consumerCount) == 0)
             {
                 return;
             }
@@ -48,7 +56,7 @@ internal sealed class TerrariaWorldSectionSnapshotCache
             gate.EnterWriteLock();
             try
             {
-                if (consumers.Count == 0 || tick == capturedTick)
+                if (Volatile.Read(ref consumerCount) == 0 || tick == capturedTick)
                 {
                     return;
                 }
@@ -80,6 +88,7 @@ internal sealed class TerrariaWorldSectionSnapshotCache
             if (!consumers.Contains(service))
             {
                 consumers.Add(service);
+                Interlocked.Increment(ref consumerCount);
                 capturedTick = uint.MaxValue;
             }
         }
@@ -94,11 +103,17 @@ internal sealed class TerrariaWorldSectionSnapshotCache
         gate.EnterWriteLock();
         try
         {
-            consumers.Remove(service);
-            if (consumers.Count == 0)
+            if (!consumers.Remove(service))
             {
-                current = Snapshot.Empty;
-                alternate = Snapshot.Empty;
+                return;
+            }
+
+            if (Interlocked.Decrement(ref consumerCount) == 0)
+            {
+                // Retain capacity for a later activation, but clear both independently so a
+                // previous world's values can never be observed before the next capture.
+                current.SetEmpty(uint.MaxValue);
+                alternate.SetEmpty(uint.MaxValue);
                 capturedTick = uint.MaxValue;
             }
         }
@@ -110,6 +125,8 @@ internal sealed class TerrariaWorldSectionSnapshotCache
 
     internal void CopyVisibleSections(ICollection<PluginWorldSectionSnapshot> destination, int requestedMargin)
     {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+        TerrariaWorldSectionBounds.ValidateMargin(requestedMargin);
         gate.EnterReadLock();
         try
         {
@@ -141,7 +158,7 @@ internal sealed class TerrariaWorldSectionSnapshotCache
             gate.EnterReadLock();
             try
             {
-                return consumers.Count;
+                return Volatile.Read(ref consumerCount);
             }
             finally
             {
@@ -151,6 +168,55 @@ internal sealed class TerrariaWorldSectionSnapshotCache
     }
 
     internal int CapturedFrameCount => Volatile.Read(ref capturedFrameCount);
+
+    /// <summary>Test seam for validating detached-buffer swaps without reading live Terraria state.</summary>
+    internal void PublishSnapshotForTests(
+        IReadOnlyList<PluginWorldSectionSnapshot> sections,
+        int baseStartX,
+        int baseStartY,
+        int baseEndX,
+        int baseEndY,
+        int maximumSectionX,
+        int maximumSectionY,
+        uint tick)
+    {
+        if (sections == null) throw new ArgumentNullException(nameof(sections));
+        gate.EnterWriteLock();
+        try
+        {
+            alternate.EnsureCapacity(sections.Count);
+            for (int index = 0; index < sections.Count; index++)
+            {
+                alternate.Sections[index] = sections[index];
+            }
+
+            alternate.SetBounds(baseStartX, baseStartY, baseEndX, baseEndY, maximumSectionX, maximumSectionY, sections.Count, tick);
+            Snapshot prior = current;
+            current = alternate;
+            alternate = prior;
+            capturedTick = tick;
+        }
+        finally
+        {
+            gate.ExitWriteLock();
+        }
+    }
+
+    internal bool UsesDistinctBuffersForTests
+    {
+        get
+        {
+            gate.EnterReadLock();
+            try
+            {
+                return !ReferenceEquals(current, alternate);
+            }
+            finally
+            {
+                gate.ExitReadLock();
+            }
+        }
+    }
 
     private int GetMaximumRequestedMargin()
     {
@@ -218,8 +284,6 @@ internal sealed class TerrariaWorldSectionSnapshotCache
 
     private sealed class Snapshot
     {
-        internal static readonly Snapshot Empty = new Snapshot(Array.Empty<PluginWorldSectionSnapshot>());
-
         internal Snapshot(PluginWorldSectionSnapshot[] sections)
         {
             Sections = sections;

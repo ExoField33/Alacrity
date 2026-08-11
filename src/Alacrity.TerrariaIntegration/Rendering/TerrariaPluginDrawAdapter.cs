@@ -20,7 +20,8 @@ internal sealed class TerrariaPluginDrawAdapter : IDisposable
     private readonly TerrariaEntitySnapshotCache entitySnapshots;
     private readonly Action<string, Exception> reportFailure;
     private readonly TerrariaOverlayAdapter overlayAdapter = new TerrariaOverlayAdapter();
-    private uint lastProjectionVerificationTick = uint.MaxValue;
+    private bool projectionVerified;
+    private bool projectionAvailable = true;
 
     internal TerrariaPluginDrawAdapter(
         PluginNotificationCenter notifications,
@@ -55,10 +56,24 @@ internal sealed class TerrariaPluginDrawAdapter : IDisposable
 
     internal void DrawWorldOverlays(SpriteBatch spriteBatch)
     {
-        if (spriteBatch == null || Main.gameMenu || !overlays.HasRegistrations(PluginOverlaySpace.World)) return;
+        if (spriteBatch == null)
+        {
+            return;
+        }
+
+        if (Main.gameMenu)
+        {
+            ResetProjectionVerification();
+            return;
+        }
+
+        if (!overlays.HasRegistrations(PluginOverlaySpace.World) || !VerifyLiveProjection())
+        {
+            return;
+        }
+
         try
         {
-            VerifyLiveProjection();
             entitySnapshots.RefreshLocalPlayerPresentation();
             overlayAdapter.Dispatch(spriteBatch, overlays, PluginOverlaySpace.World);
         }
@@ -67,7 +82,7 @@ internal sealed class TerrariaPluginDrawAdapter : IDisposable
 
     internal void DrawHudOverlays(SpriteBatch spriteBatch)
     {
-        if (spriteBatch == null || Main.gameMenu) return;
+        if (spriteBatch == null || Main.gameMenu || !overlays.HasRegistrations(PluginOverlaySpace.Hud)) return;
         try { overlayAdapter.Dispatch(spriteBatch, overlays, PluginOverlaySpace.Hud); }
         catch (Exception exception) { reportFailure("Plugin HUD overlays", exception); }
     }
@@ -75,25 +90,41 @@ internal sealed class TerrariaPluginDrawAdapter : IDisposable
     internal void DrawMenuOverlays(SpriteBatch spriteBatch)
     {
         if (spriteBatch == null || !Main.gameMenu) return;
+        ResetProjectionVerification();
+        if (!overlays.HasRegistrations(PluginOverlaySpace.Menu)) return;
         try { overlayAdapter.Dispatch(spriteBatch, overlays, PluginOverlaySpace.Menu); }
         catch (Exception exception) { reportFailure("Plugin menu overlays", exception); }
     }
 
     internal void DrawHudWidgets(SpriteBatch spriteBatch)
     {
-        if (spriteBatch == null || Main.gameMenu) return;
+        if (spriteBatch == null || Main.gameMenu || !hud.HasRegistrations()) return;
         try { hudAdapter.Draw(spriteBatch); }
         catch (Exception exception) { reportFailure("Plugin HUD draw", exception); }
     }
 
     public void Dispose() => overlayAdapter.Dispose();
 
-    private void VerifyLiveProjection()
+    private bool VerifyLiveProjection()
     {
-        uint tick = Main.GameUpdateCount;
-        if (tick == lastProjectionVerificationTick) return;
-        lastProjectionVerificationTick = tick;
+        if (projectionVerified)
+        {
+            return projectionAvailable;
+        }
+
+        projectionVerified = true;
         if (!TerrariaWorldProjection.TryVerifyLiveState(out string diagnostic))
+        {
+            projectionAvailable = false;
             reportFailure("Plugin world-overlay projection", new InvalidOperationException(diagnostic));
+        }
+
+        return projectionAvailable;
+    }
+
+    private void ResetProjectionVerification()
+    {
+        projectionVerified = false;
+        projectionAvailable = true;
     }
 }

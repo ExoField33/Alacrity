@@ -1,4 +1,5 @@
 using System;
+using Alacrity.PluginSdk;
 
 namespace AlacrityTerraria.GameState.World;
 
@@ -38,6 +39,7 @@ internal readonly struct TerrariaWorldSectionBounds
         int sectionWidthPixels,
         int sectionHeightPixels)
     {
+        ValidateMargin(margin);
         if (maximumSectionX < 0 || maximumSectionY < 0)
         {
             return new TerrariaWorldSectionBounds(0, 0, -1, -1, 0, 0, -1, -1);
@@ -57,5 +59,16 @@ internal readonly struct TerrariaWorldSectionBounds
             Math.Max(0, baseStartY - margin),
             Math.Min(maximumSectionX, baseEndX + margin),
             Math.Min(maximumSectionY, baseEndY + margin));
+    }
+
+    internal static void ValidateMargin(int margin)
+    {
+        if (margin < 0 || margin > PluginWorldSectionLimits.MaximumMargin)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(margin),
+                margin,
+                "World section margin must be between zero and " + PluginWorldSectionLimits.MaximumMargin + ".");
+        }
     }
 }

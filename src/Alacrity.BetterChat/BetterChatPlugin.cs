@@ -137,7 +137,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
             {
                 case "up":
                 case "down":
-                    return plugin.scrollChat || plugin.chatHistory;
+                    return plugin.chatHistory;
                 case "scroll":
                     return plugin.scrollChat;
                 default:
@@ -169,9 +169,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
                 if (plugin.chatHistory)
                     return NavigateHistory(snapshot, action.Id == "up");
 
-                return plugin.scrollChat
-                    ? new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, true)
-                    : ChatInputEditResult.Unhandled(snapshot);
+                return ChatInputEditResult.Unhandled(snapshot);
             }
 
             int caret = snapshot.Caret;

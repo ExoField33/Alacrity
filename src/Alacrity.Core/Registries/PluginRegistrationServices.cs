@@ -11,6 +11,9 @@ public sealed class PluginExtensionHost
 {
     private readonly object gate = new object();
     private readonly Dictionary<Type, List<EventHandlerRegistration>> eventHandlers = new Dictionary<Type, List<EventHandlerRegistration>>();
+    // Event publication is part of the game-loop path. Registrations rebuild this immutable map
+    // under the host lock; publishers only read the completed array for their event type.
+    private Dictionary<Type, EventHandlerRegistration[]> eventSnapshots = new Dictionary<Type, EventHandlerRegistration[]>();
     private readonly Dictionary<string, OwnedKeybind> keybinds = new Dictionary<string, OwnedKeybind>(StringComparer.Ordinal);
     private IReadOnlyList<PluginKeybindRegistration> keybindSnapshot = Array.Empty<PluginKeybindRegistration>();
     private bool keybindSnapshotDirty = true;
@@ -248,11 +251,15 @@ public sealed class PluginExtensionHost
     /// <summary>Publishes an immutable host event snapshot to current subscribers.</summary>
     public void Publish<TEvent>(TEvent snapshot)
     {
-        EventHandlerRegistration[] handlers;
-        lock (gate)
-            handlers = eventHandlers.TryGetValue(typeof(TEvent), out var current) ? current.ToArray() : Array.Empty<EventHandlerRegistration>();
-        foreach (var handler in handlers)
+        Dictionary<Type, EventHandlerRegistration[]> snapshots = System.Threading.Volatile.Read(ref eventSnapshots);
+        if (!snapshots.TryGetValue(typeof(TEvent), out EventHandlerRegistration[] handlers))
         {
+            return;
+        }
+
+        for (int index = 0; index < handlers.Length; index++)
+        {
+            EventHandlerRegistration handler = handlers[index];
             if (!handler.TryEnter(out ActivationCallbackGate.Lease lease))
             {
                 continue;
@@ -262,7 +269,7 @@ public sealed class PluginExtensionHost
             {
                 using (lease)
                 {
-                    handler.Invoke(snapshot);
+                    ((EventHandlerRegistration<TEvent>)handler).Invoke(snapshot);
                 }
             }
             catch (Exception exception)
@@ -280,7 +287,7 @@ public sealed class PluginExtensionHost
     {
         EnsureOwner(owner);
         if (handler == null) throw new ArgumentNullException(nameof(handler));
-        var registration = new EventHandlerRegistration(owner, typeof(TEvent), value => handler((TEvent)value!), options?.Once == true, RemoveEvent, logger, callbackGate);
+        var registration = new EventHandlerRegistration<TEvent>(owner, options?.Once == true, RemoveEvent, handler, logger, callbackGate);
         try
         {
             resources.Own("event:" + typeof(TEvent).FullName, PluginResourceKind.EventSubscription, registration);
@@ -306,6 +313,7 @@ public sealed class PluginExtensionHost
             }
 
             handlers.Add(registration);
+            RebuildEventSnapshot(typeof(TEvent), handlers);
         }
 
         return registration;
@@ -478,7 +486,39 @@ public sealed class PluginExtensionHost
     private void RemoveEvent(EventHandlerRegistration registration)
     {
         lock (gate)
-            if (eventHandlers.TryGetValue(registration.EventType, out var handlers)) handlers.Remove(registration);
+        {
+            if (!eventHandlers.TryGetValue(registration.EventType, out List<EventHandlerRegistration> handlers))
+            {
+                return;
+            }
+
+            if (!handlers.Remove(registration))
+            {
+                return;
+            }
+
+            if (handlers.Count == 0)
+            {
+                eventHandlers.Remove(registration.EventType);
+            }
+
+            RebuildEventSnapshot(registration.EventType, handlers);
+        }
+    }
+
+    private void RebuildEventSnapshot(Type eventType, List<EventHandlerRegistration> handlers)
+    {
+        var updated = new Dictionary<Type, EventHandlerRegistration[]>(eventSnapshots);
+        if (handlers.Count == 0)
+        {
+            updated.Remove(eventType);
+        }
+        else
+        {
+            updated[eventType] = handlers.ToArray();
+        }
+
+        System.Threading.Volatile.Write(ref eventSnapshots, updated);
     }
 
     private void ReportEventFailure(EventHandlerRegistration registration, Exception exception)
@@ -579,27 +619,84 @@ public sealed class PluginExtensionHost
             return host.RegisterKeybind(owner, manifest.Name, resources, descriptor, null, stateHandler);
         }
     }
-    private sealed class EventHandlerRegistration : CallbackRegistration
+    private abstract class EventHandlerRegistration : CallbackRegistration
     {
-        private readonly Action<object?> handler;
         private readonly ActivationCallbackGate? callbackGate;
-        public EventHandlerRegistration(PluginId owner, Type eventType, Action<object?> handler, bool once, Action<EventHandlerRegistration> remove, IPluginLogger? logger, ActivationCallbackGate? callbackGate) : base("event:" + owner.Value + ":" + eventType.FullName, () => { }) { Owner = owner; EventType = eventType; this.handler = handler; Once = once; Remove = remove; Logger = logger; this.callbackGate = callbackGate; }
-        public PluginId Owner { get; } public Type EventType { get; } public bool Once { get; } public IPluginLogger? Logger { get; } private Action<EventHandlerRegistration> Remove { get; }
-        public void Invoke(object? value) => handler(value);
+        protected EventHandlerRegistration(PluginId owner, Type eventType, bool once, Action<EventHandlerRegistration> remove, IPluginLogger? logger, ActivationCallbackGate? callbackGate)
+            : base("event:" + owner.Value + ":" + eventType.FullName, () => { })
+        {
+            Owner = owner;
+            EventType = eventType;
+            Once = once;
+            Remove = remove;
+            Logger = logger;
+            this.callbackGate = callbackGate;
+        }
+
+        public PluginId Owner { get; }
+        public Type EventType { get; }
+        public bool Once { get; }
+        public IPluginLogger? Logger { get; }
+        private Action<EventHandlerRegistration> Remove { get; }
         public bool TryEnter(out ActivationCallbackGate.Lease lease)
         {
             if (IsReleased) { lease = default; return false; }
             if (callbackGate == null) { lease = default; return true; }
             return callbackGate.TryEnter(out lease);
         }
-        public override void Dispose() { if (IsReleased) return; base.Dispose(); Remove(this); }
+        public override void Dispose()
+        {
+            if (TryRelease())
+            {
+                Remove(this);
+            }
+        }
+    }
+    private sealed class EventHandlerRegistration<TEvent> : EventHandlerRegistration
+    {
+        private readonly Action<TEvent> handler;
+
+        public EventHandlerRegistration(PluginId owner, bool once, Action<EventHandlerRegistration> remove, Action<TEvent> handler, IPluginLogger? logger, ActivationCallbackGate? callbackGate)
+            : base(owner, typeof(TEvent), once, remove, logger, callbackGate)
+        {
+            this.handler = handler;
+        }
+
+        public void Invoke(TEvent value)
+        {
+            handler(value);
+        }
     }
     private class CallbackRegistration : IPluginRegistration
     {
-        private readonly Action release; private bool released;
-        public CallbackRegistration(string name, Action release) { Name = name; this.release = release; }
-        public string Name { get; } public bool IsReleased => released;
-        public virtual void Dispose() { if (released) return; released = true; release(); }
+        private readonly Action release;
+        private int released;
+
+        public CallbackRegistration(string name, Action release)
+        {
+            Name = name;
+            this.release = release;
+        }
+
+        public string Name { get; }
+
+        public bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+
+        public virtual void Dispose()
+        {
+            TryRelease();
+        }
+
+        protected bool TryRelease()
+        {
+            if (System.Threading.Interlocked.Exchange(ref released, 1) != 0)
+            {
+                return false;
+            }
+
+            release();
+            return true;
+        }
     }
 
     private sealed class ScopeGuard : IDisposable

@@ -19,6 +19,8 @@ public interface ITerrariaServices
     IPluginVisualEffectsService VisualEffects { get; }
     /// Scoped requests for conservative local off-screen world-render culling.
     IPluginRenderCullingService RenderCulling { get; }
+    /// Scoped requests for host-implemented local renderer preparation optimizations.
+    IPluginRenderingOptimizationService RenderingOptimizations { get; }
     /// Read-only world/server presentation data such as the display name and sampled ping.
     IPluginSessionPresentationService Session { get; }
     /// Demand-gated hostile NPC-to-player targeting relationships for presentation diagnostics.
@@ -60,7 +62,19 @@ public sealed class ChatInputSnapshot
 /// Normalized host input action. Plugins never receive raw keyboard state.
 public sealed class ChatInputAction
 {
-    public ChatInputAction(string id, bool control = false, bool shift = false, string? text = null, int scrollLines = 0)
+    /// <summary>
+    /// Initializes a normalized input action. This overload is retained as the stable v2 SDK
+    /// constructor used by already-built plugins.
+    /// </summary>
+    public ChatInputAction(string id, bool control = false, bool shift = false, string? text = null)
+        : this(id, control, shift, text, 0)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a host-generated input action that may include normalized wheel movement.
+    /// </summary>
+    public ChatInputAction(string id, bool control, bool shift, string? text, int scrollLines)
     {
         Id = string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("An input action ID is required.", nameof(id)) : id;
         Control = control;
@@ -79,7 +93,17 @@ public sealed class ChatInputAction
 /// Replacement state returned by a chat editor.
 public sealed class ChatInputEditResult
 {
-    public ChatInputEditResult(string text, int caret, int selectionAnchor, bool handled, int chatScrollLines = 0)
+    /// <summary>
+    /// Initializes an editor result without a requested visible-chat offset. This exact overload
+    /// is retained for plugins compiled against the v2 SDK.
+    /// </summary>
+    public ChatInputEditResult(string text, int caret, int selectionAnchor, bool handled)
+        : this(text, caret, selectionAnchor, handled, 0)
+    {
+    }
+
+    /// <summary>Initializes an editor result with a host-mediated visible-chat offset request.</summary>
+    public ChatInputEditResult(string text, int caret, int selectionAnchor, bool handled, int chatScrollLines)
     {
         Text = text ?? string.Empty;
         Caret = Math.Max(0, Math.Min(caret, Text.Length));
@@ -91,7 +115,10 @@ public sealed class ChatInputEditResult
     public int Caret { get; }
     public int SelectionAnchor { get; }
     public bool Handled { get; }
-    /// <summary>Requested host-owned visible-chat offset. Plugins never receive the native chat monitor.</summary>
+    /// <summary>
+    /// Requested host-owned visible-chat offset. Plugins never receive the native chat monitor;
+    /// the integration bounds this request before applying it.
+    /// </summary>
     public int ChatScrollLines { get; }
     public static ChatInputEditResult Unhandled(ChatInputSnapshot snapshot) => new ChatInputEditResult(snapshot.Text, snapshot.Caret, snapshot.SelectionAnchor, false);
 }

@@ -1730,17 +1730,18 @@ public static class FoundationScenarioSuite
             Assert(newest.Handled && newest.Text == "second" && previous.Text == "first", "Chat History must traverse previously submitted messages in newest-first order.");
             Assert(restored.Handled && restored.Text == "draft", "Chat History must restore the in-progress draft after the newest history entry.");
 
-            Assert(chat.HasInputActionHandler(new ChatInputAction("up")), "Scroll Chat or Chat History must claim Terraria's native Up/Down chat navigation while enabled.");
-            ChatInputEditResult defaultScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", scrollLines: 1));
+            Assert(chat.HasInputActionHandler(new ChatInputAction("up")), "Chat History must claim Terraria's native Up/Down chat navigation while enabled.");
+            ChatInputEditResult defaultScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", false, false, null, 1));
             Assert(defaultScroll.Handled && defaultScroll.ChatScrollLines == 1, "Scroll Chat sensitivity must default to one visible chat line per wheel step.");
             context.Settings.Set("scrollChatSensitivity", 9);
-            ChatInputEditResult clampedScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", scrollLines: -1));
+            ChatInputEditResult clampedScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", false, false, null, -1));
             Assert(clampedScroll.Handled && clampedScroll.ChatScrollLines == -4, "Scroll Chat sensitivity must clamp persisted values to the supported one-to-four line range.");
             context.Settings.Set("scrollChat", false);
             context.Settings.Set("chatHistory", false);
             Assert(!chat.HasInputActionHandler(new ChatInputAction("up")), "Disabling both input features must return Up/Down chat navigation to vanilla Terraria.");
             context.Settings.Set("scrollChat", true);
-            Assert(chat.HasInputActionHandler(new ChatInputAction("scroll", scrollLines: 1)), "Scroll Chat must claim normalized wheel actions while enabled.");
+            Assert(chat.HasInputActionHandler(new ChatInputAction("scroll", false, false, null, 1)), "Scroll Chat must claim normalized wheel actions while enabled.");
+            Assert(!chat.HasInputActionHandler(new ChatInputAction("up")), "Scroll Chat alone must leave Terraria's native Up/Down navigation untouched.");
 
             extensions.Publish(new ClientMenuStateChangedEvent(true, 0, TimeSpan.Zero));
             context.Settings.Set("chatHistory", true);
@@ -1822,7 +1823,7 @@ public static class FoundationScenarioSuite
         plugin.Initialize(context);
 
         var overlays = context.Overlays as TestOverlays;
-        Assert(overlays != null && overlays.Registrations == 1, "Hitboxes must own one generic world-overlay registration.");
+        Assert(overlays != null && overlays.Registrations == 0, "Default-disabled Hitboxes must not retain a generic world-overlay registration.");
 
         scope.Dispose();
         Assert(overlays != null, "Hitbox overlay registration must be retained through scope cleanup.");
@@ -2971,6 +2972,7 @@ public static class FoundationScenarioSuite
         public IPluginNpcTargetSnapshotService NpcTargets { get; } = new TestNpcTargets();
         public IPluginWorldSectionService WorldSections { get; } = new TestWorldSections();
         public IPluginRenderCullingService RenderCulling { get; } = new TestRenderCulling();
+        public IPluginRenderingOptimizationService RenderingOptimizations { get; } = new TestRenderingOptimizations();
     }
 
     private sealed class TestSessionPresentation : IPluginSessionPresentationService
@@ -3013,6 +3015,11 @@ public static class FoundationScenarioSuite
     private sealed class TestRenderCulling : IPluginRenderCullingService
     {
         public IPluginRegistration RegisterPolicy(PluginRenderCullingPolicy policy) => new TestRegistration("render-culling");
+    }
+
+    private sealed class TestRenderingOptimizations : IPluginRenderingOptimizationService
+    {
+        public IPluginRegistration RegisterPolicy(PluginRenderingOptimizationPolicy policy) => new TestRegistration("rendering-optimization");
     }
 
     private sealed class TestPlayers : IPluginPlayerService

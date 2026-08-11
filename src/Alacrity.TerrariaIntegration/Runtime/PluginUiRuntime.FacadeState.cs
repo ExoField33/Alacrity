@@ -138,6 +138,7 @@ namespace AlacrityTerraria
         private static TerrariaPluginEnabledStateStore _enabledStateStore => runtimeState == null ? null : runtimeState.EnabledStateStore;
         private static TerrariaVisualEffectsAdapter _visualEffects => runtimeState == null ? null : runtimeState.VisualEffects;
         private static Rendering.Culling.TerrariaRenderCullingAdapter _renderCulling => runtimeState == null ? null : runtimeState.RenderCulling;
+        private static PluginRenderingOptimizationHost _renderingOptimizations => runtimeState == null ? null : runtimeState.RenderingOptimizations;
         private static TerrariaPluginOperationCoordinator _pluginOperations => runtimeState == null ? null : runtimeState.Operations;
         private static TerrariaKeybindRuntime _keybindRuntime => runtimeState == null ? null : runtimeState.KeybindRuntime;
         private static uint _iconInteractionInputTick
