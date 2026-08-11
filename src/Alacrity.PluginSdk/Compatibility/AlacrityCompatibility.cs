@@ -12,7 +12,7 @@ public static class AlacrityCompatibility
     /// <summary>Current Core host contract level.</summary>
     public const int Host = 2;
     /// <summary>Current static Terraria bridge ABI level.</summary>
-    public const int BridgeAbi = 2;
+    public const int BridgeAbi = 3;
 }
 
 /// <summary>Immutable package requirements checked before a plugin assembly is loaded.</summary>

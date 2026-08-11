@@ -21,34 +21,39 @@ public sealed class KinesinPluginTests
             PluginRenderingOptimization.ClothingEntityPresentation |
             PluginRenderingOptimization.WaterfallPresentation |
             PluginRenderingOptimization.TileDrawingPresentation |
-            PluginRenderingOptimization.DrawOrchestration,
+            PluginRenderingOptimization.DrawOrchestration |
+            PluginRenderingOptimization.LaserRulerPresentation,
             host.RenderingOptimizations.GetEffectiveOptimizations());
         PluginSettingControl[] settings = host.GetSettingsControls(manifest.Id).ToArray();
-        Assert.Equal(5, settings.Length);
+        Assert.Equal(6, settings.Length);
         PluginSettingControl paintedTiles = Assert.Single(settings, setting => setting.Id == "painted-tile-preparation");
         PluginSettingControl clothingEntities = Assert.Single(settings, setting => setting.Id == "clothing-entity-presentation");
         PluginSettingControl waterfalls = Assert.Single(settings, setting => setting.Id == "waterfall-presentation");
         PluginSettingControl tileDrawing = Assert.Single(settings, setting => setting.Id == "tile-drawing-presentation");
         PluginSettingControl drawOrchestration = Assert.Single(settings, setting => setting.Id == "draw-orchestration");
+        PluginSettingControl laserRuler = Assert.Single(settings, setting => setting.Id == "laser-ruler-presentation");
 
         paintedTiles.SetToggle!(false);
         Assert.Equal(
             PluginRenderingOptimization.ClothingEntityPresentation |
             PluginRenderingOptimization.WaterfallPresentation |
             PluginRenderingOptimization.TileDrawingPresentation |
-            PluginRenderingOptimization.DrawOrchestration,
+            PluginRenderingOptimization.DrawOrchestration |
+            PluginRenderingOptimization.LaserRulerPresentation,
             host.RenderingOptimizations.GetEffectiveOptimizations());
 
         clothingEntities.SetToggle!(false);
         Assert.Equal(
             PluginRenderingOptimization.WaterfallPresentation |
             PluginRenderingOptimization.TileDrawingPresentation |
-            PluginRenderingOptimization.DrawOrchestration,
+            PluginRenderingOptimization.DrawOrchestration |
+            PluginRenderingOptimization.LaserRulerPresentation,
             host.RenderingOptimizations.GetEffectiveOptimizations());
 
         waterfalls.SetToggle!(false);
         tileDrawing.SetToggle!(false);
         drawOrchestration.SetToggle!(false);
+        laserRuler.SetToggle!(false);
         Assert.Equal(PluginRenderingOptimization.None, host.RenderingOptimizations.GetEffectiveOptimizations());
 
         paintedTiles.SetToggle!(true);

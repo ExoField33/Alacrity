@@ -30,6 +30,7 @@ internal static partial class PermanentPatchPlan
         "IsWaterfallPresentationOptimizationEnabled",
         "IsTileDrawingPresentationOptimizationEnabled",
         "IsDrawOrchestrationOptimizationEnabled",
+        "TryDrawLaserRulerPresentation",
         "ShouldDrawWorldPlayer",
         "ShouldDrawWorldItem",
         "ShouldDrawWorldParticle",
@@ -147,6 +148,13 @@ internal static partial class PermanentPatchPlan
         PatchTileDrawingPresentation(
             module,
             ImportRuntimeMethod(module, sourceExecutablePath, "IsTileDrawingPresentationOptimizationEnabled", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentLaserRulerPresentation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchLaserRulerPresentation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryDrawLaserRulerPresentation", "System.Boolean"));
     }
 
     internal static void ApplyPermanentDrawOrchestration(ModuleDefinition module, string sourceExecutablePath)

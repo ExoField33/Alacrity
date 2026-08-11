@@ -169,7 +169,7 @@ internal sealed class ClientPatchOperation
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r15";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r16";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
@@ -277,6 +277,13 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("draw.render-now-lighting-area", "Terraria.Main", "DoDraw(Microsoft.Xna.Framework.GameTime)", "the consecutive renderNow Lighting.LightTiles(GetAreaToLight()) calls after camera update", "reuse the first unchanged area only while the generic draw-orchestration policy is active", "IsDrawOrchestrationOptimizationEnabled"),
             new ClientPatchTarget("draw.baby-bird-cache-fast-path", "Terraria.Main", "SortBabyBirdProjectiles(...)", "the unique one-parameter private sort method before native temporary-list allocation", "skip native sorting when projectile type 759 is absent and the captured generic policy is active"),
             new ClientPatchTarget("draw.stardust-dragon-cache-fast-path", "Terraria.Main", "SortStardustDragonProjectiles(...)", "the unique one-parameter private sort method before native temporary-list allocation", "skip native sorting when projectile type 628 is absent and the captured generic policy is active")),
+        CreateDefinition(
+            "patch.runtime.laser-ruler-presentation",
+            PermanentPatchPlan.ApplyPermanentLaserRulerPresentation,
+            "render.laser-ruler-presentation",
+            "Terraria.Main",
+            "Version-locked batched mechanical laser-ruler presentation with native fallback",
+            new ClientPatchTarget("laser-ruler.draw", "Terraria.Main", "DrawInterface_3_LaserRuler()", "the verified static ruler method with its native ReverseGravitySupport grid draws", "call the generic host renderer first and continue through vanilla when it declines", "TryDrawLaserRulerPresentation")),
         CreateDefinition(
             "patch.runtime.chat-input-and-commands",
             PermanentPatchPlan.ApplyPermanentChatInputAndCommands,

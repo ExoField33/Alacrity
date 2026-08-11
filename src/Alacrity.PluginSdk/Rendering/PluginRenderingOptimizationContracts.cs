@@ -34,7 +34,13 @@ public enum PluginRenderingOptimization
     /// Removes verified allocation and repeated-state work from Terraria's top-level draw
     /// orchestration. This remains a host request: plugins do not receive renderer access.
     /// </summary>
-    DrawOrchestration = 16
+    DrawOrchestration = 16,
+
+    /// <summary>
+    /// Replaces Terraria's repeated per-cell laser-ruler presentation with a version-verified
+    /// batched grid. This is a local presentation request and never exposes renderer access.
+    /// </summary>
+    LaserRulerPresentation = 32
 }
 
 /// <summary>

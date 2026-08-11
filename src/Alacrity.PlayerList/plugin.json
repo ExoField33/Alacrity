@@ -8,7 +8,7 @@
   "supportedGameVersions": [ "1.4.5.6" ],
   "pluginSdkCompatibilityVersion": 3,
   "hostCompatibilityVersion": 2,
-  "bridgeAbiVersion": 2,
+  "bridgeAbiVersion": 3,
   "capabilities": [ "UserInterface", "Input", "GameStateRead", "MultiplayerObservation" ],
   "permissions": [ "DrawUserInterface", "ReadGameState", "ObserveMultiplayer" ],
   "multiplayerSafety": "ClientPresentationOnly",

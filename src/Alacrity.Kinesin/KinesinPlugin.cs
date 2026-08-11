@@ -16,6 +16,7 @@ public sealed class KinesinPlugin : IAlacrityPlugin
     private bool waterfallPresentationEnabled = true;
     private bool tileDrawingPresentationEnabled = true;
     private bool drawOrchestrationEnabled = true;
+    private bool laserRulerPresentationEnabled = true;
 
     public void Initialize(IPluginContext context)
     {
@@ -89,6 +90,19 @@ public sealed class KinesinPlugin : IAlacrityPlugin
                 "draw-orchestration",
                 "Optimize Draw Orchestration",
                 drawOrchestrationSetting).InPage("kinesin"));
+        IPluginSetting<bool> laserRulerPresentationSetting = context.Settings.Register(
+            new PluginSettingDefinition<bool>("laserRulerPresentation", true));
+        laserRulerPresentationEnabled = laserRulerPresentationSetting.Value;
+        laserRulerPresentationSetting.Subscribe(value =>
+        {
+            laserRulerPresentationEnabled = value;
+            RefreshPolicy();
+        });
+        context.Ui.RegisterSettingsControl(
+            PluginSettingControl.Toggle(
+                "laser-ruler-presentation",
+                "Optimize Laser Ruler Rendering",
+                laserRulerPresentationSetting).InPage("kinesin"));
         RefreshPolicy();
     }
 
@@ -139,6 +153,10 @@ public sealed class KinesinPlugin : IAlacrityPlugin
         if (drawOrchestrationEnabled)
         {
             optimizations |= PluginRenderingOptimization.DrawOrchestration;
+        }
+        if (laserRulerPresentationEnabled)
+        {
+            optimizations |= PluginRenderingOptimization.LaserRulerPresentation;
         }
         if (optimizations == PluginRenderingOptimization.None)
         {

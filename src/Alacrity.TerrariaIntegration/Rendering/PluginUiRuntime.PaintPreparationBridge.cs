@@ -79,4 +79,16 @@ public static partial class PluginUiRuntime
         return host != null &&
             (host.GetEffectiveOptimizations() & PluginRenderingOptimization.DrawOrchestration) != 0;
     }
+
+    /// <summary>
+    /// Draws the version-verified batched laser ruler only while a scoped policy requests it.
+    /// Returning false leaves the patched caller on Terraria's original per-cell renderer.
+    /// </summary>
+    public static bool TryDrawLaserRulerPresentation()
+    {
+        PluginRenderingOptimizationHost host = _renderingOptimizations;
+        return host != null &&
+            (host.GetEffectiveOptimizations() & PluginRenderingOptimization.LaserRulerPresentation) != 0 &&
+            Rendering.LaserRuler.TerrariaLaserRulerPresentation.TryDraw();
+    }
 }

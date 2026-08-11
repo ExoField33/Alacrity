@@ -17,7 +17,7 @@ namespace AlacrityTerraria
     /// </summary>
     internal sealed class PluginUiRuntimeBridgeState
     {
-        internal readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(3, 2, 2, "1.4.5.6");
+        internal readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(3, 2, 3, "1.4.5.6");
         internal readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
         internal readonly object CapabilityDiagnosticGate = new object();
         internal readonly Dictionary<string, string> CapabilityDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -53,6 +53,7 @@ namespace AlacrityTerraria
         internal Func<bool> IsWaterfallPresentationOptimizationEnabled;
         internal Func<bool> IsTileDrawingPresentationOptimizationEnabled;
         internal Func<bool> IsDrawOrchestrationOptimizationEnabled;
+        internal Func<bool> TryDrawLaserRulerPresentation;
         internal Func<string, bool> TryHandlePluginChatCommand;
         internal Func<bool> HandlePluginMenuInput;
         internal Func<bool> HasChatInputEditors;

@@ -16,7 +16,8 @@ public sealed class PluginRenderingOptimizationHost
         PluginRenderingOptimization.ClothingEntityPresentation |
         PluginRenderingOptimization.WaterfallPresentation |
         PluginRenderingOptimization.TileDrawingPresentation |
-        PluginRenderingOptimization.DrawOrchestration;
+        PluginRenderingOptimization.DrawOrchestration |
+        PluginRenderingOptimization.LaserRulerPresentation;
 
     private readonly object gate = new object();
     private readonly List<Entry> entries = new List<Entry>();

@@ -46,6 +46,7 @@ internal static class BridgeAbiContractCatalog
         new BridgeAbiContract("IsWaterfallPresentationOptimizationEnabled", "System.Boolean"),
         new BridgeAbiContract("IsTileDrawingPresentationOptimizationEnabled", "System.Boolean"),
         new BridgeAbiContract("IsDrawOrchestrationOptimizationEnabled", "System.Boolean"),
+        new BridgeAbiContract("TryDrawLaserRulerPresentation", "System.Boolean"),
         new BridgeAbiContract("IsBetterChatActive", "System.Boolean"),
         new BridgeAbiContract("BootstrapPluginRuntime", "System.Void"),
         new BridgeAbiContract("ShouldHandleChatInputAction", "System.Boolean", "System.String"),

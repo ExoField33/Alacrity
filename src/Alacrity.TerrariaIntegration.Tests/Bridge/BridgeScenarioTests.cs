@@ -29,7 +29,7 @@ public sealed class BridgeScenarioTests
         VerifyStaticBridgeMethod(bridge, "ShouldRunGoreSystem", typeof(bool));
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
-        Assert.Equal("3|2|2|1.4.5.6", (string)handshake.Invoke(null, null));
+        Assert.Equal("3|2|3|1.4.5.6", (string)handshake.Invoke(null, null));
         Assert.Equal(string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi), (string)handshake.Invoke(null, null));
     }
 
@@ -84,7 +84,7 @@ public sealed class BridgeScenarioTests
     public void HandshakeParsingReportsCompatibilityFailures()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
-        Assert.True(BridgeCompatibilityDescriptor.TryParse("3|2|2|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic));
+        Assert.True(BridgeCompatibilityDescriptor.TryParse("3|2|3|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic));
         Assert.NotNull(current);
         Assert.True(current.TryValidateAgainst(expected, out _));
         Assert.False(BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic));

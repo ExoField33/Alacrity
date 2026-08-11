@@ -373,6 +373,17 @@ namespace AlacrityTerraria
             return callback != null && InvokeOptionalGate(callback, "Draw-orchestration optimization gate");
         }
 
+        /// <summary>
+        /// Gives the host one opportunity to draw the optimized laser-ruler presentation. False
+        /// always means the patched method must continue into Terraria's native renderer.
+        /// </summary>
+        public static bool TryDrawLaserRulerPresentation()
+        {
+            Func<bool> callback = State.TryDrawLaserRulerPresentation;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.TryDrawLaserRulerPresentation;
+            return callback != null && InvokeOptionalGate(callback, "Laser-ruler presentation optimization");
+        }
+
         private static bool InvokeGate(Func<bool> callback, string operation)
         {
             if (callback == null) return true;
@@ -590,7 +601,7 @@ namespace AlacrityTerraria
 
             State.BridgeLoadAttempted = true;
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "Alacrity.PluginUiCoreBridge.dll");
-            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "3|2|2|1.4.5.6", out string integrityDiagnostic))
+            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "3|2|3|1.4.5.6", out string integrityDiagnostic))
             {
                 RecordUnavailable("Client integrity check failed: " + integrityDiagnostic);
                 return false;
@@ -697,6 +708,7 @@ namespace AlacrityTerraria
             if (TryResolveOptionalCapability(bridgeType, "waterfall-presentation", "IsWaterfallPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsWaterfallPresentationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "tile-drawing-presentation", "IsTileDrawingPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsTileDrawingPresentationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "draw-orchestration", "IsDrawOrchestrationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsDrawOrchestrationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "laser-ruler-presentation", "TryDrawLaserRulerPresentation", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.TryDrawLaserRulerPresentation = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) State.TryHandlePluginChatCommand = (Func<string, bool>)callback;
         }
 
@@ -806,6 +818,7 @@ namespace AlacrityTerraria
             State.IsWaterfallPresentationOptimizationEnabled = null;
             State.IsTileDrawingPresentationOptimizationEnabled = null;
             State.IsDrawOrchestrationOptimizationEnabled = null;
+            State.TryDrawLaserRulerPresentation = null;
             State.TryHandlePluginChatCommand = null;
             State.BootstrapPluginRuntime = null;
             State.ShutdownPluginRuntime = null;
