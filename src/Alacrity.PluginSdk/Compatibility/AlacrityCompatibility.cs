@@ -6,7 +6,9 @@ namespace Alacrity.PluginSdk;
 public static class AlacrityCompatibility
 {
     /// <summary>Current public SDK contract level.</summary>
-    public const int PluginSdk = 2;
+    // ITerrariaServices gained RenderingOptimizations. Adding an interface member is a binary
+    // break for third-party implementations, so it intentionally starts SDK compatibility v3.
+    public const int PluginSdk = 3;
     /// <summary>Current Core host contract level.</summary>
     public const int Host = 2;
     /// <summary>Current static Terraria bridge ABI level.</summary>

@@ -151,6 +151,7 @@ internal static partial class PermanentPatchPlan
         method.Parameters.Add(new ParameterDefinition("entries", ParameterAttributes.None, listOfInt));
         method.Parameters.Add(new ParameterDefinition("projectileType", ParameterAttributes.None, module.TypeSystem.Int32));
         method.Parameters.Add(new ParameterDefinition("enabled", ParameterAttributes.None, module.TypeSystem.Boolean));
+        method.Body.InitLocals = true;
         var index = new VariableDefinition(module.TypeSystem.Int32);
         method.Body.Variables.Add(index);
 

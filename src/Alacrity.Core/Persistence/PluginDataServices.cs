@@ -189,7 +189,7 @@ public sealed class PluginSettingsStore : IPluginSettings
                 definitions.Add(definition.Key, registeredDefinition);
             }
         }
-        return new RegisteredSetting<T>(this, definition, resources);
+        return new RegisteredSetting<T>(this, definition, resources, resources == null ? null : ActivationCallbackGates.TryGet(resources));
     }
     public T Get<T>(string key, T defaultValue)
     {
@@ -206,11 +206,15 @@ public sealed class PluginSettingsStore : IPluginSettings
     {
         EnsureScopeActive();
         ValidateKey(key);
-        if (validators.TryGetValue(key, out var validator) && !validator(value)) throw new ArgumentException("The setting value failed registered validation.", nameof(value));
         string serialized = Serialize(value);
         object? oldValue = null;
         lock (gate)
         {
+            if (validators.TryGetValue(key, out var validator) && !validator(value))
+            {
+                throw new ArgumentException("The setting value failed registered validation.", nameof(value));
+            }
+
             if (values.TryGetValue(key, out var old))
             {
                 if (string.Equals(old, serialized, StringComparison.Ordinal))
@@ -248,8 +252,21 @@ public sealed class PluginSettingsStore : IPluginSettings
     {
         EnsureScopeActive();
         ValidateKey(key);
-        if (validator != null) validators[key] = value => value is T typed && validator(typed);
-        if (!values.ContainsKey(key)) Set(key, defaultValue);
+        bool writeDefault;
+        lock (gate)
+        {
+            if (validator != null)
+            {
+                validators[key] = value => value is T typed && validator(typed);
+            }
+
+            writeDefault = !values.ContainsKey(key);
+        }
+
+        if (writeDefault)
+        {
+            Set(key, defaultValue);
+        }
     }
     /// <summary>Creates an isolated key namespace for one internal plugin feature.</summary>
     public IPluginSettings CreateFeatureSettings(PluginFeatureId featureId)
@@ -403,12 +420,14 @@ public sealed class PluginSettingsStore : IPluginSettings
         private readonly PluginSettingsStore store;
         private readonly PluginSettingDefinition<T> definition;
         private readonly IPluginResourceScope? resources;
+        private readonly ActivationCallbackGate? callbackGate;
 
-        public RegisteredSetting(PluginSettingsStore store, PluginSettingDefinition<T> definition, IPluginResourceScope? resources)
+        public RegisteredSetting(PluginSettingsStore store, PluginSettingDefinition<T> definition, IPluginResourceScope? resources, ActivationCallbackGate? callbackGate)
         {
             this.store = store;
             this.definition = definition;
             this.resources = resources;
+            this.callbackGate = callbackGate;
         }
 
         public string Key => definition.Key;
@@ -424,7 +443,7 @@ public sealed class PluginSettingsStore : IPluginSettings
         public IPluginRegistration Subscribe(Action<T> handler)
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));
-            var registration = new SettingSubscription<T>(store, definition, handler);
+            var registration = new SettingSubscription<T>(store, definition, handler, callbackGate);
             try
             {
                 if (resources != null) resources.Own("setting-subscription:" + definition.Key, PluginResourceKind.Configuration, registration);
@@ -499,29 +518,55 @@ public sealed class PluginSettingsStore : IPluginSettings
         private readonly PluginSettingsStore store;
         private readonly PluginSettingDefinition<T> definition;
         private readonly Action<T> handler;
-        private bool released;
+        private readonly ActivationCallbackGate? callbackGate;
+        private int released;
 
-        public SettingSubscription(PluginSettingsStore store, PluginSettingDefinition<T> definition, Action<T> handler)
+        public SettingSubscription(PluginSettingsStore store, PluginSettingDefinition<T> definition, Action<T> handler, ActivationCallbackGate? callbackGate)
         {
             this.store = store;
             this.definition = definition;
             this.handler = handler;
+            this.callbackGate = callbackGate;
             store.Changed += OnChanged;
         }
 
         public string Name => "setting-subscription:" + definition.Key;
-        public bool IsReleased => released;
+        public bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
         public void Dispose()
         {
-            if (released) return;
-            released = true;
+            if (System.Threading.Interlocked.Exchange(ref released, 1) != 0)
+            {
+                return;
+            }
+
             store.Changed -= OnChanged;
         }
 
         private void OnChanged(object? sender, PluginSettingChangedEventArgs args)
         {
-            if (released || !string.Equals(args.Key, definition.Key, StringComparison.Ordinal)) return;
-            handler(args.NewValue is T value ? Normalize(value) : definition.DefaultValue);
+            if (IsReleased || !string.Equals(args.Key, definition.Key, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (callbackGate == null)
+            {
+                handler(args.NewValue is T value ? Normalize(value) : definition.DefaultValue);
+                return;
+            }
+
+            if (!callbackGate.TryEnter(out ActivationCallbackGate.Lease lease))
+            {
+                return;
+            }
+
+            using (lease)
+            {
+                if (!IsReleased)
+                {
+                    handler(args.NewValue is T value ? Normalize(value) : definition.DefaultValue);
+                }
+            }
         }
 
         private T Normalize(T value) => definition.Normalize == null ? value : definition.Normalize(value);

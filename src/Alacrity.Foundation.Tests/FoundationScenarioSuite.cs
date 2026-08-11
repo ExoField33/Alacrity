@@ -346,7 +346,7 @@ public static class FoundationScenarioSuite
     private static void HostManifestIsAuthoritativeOverPluginImplementation()
     {
         var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(resources, new List<string>(), false);
+        var plugin = new TestPlugin(new List<string>(), false);
         var hostManifest = new PluginManifest(
             new PluginId("example.plugin"),
             "Example",
@@ -375,7 +375,7 @@ public static class FoundationScenarioSuite
             Directory.CreateDirectory(package);
             string assemblyName = typeof(LoaderAsyncTestPlugin).Assembly.GetName().Name + ".dll";
             File.Copy(typeof(LoaderAsyncTestPlugin).Assembly.Location, Path.Combine(package, assemblyName));
-            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.loader-async-test\",\"name\":\"Loader Async Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"pluginSdkCompatibilityVersion\":2,\"hostCompatibilityVersion\":2,\"bridgeAbiVersion\":2,\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"" + typeof(LoaderAsyncTestPlugin).FullName + "\"}");
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"alacrity.loader-async-test\",\"name\":\"Loader Async Test\",\"version\":\"0.1.0\",\"publisher\":\"Tests\",\"description\":\"Async loader test\",\"supportedGameVersions\":[\"1.4.5.6\"],\"pluginSdkCompatibilityVersion\":" + AlacrityCompatibility.PluginSdk + ",\"hostCompatibilityVersion\":" + AlacrityCompatibility.Host + ",\"bridgeAbiVersion\":" + AlacrityCompatibility.BridgeAbi + ",\"entryAssembly\":\"" + assemblyName + "\",\"entryType\":\"" + typeof(LoaderAsyncTestPlugin).FullName + "\"}");
             var descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
             object entry = new PluginAssemblyLoader().LoadAny(descriptor);
             Assert(entry is IAsyncAlacrityPlugin && entry is not IAlacrityPlugin, "The loader must accept exactly the asynchronous lifecycle contract.");
@@ -751,10 +751,12 @@ public static class FoundationScenarioSuite
     internal static void LifecycleCleansResourcesInReverseOrder()
     {
         var order = new List<string>();
-        var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(resources, order, false);
-        var context = new TestContext(CreateManifest(), resources);
-        using (var lifecycle = new PluginLifecycleController(plugin, context))
+        PluginManifest manifest = CreateManifest();
+        var plugin = new TestPlugin(order, false);
+        using (var lifecycle = new PluginLifecycleController(
+            plugin,
+            new TestContext(manifest, new PluginResourceScope()),
+            () => new TestContext(manifest, new PluginResourceScope())))
         {
             lifecycle.Validate();
             lifecycle.Initialize();
@@ -1085,11 +1087,12 @@ public static class FoundationScenarioSuite
 
     private static void PluginMenuPlacesPluginsBeforeWorkshopAndToggles()
     {
-        var resources = new PluginResourceScope();
         var manifest = CreateManifest();
-        var plugin = new TestPlugin(resources, new List<string>(), false);
-        var context = new TestContext(manifest, resources);
-        using (var lifecycle = new PluginLifecycleController(plugin, context))
+        var plugin = new TestPlugin(new List<string>(), false);
+        using (var lifecycle = new PluginLifecycleController(
+            plugin,
+            new TestContext(manifest, new PluginResourceScope()),
+            () => new TestContext(manifest, new PluginResourceScope())))
         {
             lifecycle.Validate();
             lifecycle.Initialize();
@@ -1135,7 +1138,7 @@ public static class FoundationScenarioSuite
     {
         var order = new List<string>();
         var resources = new PluginResourceScope();
-        var plugin = new TestPlugin(resources, order, true);
+        var plugin = new TestPlugin(order, true);
         var context = new TestContext(CreateManifest(), resources);
         using (var lifecycle = new PluginLifecycleController(plugin, context))
         {
@@ -1730,6 +1733,22 @@ public static class FoundationScenarioSuite
             Assert(newest.Handled && newest.Text == "second" && previous.Text == "first", "Chat History must traverse previously submitted messages in newest-first order.");
             Assert(restored.Handled && restored.Text == "draft", "Chat History must restore the in-progress draft after the newest history entry.");
 
+            for (int index = 0; index < 205; index++)
+            {
+                string entry = "entry-" + index;
+                chat.Edit(new ChatInputSnapshot(entry, entry.Length, -1), new ChatInputAction("submit"));
+            }
+
+            ChatInputEditResult boundedNewest = chat.Edit(new ChatInputSnapshot(string.Empty, 0, -1), new ChatInputAction("up"));
+            Assert(boundedNewest.Text == "entry-204", "History trimming must retain the newest submitted message.");
+            ChatInputEditResult boundedOldest = boundedNewest;
+            for (int index = 1; index < 200; index++)
+            {
+                boundedOldest = chat.Edit(new ChatInputSnapshot(boundedOldest.Text, boundedOldest.Caret, boundedOldest.SelectionAnchor), new ChatInputAction("up"));
+            }
+
+            Assert(boundedOldest.Text == "entry-5", "History trimming must discard only the oldest entries once the bounded session history is full.");
+
             Assert(chat.HasInputActionHandler(new ChatInputAction("up")), "Chat History must claim Terraria's native Up/Down chat navigation while enabled.");
             ChatInputEditResult defaultScroll = chat.Edit(new ChatInputSnapshot("draft", 5, -1), new ChatInputAction("scroll", false, false, null, 1));
             Assert(defaultScroll.Handled && defaultScroll.ChatScrollLines == 1, "Scroll Chat sensitivity must default to one visible chat line per wheel step.");
@@ -2281,7 +2300,7 @@ public static class FoundationScenarioSuite
         {
             string package = Path.Combine(root, "plugins", "version.test");
             Directory.CreateDirectory(package);
-            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"version.test\",\"name\":\"Version Test\",\"version\":\"1.0.0\",\"publisher\":\"Tests\",\"description\":\"Compatibility test\",\"supportedGameVersions\":[\"9.9.9\"],\"pluginSdkCompatibilityVersion\":2,\"hostCompatibilityVersion\":2,\"bridgeAbiVersion\":2,\"entryAssembly\":\"missing.dll\",\"entryType\":\"Missing.Plugin\"}");
+            File.WriteAllText(Path.Combine(package, "plugin.json"), "{\"schemaVersion\":1,\"id\":\"version.test\",\"name\":\"Version Test\",\"version\":\"1.0.0\",\"publisher\":\"Tests\",\"description\":\"Compatibility test\",\"supportedGameVersions\":[\"9.9.9\"],\"pluginSdkCompatibilityVersion\":" + AlacrityCompatibility.PluginSdk + ",\"hostCompatibilityVersion\":" + AlacrityCompatibility.Host + ",\"bridgeAbiVersion\":" + AlacrityCompatibility.BridgeAbi + ",\"entryAssembly\":\"missing.dll\",\"entryType\":\"Missing.Plugin\"}");
             PluginPackageDescriptor descriptor = new PluginPackageCatalog(new PluginPackageManifestReader()).Discover(root).Single();
             var runtime = new PluginRuntimeHost(
                 new PluginPackageCatalog(new PluginPackageManifestReader()),
@@ -2551,21 +2570,19 @@ public static class FoundationScenarioSuite
 
     private sealed class TestPlugin : IAlacrityPlugin
     {
-        private readonly IPluginResourceScope resources;
         private readonly List<string> order;
         private readonly bool failOnEnable;
 
-        public TestPlugin(IPluginResourceScope resources, List<string> order, bool failOnEnable)
+        public TestPlugin(List<string> order, bool failOnEnable)
         {
-            this.resources = resources;
             this.order = order;
             this.failOnEnable = failOnEnable;
         }
 
         public void Initialize(IPluginContext context)
         {
-            resources.Own("first", PluginResourceKind.Other, new TestResource("first", order));
-            resources.Own("second", PluginResourceKind.Other, new TestResource("second", order));
+            context.Resources.Own("first", PluginResourceKind.Other, new TestResource("first", order));
+            context.Resources.Own("second", PluginResourceKind.Other, new TestResource("second", order));
         }
 
         public void Enable()

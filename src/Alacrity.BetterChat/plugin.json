@@ -6,7 +6,7 @@
   "publisher": "ExoField",
   "description": "Chat editing, selection, clickable links, scrollable chat, and chat history via up and down arrow keys.",
   "supportedGameVersions": [ "1.4.5.6" ],
-  "pluginSdkCompatibilityVersion": 2,
+  "pluginSdkCompatibilityVersion": 3,
   "hostCompatibilityVersion": 2,
   "bridgeAbiVersion": 2,
   "capabilities": [ "UserInterface", "Input" ],

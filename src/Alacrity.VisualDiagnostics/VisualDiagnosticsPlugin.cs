@@ -9,6 +9,8 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
 {
     private readonly List<PluginNpcTargetSnapshot> targets = new List<PluginNpcTargetSnapshot>(64);
     private readonly List<PluginWorldSectionSnapshot> sections = new List<PluginWorldSectionSnapshot>(32);
+    private readonly Dictionary<int, string> loadedSectionLabels = new Dictionary<int, string>();
+    private readonly Dictionary<int, string> pendingSectionLabels = new Dictionary<int, string>();
     private IPluginNpcTargetSnapshotService? npcTargets;
     private IPluginWorldSectionService? worldSections;
     private IPluginOverlayService? overlays;
@@ -59,6 +61,8 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
     {
         targets.Clear();
         sections.Clear();
+        loadedSectionLabels.Clear();
+        pendingSectionLabels.Clear();
         overlayRegistration?.Dispose();
         overlayRegistration = null;
         overlays = null;
@@ -126,7 +130,7 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
                 ? new PluginOverlayColor(80, 255, 120, 125)
                 : new PluginOverlayColor(255, 85, 85, 125);
             canvas.DrawWorldRectangle(section.WorldX, section.WorldY, section.WorldWidth, section.WorldHeight, color, 2f);
-            canvas.DrawWorldMarker(section.WorldX + 8f, section.WorldY + 8f, (section.IsLoaded ? "Loaded " : "Pending ") + section.SectionX + "," + section.SectionY, color);
+            canvas.DrawWorldMarker(section.WorldX + 8f, section.WorldY + 8f, GetSectionLabel(section), color);
         }
     }
 
@@ -138,6 +142,27 @@ public sealed class VisualDiagnosticsPlugin : IAlacrityPlugin
     private static PluginOverlayColor ToOverlayColor(PluginColor color, byte alpha)
     {
         return new PluginOverlayColor(color.Red, color.Green, color.Blue, alpha);
+    }
+
+    private string GetSectionLabel(PluginWorldSectionSnapshot section)
+    {
+        Dictionary<int, string> labels = section.IsLoaded ? loadedSectionLabels : pendingSectionLabels;
+        int key = (section.SectionX << 16) ^ (section.SectionY & 0xffff);
+        if (labels.TryGetValue(key, out string label))
+        {
+            return label;
+        }
+
+        // Section diagnostics are bounded to the visible region. Cap the cache as an additional
+        // safeguard while avoiding a fresh label string on every render frame.
+        if (labels.Count >= 256)
+        {
+            labels.Clear();
+        }
+
+        label = (section.IsLoaded ? "Loaded " : "Pending ") + section.SectionX + "," + section.SectionY;
+        labels.Add(key, label);
+        return label;
     }
 
     private static int Clamp(int value, int minimum, int maximum)

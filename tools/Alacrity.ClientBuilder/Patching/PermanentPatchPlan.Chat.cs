@@ -129,6 +129,7 @@ internal static partial class PermanentPatchPlan
 
         var copyMorph = snippets.Methods.Single(method => method.Name == "CopyMorph" && method.ReturnType.FullName == snippets.FullName && method.Parameters.Count == 1 && method.Parameters[0].ParameterType.FullName == "System.String");
         var result = new VariableDefinition(copyMorph.ReturnType);
+        copyMorph.Body.InitLocals = true;
         copyMorph.Body.Variables.Add(result);
         var returnInstruction = copyMorph.Body.Instructions.LastOrDefault(instruction => instruction.OpCode == OpCodes.Ret)
             ?? throw new InvalidOperationException("TextSnippet.CopyMorph has no return instruction.");

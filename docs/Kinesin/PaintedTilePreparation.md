@@ -26,7 +26,7 @@ before the corresponding content is drawn. In the lazy scan, vanilla also calls 
 
 ## Alacrity method
 
-The version-locked `alacrity-terraria-1.4.5.6-r13` patch adds one holder-private pending bit to each
+The version-locked `alacrity-terraria-1.4.5.6-r15` patch adds one holder-private pending bit to each
 `TilePaintSystemV2.ARenderTargetHolder` and changes the five shared request paths:
 
 1. an unready, not-pending holder is queued once;

@@ -26,4 +26,18 @@ public sealed class RenderCullingBoundsTests
         Assert.True(bounds.IsVisible(49f, 100f, 1, 1, 50));
         Assert.False(bounds.IsVisible(48f, 100f, 1, 1, 50));
     }
+
+    [Fact]
+    public void InvalidCameraOrCandidateValuesFailOpen()
+    {
+        var bounds = new TerrariaRenderCullingBounds();
+
+        bounds.Update(float.NaN, 0f, 100f, 100f);
+        Assert.True(bounds.IsVisible(1000000f, 1000000f, 1, 1, 0));
+
+        bounds.Update(0f, 0f, 100f, 100f);
+        Assert.True(bounds.IsVisible(float.PositiveInfinity, 0f, 1, 1, 0));
+        Assert.True(bounds.IsVisible(float.NaN, 0f, 1, 1, 0));
+        Assert.True(bounds.IsVisible(float.MaxValue, 0f, int.MaxValue, int.MaxValue, 0));
+    }
 }

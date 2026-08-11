@@ -11,6 +11,7 @@ public sealed class PluginNotificationCenter
     private readonly object gate = new object();
     private PluginNotification[] activeSnapshot = Array.Empty<PluginNotification>();
     private bool snapshotDirty = true;
+    private int activeCount;
     private readonly Dictionary<PluginId, PublicationWindow> publicationWindows = new Dictionary<PluginId, PublicationWindow>();
     private const int GlobalLimit = 16;
     private const int PerPluginLimit = 3;
@@ -27,6 +28,11 @@ public sealed class PluginNotificationCenter
     /// <summary>Returns notifications that have not expired and removes expired entries.</summary>
     public IReadOnlyList<PluginNotification> GetActive(DateTimeOffset now)
     {
+        if (System.Threading.Volatile.Read(ref activeCount) == 0)
+        {
+            return Array.Empty<PluginNotification>();
+        }
+
         lock (gate)
         {
             RemoveExpired(now);
@@ -81,6 +87,7 @@ public sealed class PluginNotificationCenter
             }
             if (removed) snapshotDirty = true;
             publicationWindows.Remove(owner);
+            UpdateActiveCount();
         }
     }
 
@@ -97,6 +104,7 @@ public sealed class PluginNotificationCenter
             {
                 notifications[index] = new PluginNotification(owner, message, now.Add(duration), options);
                 snapshotDirty = true;
+                UpdateActiveCount();
                 return;
             }
         }
@@ -109,6 +117,7 @@ public sealed class PluginNotificationCenter
         while (notifications.Count >= GlobalLimit) notifications.RemoveAt(0);
         notifications.Add(new PluginNotification(owner, message, now.Add(duration), options));
         snapshotDirty = true;
+        UpdateActiveCount();
     }
 
     private bool TryConsumePublication(PluginId owner, DateTimeOffset now)
@@ -134,6 +143,15 @@ public sealed class PluginNotificationCenter
             removed = true;
         }
         if (removed) snapshotDirty = true;
+        if (removed)
+        {
+            UpdateActiveCount();
+        }
+    }
+
+    private void UpdateActiveCount()
+    {
+        System.Threading.Volatile.Write(ref activeCount, notifications.Count);
     }
 
     private sealed class Service : IPluginNotificationService

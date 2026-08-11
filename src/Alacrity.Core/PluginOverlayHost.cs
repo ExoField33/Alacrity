@@ -221,10 +221,17 @@ public sealed class PluginOverlayHost
 
     private sealed class Registration : IPluginRegistration
     {
-        private readonly Action release; private bool released;
+        private readonly Action release;
+        private int released;
         public Registration(string name, Action release) { Name = name; this.release = release; }
         public string Name { get; }
-        public bool IsReleased => released;
-        public void Dispose() { if (released) return; released = true; release(); }
+        public bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+        public void Dispose()
+        {
+            if (System.Threading.Interlocked.Exchange(ref released, 1) == 0)
+            {
+                release();
+            }
+        }
     }
 }

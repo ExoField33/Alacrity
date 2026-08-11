@@ -6,7 +6,7 @@
   "publisher": "ExoField",
   "description": "Displays client-side player, NPC, projectile, and swing hitboxes.",
   "supportedGameVersions": [ "1.4.5.6" ],
-  "pluginSdkCompatibilityVersion": 2,
+  "pluginSdkCompatibilityVersion": 3,
   "hostCompatibilityVersion": 2,
   "bridgeAbiVersion": 2,
   "capabilities": [ "UserInterface", "Rendering", "GameStateRead", "MultiplayerObservation" ],

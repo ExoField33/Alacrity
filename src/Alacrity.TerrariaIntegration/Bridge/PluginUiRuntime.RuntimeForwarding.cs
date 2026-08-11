@@ -590,7 +590,7 @@ namespace AlacrityTerraria
 
             State.BridgeLoadAttempted = true;
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "Alacrity.PluginUiCoreBridge.dll");
-            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "2|2|2|1.4.5.6", out string integrityDiagnostic))
+            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "3|2|2|1.4.5.6", out string integrityDiagnostic))
             {
                 RecordUnavailable("Client integrity check failed: " + integrityDiagnostic);
                 return false;

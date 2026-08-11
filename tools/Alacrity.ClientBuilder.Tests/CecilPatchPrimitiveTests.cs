@@ -184,7 +184,14 @@ public sealed class CecilPatchPrimitiveTests : IDisposable
         using var module = ModuleDefinition.ReadModule(path);
         MethodDefinition method = CecilPatchPrimitives.RequireMethod(CecilPatchPrimitives.RequireType(module, "Fixture.Container/Nested"), "Run", "System.Void", "System.Int32");
         method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
-        var target = new ClientPatchTarget("fixture.run", "Fixture.Container/Nested", "Run(System.Int32)", "every return", "insert before return", "Ping");
+        var target = new ClientPatchTarget(
+            "fixture.run",
+            "Fixture.Container/Nested",
+            "Run(System.Int32)",
+            "all returns",
+            "insert before return",
+            ClientPatchPostconditionMode.BeforeEveryReturn,
+            "Ping");
         var operation = new ClientPatchOperation("fixture.targeted", "Fixture.Container/Nested", "targeted fixture", new[] { target }, "Ping");
         var definition = new ClientPatchDefinition(
             "fixture.all-returns.patch",

@@ -20,15 +20,18 @@ internal sealed class DeploymentTransaction : IDisposable
     private readonly string outputDirectory;
     private readonly string backupDirectory;
     private readonly Dictionary<string, CaptureState> captures = new Dictionary<string, CaptureState>(StringComparer.OrdinalIgnoreCase);
-    private bool completed;
-    private bool rolledBack;
+    private TransactionState state;
 
     internal DeploymentTransaction(string outputDirectory)
     {
         this.outputDirectory = outputDirectory;
         backupDirectory = Path.Combine(Path.GetDirectoryName(outputDirectory)!, ".alacrity-deployment-backup-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(backupDirectory);
+        state = TransactionState.Active;
     }
+
+    /// <summary>Recovery material retained after a failed rollback.</summary>
+    internal string RecoveryDirectory => backupDirectory;
 
     internal void Capture(string targetPath)
     {
@@ -54,41 +57,55 @@ internal sealed class DeploymentTransaction : IDisposable
 
     internal void Commit()
     {
-        completed = true;
+        if (state == TransactionState.RollbackFailed)
+        {
+            throw new InvalidOperationException("A deployment with failed rollback cannot be committed. Recover from '" + backupDirectory + "'.");
+        }
+
+        state = TransactionState.Committed;
     }
 
     internal void RollBack()
     {
-        if (rolledBack)
+        if (state == TransactionState.RolledBack)
         {
             return;
         }
-        foreach (KeyValuePair<string, CaptureState> entry in captures)
+
+        try
         {
-            string targetPath = ClientBuildPaths.ResolveUnderRoot(outputDirectory, entry.Key, "Deployment rollback path");
-            if (entry.Value == CaptureState.DidNotExist)
+            foreach (KeyValuePair<string, CaptureState> entry in captures)
             {
-                if (File.Exists(targetPath))
+                string targetPath = ClientBuildPaths.ResolveUnderRoot(outputDirectory, entry.Key, "Deployment rollback path");
+                if (entry.Value == CaptureState.DidNotExist)
                 {
-                    File.Delete(targetPath);
+                    if (File.Exists(targetPath))
+                    {
+                        File.Delete(targetPath);
+                    }
+
+                    continue;
                 }
 
-                continue;
+                string backupPath = ClientBuildPaths.ResolveUnderRoot(backupDirectory, entry.Key, "Deployment backup path");
+                Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+                RestoreFileCopy(backupPath, targetPath);
             }
 
-            string backupPath = ClientBuildPaths.ResolveUnderRoot(backupDirectory, entry.Key, "Deployment backup path");
-            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-            RestoreFileCopy(backupPath, targetPath);
+            state = TransactionState.RolledBack;
         }
-
-        rolledBack = true;
+        catch
+        {
+            state = TransactionState.RollbackFailed;
+            throw;
+        }
     }
 
     public void Dispose()
     {
         try
         {
-            if (!completed)
+            if (state == TransactionState.Active)
             {
                 try
                 {
@@ -97,14 +114,13 @@ internal sealed class DeploymentTransaction : IDisposable
                 catch
                 {
                     // Dispose commonly runs while an earlier deployment exception is unwinding.
-                    // Preserve that original failure; the backup directory remains available until
-                    // this finally block removes the transaction's temporary state.
+                    // RollBack records RollbackFailed so recovery material survives this path.
                 }
             }
         }
         finally
         {
-            if (Directory.Exists(backupDirectory))
+            if ((state == TransactionState.Committed || state == TransactionState.RolledBack) && Directory.Exists(backupDirectory))
             {
                 Directory.Delete(backupDirectory, recursive: true);
             }
@@ -115,6 +131,14 @@ internal sealed class DeploymentTransaction : IDisposable
     {
         DidNotExist,
         BackedUp
+    }
+
+    private enum TransactionState
+    {
+        Active,
+        Committed,
+        RolledBack,
+        RollbackFailed
     }
 
     private static void CopyBackupFile(string sourcePath, string destinationPath)

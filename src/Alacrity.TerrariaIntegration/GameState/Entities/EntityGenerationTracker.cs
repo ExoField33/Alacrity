@@ -35,6 +35,17 @@ internal sealed class EntityGenerationTracker
         return new PluginEntityHandle(kind, slot, generations[slot]);
     }
 
+    /// <summary>
+    /// Drops continuity knowledge without changing the monotonically increasing generations.
+    /// The next observed active occupant therefore receives a new handle even when an entity was
+    /// replaced while this kind was intentionally not being captured.
+    /// </summary>
+    internal void InvalidateObservation(PluginEntityKind kind)
+    {
+        Select(kind, out _, out bool[] activeSlots);
+        Array.Clear(activeSlots, 0, activeSlots.Length);
+    }
+
     private static void Resize(ref uint[] generations, ref bool[] active, int capacity)
     {
         if (capacity < 0) throw new ArgumentOutOfRangeException(nameof(capacity));

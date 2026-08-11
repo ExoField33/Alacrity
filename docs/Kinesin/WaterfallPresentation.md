@@ -33,10 +33,19 @@ Vanilla also rescans the expanded waterfall source area every thirty updates whi
 remembers the most recent native discovery result and reuses it only when the tile array, camera
 position, resolution, graphics quality, and waterfall limit are unchanged, and both liquid work
 queues are idle. Local placement, removal, replacement, slopes, half-brick changes, actuation,
-and received multiplayer tile changes mark the cached result dirty. A forced lookup or any active
-liquid simulation always executes Terraria's native scan. The cache stores the original native
+and received multiplayer tile changes mark the cached result dirty. The two native liquid-work
+admission paths (`Liquid.AddWater` and `LiquidBuffer.AddBuffer`) also invalidate the cache before
+simulation begins, so a liquid change that settles before the next scan cannot be mistaken for an
+unchanged scene. A forced lookup or any active liquid simulation always executes Terraria's native scan. The cache stores the original native
 waterfall array rather than new geometry, so route calculation, ordering, lighting, biome passes,
 animation, sound inputs, sparkle decisions, and `Main.rand` call order remain vanilla-owned.
+
+## Disabled Policy
+
+Kinesin is installed as a version-locked presentation optimization. Disabling this policy means
+vanilla-observable behavior: native waterfall routing, ordering, lighting, effects, and random
+number ordering remain authoritative. The generated executable may still contain private helpers
+and invalidation bookkeeping, but policy-off execution takes Terraria's native path.
 
 ## Expected impact
 

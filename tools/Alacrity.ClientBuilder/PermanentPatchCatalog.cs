@@ -57,6 +57,18 @@ internal sealed class ClientPatchTarget
         string anchor,
         string injection,
         params string[] bridgeMethods)
+        : this(id, typeName, memberSignature, anchor, injection, ClientPatchPostconditionMode.ExactlyCount, bridgeMethods)
+    {
+    }
+
+    internal ClientPatchTarget(
+        string id,
+        string typeName,
+        string memberSignature,
+        string anchor,
+        string injection,
+        ClientPatchPostconditionMode bridgeCallMode,
+        params string[] bridgeMethods)
     {
         Id = id;
         TypeName = typeName;
@@ -64,6 +76,7 @@ internal sealed class ClientPatchTarget
         Anchor = anchor;
         Injection = injection;
         BridgeMethods = bridgeMethods;
+        BridgeCallMode = bridgeCallMode;
         Precondition = "The exact member signature and unique anchor recorded for this target must be present in the clean, hash-verified Terraria 1.4.5.6 executable.";
         Postcondition = bridgeMethods.Length == 0
             ? "The recorded target mutation must survive the Cecil write/reopen validation."
@@ -97,6 +110,14 @@ internal sealed class ClientPatchTarget
     internal string Postcondition { get; }
     internal IReadOnlyList<string> BridgeMethods { get; }
     internal int ExpectedBridgeCallCount { get; } = 1;
+    internal ClientPatchPostconditionMode BridgeCallMode { get; }
+}
+
+/// <summary>Explicit bridge placement semantics. Never infer IL requirements from prose inventory text.</summary>
+internal enum ClientPatchPostconditionMode
+{
+    ExactlyCount,
+    BeforeEveryReturn
 }
 
 /// <summary>Inspectable target and ABI contract for one independently applied patch set.</summary>
@@ -117,12 +138,24 @@ internal sealed class ClientPatchOperation
         string targetDescription,
         IReadOnlyList<ClientPatchTarget> targets,
         params string[] bridgeMethods)
+        : this(id, targetType, targetDescription, targets, structuralOnly: false, bridgeMethods)
+    {
+    }
+
+    internal ClientPatchOperation(
+        string id,
+        string targetType,
+        string targetDescription,
+        IReadOnlyList<ClientPatchTarget> targets,
+        bool structuralOnly,
+        params string[] bridgeMethods)
     {
         Id = id;
         TargetType = targetType;
         TargetDescription = targetDescription;
         Targets = targets;
         BridgeMethods = bridgeMethods;
+        StructuralOnly = structuralOnly;
     }
 
     internal string Id { get; }
@@ -130,12 +163,13 @@ internal sealed class ClientPatchOperation
     internal string TargetDescription { get; }
     internal IReadOnlyList<ClientPatchTarget> Targets { get; }
     internal IReadOnlyList<string> BridgeMethods { get; }
+    internal bool StructuralOnly { get; }
 }
 
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r13";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r15";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
@@ -166,7 +200,7 @@ internal static class PermanentPatchCatalog
             "HUD notification, world-overlay, and melee collision capture hooks",
             new ClientPatchTarget("render.notifications", "Terraria.Main", "DrawInterface_33_MouseText()", "method entry and static Main.spriteBatch field", "insert before first instruction", "DrawNotifications"),
             new ClientPatchTarget("render.world-overlays", "Terraria.Main", "DrawInterface_1_1_DrawEmoteBubblesInWorld()", "EmoteBubble.DrawAll(SpriteBatch) continuation", "insert after native emote bubble draw", "DrawHitboxes"),
-            new ClientPatchTarget("combat.melee-capture", "Terraria.Player", "ItemCheck_GetMeleeHitbox(Item, Rectangle, Boolean&, Rectangle&)", "every return in the verified four-parameter method", "insert before return and retarget branch/EH references", "CaptureSwingHitbox")),
+            new ClientPatchTarget("combat.melee-capture", "Terraria.Player", "ItemCheck_GetMeleeHitbox(Item, Rectangle, Boolean&, Rectangle&)", "all returns in the verified four-parameter method", "insert before return and retarget branch/EH references", ClientPatchPostconditionMode.BeforeEveryReturn, "CaptureSwingHitbox")),
         CreateDefinition(
             "patch.runtime.render-culling",
             PermanentPatchPlan.ApplyPermanentRenderCulling,
@@ -220,6 +254,8 @@ internal static class PermanentPatchCatalog
             "Version-locked idle discovery reuse plus local waterfall state, camera, and solidity reductions",
             new ClientPatchTarget("waterfall.discovery-reuse", "Terraria.WaterfallManager", "FindWaterfalls(System.Boolean)", "the verified scheduled discovery-counter reset before native area scanning", "reuse the last native source set only for an unchanged view with no tracked geometry mutation or active liquid work", "IsWaterfallPresentationOptimizationEnabled"),
             new ClientPatchTarget("waterfall.discovery-invalidation", "Terraria.WorldGen", "PlaceTile(System.Int32,System.Int32,System.Int32,System.Boolean,System.Boolean,System.Int32,System.Int32)", "the verified local placement, removal, slope, actuation, liquid-transform, and received-tile-change paths", "mark the cached discovery result dirty so the next scheduled lookup executes the native scan"),
+            new ClientPatchTarget("waterfall.discovery-liquid-invalidation", "Terraria.Liquid", "AddWater(System.Int32,System.Int32)", "the native liquid-work admission that remains observable after queues settle", "mark the cached discovery result dirty before liquid simulation can change a source"),
+            new ClientPatchTarget("waterfall.discovery-buffered-liquid-invalidation", "Terraria.LiquidBuffer", "AddBuffer(System.Int32,System.Int32)", "the native buffered-liquid admission used when the active liquid queue is full", "mark the cached discovery result dirty before deferred liquid simulation can change a source"),
             new ClientPatchTarget("waterfall.layer-state", "Terraria.WaterfallManager", "DrawWaterfall(System.Int32,System.Single)", "the verified per-invocation camera/tile state reads and two TileBatch.SetLayer calls inside the rain and normal segment loops", "cache frame-local state and unchanged layer/stack selections only while the generic optimization policy is active", "IsWaterfallPresentationOptimizationEnabled"),
             new ClientPatchTarget("waterfall.solid-tile", "Terraria.WaterfallManager", "DrawWaterfall(System.Int32,System.Single)", "all verified WorldGen.SolidTile(Tile) calls with non-null tile preparation", "use the equivalent guarded local solidity fast path only while the generic optimization policy is active", "IsWaterfallPresentationOptimizationEnabled"),
             new ClientPatchTarget("waterfall.empty-pass", "Terraria.WaterfallManager", "DrawWaterfall(System.Int32,System.Single)", "the verified currentMax zero path and native ambient-state assignments", "preserve empty-pass ambient state and return before route-loop setup", "IsWaterfallPresentationOptimizationEnabled")),
@@ -299,6 +335,30 @@ internal static class PermanentPatchCatalog
     internal static List<ClientPatchResult> ApplyAll(ModuleDefinition module, string cleanSourcePath)
     {
         return ApplyDefinitions(module, cleanSourcePath, Definitions);
+    }
+
+    /// <summary>Runs the complete bridge and structural catalog against an already-written module.</summary>
+    internal static void ValidatePostconditions(ModuleDefinition module)
+    {
+        if (module == null)
+        {
+            throw new ArgumentNullException(nameof(module));
+        }
+
+        ValidateDefinitions(Definitions);
+        for (int definitionIndex = 0; definitionIndex < Definitions.Length; definitionIndex++)
+        {
+            ClientPatchDefinition definition = Definitions[definitionIndex];
+            if (!definition.IsPresent(module))
+            {
+                throw new ClientBuildException("Patched executable is missing postconditions for " + definition.Id + ".");
+            }
+
+            for (int operationIndex = 0; operationIndex < definition.Operations.Count; operationIndex++)
+            {
+                ValidateOperationPostcondition(module, definition.Operations[operationIndex]);
+            }
+        }
     }
 
     internal static List<ClientPatchResult> ApplyDefinitions(ModuleDefinition module, string cleanSourcePath, IReadOnlyList<ClientPatchDefinition> definitions)
@@ -435,9 +495,11 @@ internal static class PermanentPatchCatalog
             for (var operationIndex = 0; operationIndex < definitions[index].Operations.Count; operationIndex++)
             {
                 var operation = definitions[index].Operations[operationIndex];
-                if (string.IsNullOrWhiteSpace(operation.Id) || !ids.Add(operation.Id) || operation.BridgeMethods.Count == 0)
+                if (string.IsNullOrWhiteSpace(operation.Id) ||
+                    !ids.Add(operation.Id) ||
+                    (!operation.StructuralOnly && operation.BridgeMethods.Count == 0))
                 {
-                    throw new ClientBuildException("Permanent patch catalog contains a missing or duplicate operation ID or an operation with no bridge ABI postcondition.");
+                    throw new ClientBuildException("Permanent patch catalog contains a missing or duplicate operation ID or an operation with no postcondition.");
                 }
 
                 var targetIds = new HashSet<string>(StringComparer.Ordinal);
@@ -512,6 +574,7 @@ internal static class PermanentPatchCatalog
                 ClientPatchTarget target = targets[targetIndex];
                 TypeDefinition type = CecilPatchPrimitives.RequireType(module, target.TypeName);
                 IReadOnlyList<MethodDefinition> methods = ResolveTargetMethods(type, target);
+                ValidateTargetStructuralPostcondition(target, type, methods);
                 for (int bridgeIndex = 0; bridgeIndex < target.BridgeMethods.Count; bridgeIndex++)
                 {
                     ValidateTargetBridgePostcondition(target, methods, target.BridgeMethods[bridgeIndex]);
@@ -531,13 +594,9 @@ internal static class PermanentPatchCatalog
         for (int targetIndex = 0; targetIndex < operation.Targets.Count; targetIndex++)
         {
             ClientPatchTarget target = operation.Targets[targetIndex];
-            if (target.BridgeMethods.Count == 0)
-            {
-                continue;
-            }
-
             TypeDefinition type = CecilPatchPrimitives.RequireType(module, target.TypeName);
             IReadOnlyList<MethodDefinition> targetMethods = ResolveTargetMethods(type, target);
+            ValidateTargetStructuralPostcondition(target, type, targetMethods);
             for (int bridgeIndex = 0; bridgeIndex < target.BridgeMethods.Count; bridgeIndex++)
             {
                 string bridgeMethod = target.BridgeMethods[bridgeIndex];
@@ -675,8 +734,7 @@ internal static class PermanentPatchCatalog
     /// </summary>
     private static void ValidateTargetBridgePostcondition(ClientPatchTarget target, IReadOnlyList<MethodDefinition> targetMethods, string bridgeMethod)
     {
-        bool allReturns = target.Anchor.IndexOf("every return", StringComparison.OrdinalIgnoreCase) >= 0 ||
-            target.Injection.IndexOf("every return", StringComparison.OrdinalIgnoreCase) >= 0;
+        bool allReturns = target.BridgeCallMode == ClientPatchPostconditionMode.BeforeEveryReturn;
         int expected = allReturns ? CountReturns(targetMethods) : target.ExpectedBridgeCallCount;
         int actual = CountBridgeMethodCalls(targetMethods, bridgeMethod);
         if (actual != expected)
@@ -709,6 +767,233 @@ internal static class PermanentPatchCatalog
                 }
             }
         }
+    }
+
+    private static void ValidateTargetStructuralPostcondition(
+        ClientPatchTarget target,
+        TypeDefinition type,
+        IReadOnlyList<MethodDefinition> methods)
+    {
+        // The catalog is intentionally target-local rather than a general IL verifier. These checks
+        // cover permanent mutations that cannot be proven by a PluginUiRuntime call alone.
+        switch (target.Id)
+        {
+            case "menu.version-labels":
+                RequireVersionLabel(methods[0], "versionNumber");
+                RequireVersionLabel(methods[0], "versionNumber2");
+                return;
+
+            case "paint.pending-tile":
+            case "paint.pending-cage":
+            case "paint.pending-wall":
+            case "paint.pending-tree-top":
+            case "paint.pending-tree-branch":
+                RequireGeneratedMembers(
+                    CecilPatchPrimitives.RequireType(type.Module, "Terraria.GameContent.TilePaintSystemV2/ARenderTargetHolder"),
+                    "alacrityPendingPaintPreparation",
+                    "TryMarkAlacrityPaintPreparationPending",
+                    "ClearAlacrityPaintPreparationPending");
+                return;
+
+            case "paint.lazy-unpainted-scan":
+            case "paint.extra-preparation-prefilter":
+                RequireGeneratedMembers(
+                    type,
+                    "alacrityPaintPreparationOptimizationEnabled");
+                return;
+
+            case "clothing.dictionary-capacity":
+                RequireDictionaryCapacityMutation(methods[0]);
+                return;
+
+            case "clothing.discovery-deduplication":
+                RequireGeneratedMembers(
+                    type,
+                    "alacrityClothingEntityPresentationOptimizationEnabled",
+                    "alacrityDisplayDollLastPointValid",
+                    "alacrityHatRackLastPointValid");
+                return;
+
+            case "clothing.post-draw":
+                RequireGeneratedMembers(
+                    type,
+                    "DrawEntities_AlacrityHatRacks",
+                    "DrawEntities_AlacrityDisplayDolls",
+                    "DrawEntities_AlacrityHatRackEntries",
+                    "DrawEntities_AlacrityDisplayDollEntries");
+                RequireMethodCall(methods[0], "DrawEntities_AlacrityHatRacks");
+                RequireMethodCall(methods[0], "DrawEntities_AlacrityDisplayDolls");
+                return;
+
+            case "waterfall.discovery-reuse":
+                RequireGeneratedMembers(
+                    type,
+                    "alacrityWaterfallDiscoveryValid",
+                    "alacrityWaterfallDiscoveryDirty",
+                    "AlacrityTryReuseWaterfallDiscovery",
+                    "AlacrityRememberWaterfallDiscovery");
+                RequireMethodCall(methods[0], "AlacrityTryReuseWaterfallDiscovery");
+                RequireMethodCall(methods[0], "AlacrityRememberWaterfallDiscovery");
+                return;
+
+            case "waterfall.discovery-invalidation":
+            case "waterfall.discovery-liquid-invalidation":
+            case "waterfall.discovery-buffered-liquid-invalidation":
+                RequireGeneratedMembers(
+                    CecilPatchPrimitives.RequireType(type.Module, "Terraria.WaterfallManager"),
+                    "AlacrityInvalidateWaterfallDiscovery");
+                RequireMethodCall(methods[0], "AlacrityInvalidateWaterfallDiscovery");
+                return;
+
+            case "waterfall.layer-state":
+                RequireGeneratedMembers(type, "alacrityWaterfallLayerInitialized", "AlacritySetWaterfallLayer");
+                RequireMethodCall(methods[0], "AlacritySetWaterfallLayer");
+                return;
+
+            case "waterfall.solid-tile":
+                RequireGeneratedMembers(type, "AlacrityIsWaterfallSolidTile");
+                RequireMethodCall(methods[0], "AlacrityIsWaterfallSolidTile");
+                return;
+
+            case "waterfall.empty-pass":
+                RequireEmptyWaterfallFastPath(methods[0]);
+                return;
+
+            case "tile-drawing.activation-state":
+            case "tile-drawing.liquid-layer":
+            case "tile-drawing.unused-light":
+                RequireGeneratedMembers(
+                    type,
+                    "alacrityTileDrawingOptimizationEnabled",
+                    "alacrityLiquidBehindLayerInitialized",
+                    "AlacrityGetTileDrawDataLight",
+                    "AlacritySetLiquidBehindLayer");
+                return;
+
+            case "draw.render-now-lighting-area":
+                TypeDefinition main = CecilPatchPrimitives.RequireType(type.Module, "Terraria.Main");
+                RequireGeneratedMembers(main, "alacrityDrawOrchestrationOptimizationEnabled", "AlacrityShouldSortProjectileCache");
+                return;
+
+            case "draw.baby-bird-cache-fast-path":
+            case "draw.stardust-dragon-cache-fast-path":
+                TypeDefinition projectileMain = CecilPatchPrimitives.RequireType(type.Module, "Terraria.Main");
+                RequireGeneratedMembers(projectileMain, "AlacrityShouldSortProjectileCache");
+                RequireMethodCall(methods[0], "AlacrityShouldSortProjectileCache");
+                return;
+
+            default:
+                if (methods.Count == 0 || !methods[0].HasBody)
+                {
+                    throw new ClientBuildException("Patch target " + target.Id + " no longer has a verified method body.");
+                }
+
+                return;
+        }
+    }
+
+    private static void RequireGeneratedMembers(TypeDefinition type, params string[] names)
+    {
+        for (int nameIndex = 0; nameIndex < names.Length; nameIndex++)
+        {
+            string name = names[nameIndex];
+            bool exists = type.Fields.Any(field => string.Equals(field.Name, name, StringComparison.Ordinal)) ||
+                type.Methods.Any(method => string.Equals(method.Name, name, StringComparison.Ordinal));
+            if (!exists)
+            {
+                throw new ClientBuildException("Patch postcondition is missing generated member '" + name + "' on " + type.FullName + ".");
+            }
+        }
+    }
+
+    private static void RequireMethodCall(MethodDefinition method, string name)
+    {
+        for (int instructionIndex = 0; instructionIndex < method.Body.Instructions.Count; instructionIndex++)
+        {
+            if (method.Body.Instructions[instructionIndex].Operand is MethodReference reference &&
+                string.Equals(reference.Name, name, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        throw new ClientBuildException("Patch postcondition is missing '" + name + "' in " + method.FullName + ".");
+    }
+
+    private static void RequireDictionaryCapacityMutation(MethodDefinition constructor)
+    {
+        for (int index = 1; index < constructor.Body.Instructions.Count; index++)
+        {
+            Instruction instruction = constructor.Body.Instructions[index];
+            if (instruction.Operand is MethodReference reference &&
+                string.Equals(reference.DeclaringType.FullName, "System.Collections.Generic.Dictionary`2<Microsoft.Xna.Framework.Point,System.Int32>", StringComparison.Ordinal) &&
+                string.Equals(reference.Name, ".ctor", StringComparison.Ordinal) &&
+                reference.Parameters.Count == 1 &&
+                constructor.Body.Instructions[index - 1].OpCode == OpCodes.Ldc_I4 &&
+                Equals(constructor.Body.Instructions[index - 1].Operand, 2048))
+            {
+                return;
+            }
+        }
+
+        throw new ClientBuildException("Patch postcondition did not find the verified clothing dictionary capacity constructor.");
+    }
+
+    private static void RequireVersionLabel(MethodDefinition constructor, string fieldName)
+    {
+        for (int index = 1; index < constructor.Body.Instructions.Count; index++)
+        {
+            Instruction instruction = constructor.Body.Instructions[index];
+            if (instruction.OpCode == OpCodes.Stsfld && instruction.Operand is FieldReference field &&
+                string.Equals(field.Name, fieldName, StringComparison.Ordinal) &&
+                instruction.Previous != null && instruction.Previous.OpCode == OpCodes.Ldstr &&
+                string.Equals(instruction.Previous.Operand as string, "Terraria v1.4.5.6", StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        throw new ClientBuildException("Patch postcondition is missing the Terraria version label mutation for " + fieldName + ".");
+    }
+
+    private static void RequireEmptyWaterfallFastPath(MethodDefinition method)
+    {
+        // The fast path is verified by its observable reset stores, not merely by unrelated
+        // waterfall helpers which may also appear elsewhere in DrawWaterfall.
+        RequireStaticFieldStore(method, "drewLava");
+        RequireStaticFieldStore(method, "ambientWaterfallX");
+        RequireStaticFieldStore(method, "ambientWaterfallY");
+        RequireStaticFieldStore(method, "ambientWaterfallStrength");
+        RequireStaticFieldStore(method, "ambientLavafallX");
+        RequireStaticFieldStore(method, "ambientLavafallY");
+        RequireStaticFieldStore(method, "ambientLavafallStrength");
+
+        for (int index = 0; index < method.Body.Instructions.Count; index++)
+        {
+            Instruction instruction = method.Body.Instructions[index];
+            if (instruction.OpCode == OpCodes.Ret && instruction.Previous != null && instruction.Previous.OpCode == OpCodes.Stelem_I1)
+            {
+                return;
+            }
+        }
+
+        throw new ClientBuildException("Waterfall empty-pass postcondition is missing the tileSolid[546] restoration before its injected return.");
+    }
+
+    private static void RequireStaticFieldStore(MethodDefinition method, string fieldName)
+    {
+        for (int index = 0; index < method.Body.Instructions.Count; index++)
+        {
+            Instruction instruction = method.Body.Instructions[index];
+            if (instruction.OpCode == OpCodes.Stsfld && instruction.Operand is FieldReference field &&
+                string.Equals(field.DeclaringType.FullName, "Terraria.Main", StringComparison.Ordinal) &&
+                string.Equals(field.Name, fieldName, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        throw new ClientBuildException("Waterfall empty-pass postcondition is missing the Terraria.Main." + fieldName + " reset.");
     }
 
     private static int CountReturns(IReadOnlyList<MethodDefinition> targetMethods)

@@ -119,6 +119,7 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
 
     private sealed class Editor : IChatInputEditor, IChatInputActionAvailability
     {
+        private const int MaximumHistoryEntries = 200;
         private readonly BetterChatPlugin plugin;
         private readonly List<string> history = new List<string>();
         private int historyIndex = -1;
@@ -201,6 +202,11 @@ public sealed class BetterChatPlugin : IAlacrityPlugin
                 return;
 
             history.Add(text);
+            if (history.Count > MaximumHistoryEntries)
+            {
+                history.RemoveAt(0);
+            }
+
             historyIndex = -1;
             historyDraft = string.Empty;
         }

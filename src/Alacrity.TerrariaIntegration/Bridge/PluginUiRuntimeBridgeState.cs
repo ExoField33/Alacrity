@@ -17,7 +17,7 @@ namespace AlacrityTerraria
     /// </summary>
     internal sealed class PluginUiRuntimeBridgeState
     {
-        internal readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(2, 2, 2, "1.4.5.6");
+        internal readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(3, 2, 2, "1.4.5.6");
         internal readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
         internal readonly object CapabilityDiagnosticGate = new object();
         internal readonly Dictionary<string, string> CapabilityDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal);

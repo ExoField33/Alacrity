@@ -89,6 +89,38 @@ public sealed class PluginLifecycleQuiescenceTests
         Assert.Throws<ObjectDisposedException>(() => retained.GetToggle!());
     }
 
+    [Fact]
+    public void TypedSettingSubscriptionDoesNotEnterAfterActivationAdmissionCloses()
+    {
+        using var host = new FakePluginHost();
+        PluginManifest manifest = CreateManifest();
+        PluginHostContext context = host.Create(manifest);
+        IPluginSetting<bool> setting = context.Settings.Register(new PluginSettingDefinition<bool>("activation-gated", false));
+        int calls = 0;
+        setting.Subscribe(_ => calls++);
+
+        ((PluginResourceScope)context.Resources).CallbackGate.CloseAdmission();
+        setting.Value = true;
+
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public void FixedContextControllerExplainsWhyItCannotReactivate()
+    {
+        using var host = new FakePluginHost();
+        PluginManifest manifest = CreateManifest();
+        using var controller = new PluginLifecycleController(new NoopPlugin(), host.Create(manifest));
+
+        controller.Validate();
+        controller.Initialize();
+        controller.Enable();
+        controller.Disable();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => controller.Initialize());
+        Assert.Contains("fresh context factory", exception.Message, StringComparison.Ordinal);
+    }
+
     private static PluginManifest CreateManifest()
     {
         return new PluginManifest(
@@ -138,6 +170,14 @@ public sealed class PluginLifecycleQuiescenceTests
         {
             return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
+    }
+
+    private sealed class NoopPlugin : IAlacrityPlugin
+    {
+        public void Initialize(IPluginContext context) { }
+        public void Enable() { }
+        public void Disable() { }
+        public void Shutdown() { }
     }
 
     private sealed class BlockingAsyncPlugin : IAsyncAlacrityPlugin

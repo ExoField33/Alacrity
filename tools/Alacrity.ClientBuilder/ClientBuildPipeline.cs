@@ -270,7 +270,8 @@ internal static class ClientBuildPipeline
             {
                 throw new ClientBuildException(
                     "Client deployment failed: " + deploymentFailure.Message +
-                    " Rollback also failed: " + rollbackFailure.Message,
+                    " Rollback also failed: " + rollbackFailure.Message +
+                    " Recovery backups were retained at '" + transaction.RecoveryDirectory + "'.",
                     new AggregateException(deploymentFailure, rollbackFailure));
             }
 

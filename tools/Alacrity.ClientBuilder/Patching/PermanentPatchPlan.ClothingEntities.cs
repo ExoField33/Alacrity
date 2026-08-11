@@ -423,6 +423,7 @@ internal static partial class PermanentPatchPlan
         var id = new VariableDefinition(module.TypeSystem.Int32);
         var entity = new VariableDefinition(module.ImportReference(draw.DeclaringType));
         var position = new VariableDefinition(positionType);
+        method.Body.InitLocals = true;
         method.Body.Variables.Add(enumerator);
         method.Body.Variables.Add(pair);
         method.Body.Variables.Add(id);

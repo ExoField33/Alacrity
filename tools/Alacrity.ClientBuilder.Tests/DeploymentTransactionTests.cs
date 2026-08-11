@@ -74,6 +74,34 @@ public sealed class DeploymentTransactionTests : IDisposable
     }
 
     [Fact]
+    public void FailedRollbackKeepsRecoveryBackupsAfterDispose()
+    {
+        Directory.CreateDirectory(directory);
+        string target = Path.Combine(directory, "Alacrity.dll");
+        File.WriteAllText(target, "original");
+        var transaction = new DeploymentTransaction(directory);
+        transaction.Capture(target);
+        File.WriteAllText(target, "changed");
+        string recovery = transaction.RecoveryDirectory;
+        DeploymentTransaction.RestoreFileCopy = (_, _) => throw new IOException("injected restore failure");
+        try
+        {
+            Assert.Throws<IOException>(() => transaction.RollBack());
+            transaction.Dispose();
+            Assert.True(Directory.Exists(recovery));
+            Assert.True(File.Exists(Path.Combine(recovery, "Alacrity.dll")));
+        }
+        finally
+        {
+            DeploymentTransaction.RestoreFileCopy = (source, destination) => File.Copy(source, destination, overwrite: true);
+            if (Directory.Exists(recovery))
+            {
+                Directory.Delete(recovery, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void PublishDeploymentRetainsBothMutationAndRollbackDiagnostics()
     {
         string output = Path.Combine(directory, "client");
@@ -85,7 +113,7 @@ public sealed class DeploymentTransactionTests : IDisposable
         var manifest = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
-            BridgeHandshake = "2|2|2|1.4.5.6"
+            BridgeHandshake = "3|2|2|1.4.5.6"
         };
 
         ClientBuildPipeline.DeploymentMutationFailureInjector = point =>

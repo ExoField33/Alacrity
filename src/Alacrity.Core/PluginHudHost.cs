@@ -171,7 +171,7 @@ public sealed class PluginHudHost
 
     private sealed class Entry : IPluginRegistration
     {
-        private readonly Action<Entry> remove; private readonly IPluginLogger? logger; private readonly PluginFailureWindow failures = new PluginFailureWindow(); private readonly ActivationCallbackGate? callbackGate; private bool released;
+        private readonly Action<Entry> remove; private readonly IPluginLogger? logger; private readonly PluginFailureWindow failures = new PluginFailureWindow(); private readonly ActivationCallbackGate? callbackGate; private int released;
         internal Entry(PluginId owner, PluginHudWidgetDescriptor descriptor, Action<IPluginHudCanvas, PluginHudFrame> draw, long sequence, Action<Entry> remove, IPluginLogger? logger, ActivationCallbackGate? callbackGate) { Owner = owner; Descriptor = descriptor; Draw = draw; Sequence = sequence; this.remove = remove; this.logger = logger; this.callbackGate = callbackGate; }
         internal PluginId Owner { get; } internal PluginHudWidgetDescriptor Descriptor { get; } internal Action<IPluginHudCanvas, PluginHudFrame> Draw { get; } internal long Sequence { get; }
         internal IPluginLogger? Logger => logger;
@@ -182,8 +182,8 @@ public sealed class PluginHudHost
             if (callbackGate == null) { lease = default; return true; }
             return callbackGate.TryEnter(out lease);
         }
-        public string Name => "hud-widget:" + Descriptor.Id; public bool IsReleased => released;
-        public void Dispose() { if (released) return; released = true; remove(this); }
+        public string Name => "hud-widget:" + Descriptor.Id; public bool IsReleased => System.Threading.Volatile.Read(ref released) != 0;
+        public void Dispose() { if (System.Threading.Interlocked.Exchange(ref released, 1) == 0) remove(this); }
         internal void RecordFailure(DateTime now, TimeSpan window)
         {
             failures.RecordFailure(now, window);

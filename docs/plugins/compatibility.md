@@ -1,6 +1,6 @@
 # Compatibility
 
-Packages declare exact PluginSdk, Core host, and Terraria bridge ABI compatibility versions in `plugin.json`, alongside supported Terraria versions. Admission occurs before the entry assembly loads. A mismatch reports the stale component and expected versus loaded version rather than relying on a CLR missing-member failure. Current bundled packages require compatibility level `2`.
+Packages declare exact PluginSdk, Core host, and Terraria bridge ABI compatibility versions in `plugin.json`, alongside supported Terraria versions. Admission occurs before the entry assembly loads. A mismatch reports the stale component and expected versus loaded version rather than relying on a CLR missing-member failure. Current bundled packages require PluginSdk compatibility level `3` and host/bridge level `2`. PluginSdk 3 deliberately records the `ITerrariaServices.RenderingOptimizations` interface expansion, so a binary built against the former interface is rejected before it can fail with a missing member at runtime.
 
 The injected bridge retains its stable `GetBridgeHandshake(): string` ABI for version-locked
 Terraria patches. Its `PluginSdk|Host|BridgeAbi|Terraria` payload is parsed by a single typed

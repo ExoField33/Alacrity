@@ -94,6 +94,7 @@ internal static partial class PermanentPatchPlan
         method.Parameters.Add(new ParameterDefinition("y", ParameterAttributes.None, module.TypeSystem.Int32));
         method.Parameters.Add(new ParameterDefinition("tileType", ParameterAttributes.None, module.TypeSystem.UInt16));
         method.Parameters.Add(new ParameterDefinition("drawing", ParameterAttributes.None, module.ImportReference(tileDrawing)));
+        method.Body.InitLocals = true;
         var unusedColor = new VariableDefinition(colorType);
         method.Body.Variables.Add(unusedColor);
 

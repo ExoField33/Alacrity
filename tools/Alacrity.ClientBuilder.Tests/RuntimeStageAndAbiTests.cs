@@ -9,13 +9,13 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [Fact]
     public void RuntimeStageAndFacadeAreValidatedAsOneCoherentSet()
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
 
         var stage = RuntimeStage.Load(directory);
         var source = new SupportedTerrariaBuild("fixture", "1.4.5.6", "hash", PermanentPatchCatalog.Identity);
 
         Assert.NotEmpty(stage.Files);
-        Assert.Equal("2|2|2|1.4.5.6", BridgeAbiCatalog.ValidateRuntimeFacade(directory, source));
+        Assert.Equal("3|2|2|1.4.5.6", BridgeAbiCatalog.ValidateRuntimeFacade(directory, source));
     }
 
     [Fact]
@@ -155,6 +155,8 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
             {
                 "waterfall.discovery-reuse",
                 "waterfall.discovery-invalidation",
+                "waterfall.discovery-liquid-invalidation",
+                "waterfall.discovery-buffered-liquid-invalidation",
                 "waterfall.layer-state",
                 "waterfall.solid-tile",
                 "waterfall.empty-pass"
@@ -164,6 +166,8 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
             "IsWaterfallPresentationOptimizationEnabled",
             operation.Targets[0].BridgeMethods);
         Assert.Empty(operation.Targets[1].BridgeMethods);
+        Assert.Empty(operation.Targets[2].BridgeMethods);
+        Assert.Empty(operation.Targets[3].BridgeMethods);
     }
 
     [Fact]
@@ -195,7 +199,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [Fact]
     public void RuntimeStageRejectsAnUndeclaredOrChangedFile()
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
         File.AppendAllText(Path.Combine(directory, "Alacrity.Core.dll"), "changed");
 
         var exception = Assert.Throws<ClientBuildException>(() => RuntimeStage.Load(directory));
@@ -206,7 +210,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [Fact]
     public void RuntimeStageRejectsDifferentRootAndBinCopiesOfTheSameAssembly()
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
         File.WriteAllText(Path.Combine(directory, "bin", "Alacrity.Core.dll"), "different core");
         WriteStageManifest();
 
@@ -228,7 +232,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [Fact]
     public void BridgeFacadeRejectsAChangedPatchReferencedSignature()
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
         var facadePath = Path.Combine(directory, "bin", "Alacrity.PluginUiRuntime.dll");
         using (var facade = ModuleDefinition.ReadModule(facadePath, new ReaderParameters { ReadWrite = true }))
         {
@@ -250,7 +254,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [Fact]
     public void PatchedExecutableRequiresAnExactFacadeMember()
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
         var executablePath = Path.Combine(directory, "Alacrity.exe");
         using (var module = ModuleDefinition.CreateModule("Fixture", ModuleKind.Console))
         {
@@ -280,7 +284,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [Fact]
     public void PatchedExecutableRejectsAFacadeLookalikeFromTheWrongAssembly()
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
         var executablePath = Path.Combine(directory, "wrong-scope.exe");
         using (var module = ModuleDefinition.CreateModule("Fixture", ModuleKind.Console))
         {
@@ -313,7 +317,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     [InlineData("missing")]
     public void PatchedExecutableRejectsEveryChangedAbiSignatureShape(string variation)
     {
-        CreateRuntimeStage("2|2|2|1.4.5.6");
+        CreateRuntimeStage("3|2|2|1.4.5.6");
         string executablePath = Path.Combine(directory, variation + ".exe");
         using (var module = ModuleDefinition.CreateModule("Fixture", ModuleKind.Console))
         {
@@ -403,7 +407,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         var current = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
-            BridgeHandshake = "2|2|2|1.4.5.6",
+            BridgeHandshake = "3|2|2|1.4.5.6",
             RuntimeFiles = new List<ClientBuildFile>
             {
                 new ClientBuildFile { Path = "bin/NewBridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "bin", "NewBridge.dll")) }
@@ -438,7 +442,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         var previous = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "Alacrity.exe")),
-            BridgeHandshake = "2|2|2|1.4.5.6",
+            BridgeHandshake = "3|2|2|1.4.5.6",
             RuntimeFiles = new List<ClientBuildFile>
             {
                 new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "bin", "Bridge.dll")) }
@@ -451,7 +455,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         var current = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
-            BridgeHandshake = "2|2|2|1.4.5.6",
+            BridgeHandshake = "3|2|2|1.4.5.6",
             RuntimeFiles = new List<ClientBuildFile>
             {
                 new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "bin", "Bridge.dll")) }
@@ -499,7 +503,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         var previous = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "Alacrity.exe")),
-            BridgeHandshake = "2|2|2|1.4.5.6",
+            BridgeHandshake = "3|2|2|1.4.5.6",
             RuntimeFiles = new List<ClientBuildFile>
             {
                 new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(output, "bin", "Bridge.dll")) },
@@ -512,7 +516,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
         var current = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
-            BridgeHandshake = "2|2|2|1.4.5.6",
+            BridgeHandshake = "3|2|2|1.4.5.6",
             RuntimeFiles = new List<ClientBuildFile>
             {
                 new ClientBuildFile { Path = "bin/Bridge.dll", Sha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "bin", "Bridge.dll")) }

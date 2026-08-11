@@ -12,7 +12,7 @@ namespace AlacrityTerraria
         /// A stale PluginSdk must not make the compatibility diagnostic itself uncallable.
         /// Integration tests assert these values remain synchronized with <see cref="AlacrityCompatibility"/>.
         /// </remarks>
-        public static string GetBridgeHandshake() => "2|2|2|1.4.5.6";
+        public static string GetBridgeHandshake() => "3|2|2|1.4.5.6";
         private sealed class BridgePluginLogger : IPluginLogger
         {
             private readonly PluginId plugin;

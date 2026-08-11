@@ -735,8 +735,17 @@ public sealed class PluginLifecycleController : IDisposable
 
     private void PrepareContextForInitialization()
     {
-        if (!hasInitialized || contextFactory == null)
+        if (!hasInitialized)
+        {
             return;
+        }
+
+        if (contextFactory == null)
+        {
+            throw new InvalidOperationException(
+                "This lifecycle controller was constructed with one fixed plugin context and cannot be reactivated after disable. " +
+                "Construct it with a fresh context factory for each activation.");
+        }
 
         IPluginContext replacement = contextFactory() ?? throw new InvalidOperationException("The plugin context factory returned null.");
         if (replacement.Manifest == null || replacement.Manifest.Id != Manifest.Id)

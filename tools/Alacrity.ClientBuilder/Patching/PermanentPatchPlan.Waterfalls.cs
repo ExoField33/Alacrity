@@ -454,6 +454,12 @@ internal static partial class PermanentPatchPlan
         PatchWaterfallDiscoveryMutation(CecilPatchPrimitives.RequireType(module, "Terraria.Wiring"), "Actuate", 2, invalidate);
         PatchWaterfallDiscoveryMutation(CecilPatchPrimitives.RequireType(module, "Terraria.Wiring"), "ActuateForced", 2, invalidate);
         PatchWaterfallDiscoveryMutation(CecilPatchPrimitives.RequireType(module, "Terraria.Main"), "OnTileChangeEvent", 4, invalidate);
+
+        // A settled liquid queue no longer appears in numLiquid/numLiquidBuffer, but it can
+        // still have changed a waterfall source since the cached scan. These are the native
+        // admissions for both active and buffered liquid work, including multiplayer updates.
+        PatchWaterfallDiscoveryMutation(CecilPatchPrimitives.RequireType(module, "Terraria.Liquid"), "AddWater", 2, invalidate);
+        PatchWaterfallDiscoveryMutation(CecilPatchPrimitives.RequireType(module, "Terraria.LiquidBuffer"), "AddBuffer", 2, invalidate);
     }
 
     private static void PatchWaterfallDiscoveryMutation(
@@ -554,6 +560,9 @@ internal static partial class PermanentPatchPlan
             module.TypeSystem.Boolean);
         method.Parameters.Add(new ParameterDefinition("tile", ParameterAttributes.None, tileReference));
         method.Parameters.Add(new ParameterDefinition("optimized", ParameterAttributes.None, module.TypeSystem.Boolean));
+        var tileIndex = new VariableDefinition(module.TypeSystem.Int32);
+        method.Body.Variables.Add(tileIndex);
+        method.Body.InitLocals = true;
         var native = Instruction.Create(OpCodes.Nop);
         var notSolid = Instruction.Create(OpCodes.Ldc_I4_0);
         var checkTile = Instruction.Create(OpCodes.Nop);
@@ -575,14 +584,26 @@ internal static partial class PermanentPatchPlan
         il.Append(il.Create(OpCodes.Brfalse, notSolid));
         il.Append(il.Create(OpCodes.Ldsfld, tileSolidTop));
         il.Append(il.Create(OpCodes.Brfalse, notSolid));
-        il.Append(il.Create(OpCodes.Ldsfld, tileSolid));
         il.Append(il.Create(OpCodes.Ldarg_0));
         il.Append(il.Create(OpCodes.Ldfld, tileTypeField));
+        il.Append(il.Create(OpCodes.Conv_I4));
+        il.Append(il.Create(OpCodes.Stloc, tileIndex));
+        il.Append(il.Create(OpCodes.Ldloc, tileIndex));
+        il.Append(il.Create(OpCodes.Ldsfld, tileSolid));
+        il.Append(il.Create(OpCodes.Ldlen));
+        il.Append(il.Create(OpCodes.Conv_I4));
+        il.Append(il.Create(OpCodes.Bge_Un, notSolid));
+        il.Append(il.Create(OpCodes.Ldloc, tileIndex));
+        il.Append(il.Create(OpCodes.Ldsfld, tileSolidTop));
+        il.Append(il.Create(OpCodes.Ldlen));
+        il.Append(il.Create(OpCodes.Conv_I4));
+        il.Append(il.Create(OpCodes.Bge_Un, notSolid));
+        il.Append(il.Create(OpCodes.Ldsfld, tileSolid));
+        il.Append(il.Create(OpCodes.Ldloc, tileIndex));
         il.Append(il.Create(OpCodes.Ldelem_U1));
         il.Append(il.Create(OpCodes.Brfalse, notSolid));
         il.Append(il.Create(OpCodes.Ldsfld, tileSolidTop));
-        il.Append(il.Create(OpCodes.Ldarg_0));
-        il.Append(il.Create(OpCodes.Ldfld, tileTypeField));
+        il.Append(il.Create(OpCodes.Ldloc, tileIndex));
         il.Append(il.Create(OpCodes.Ldelem_U1));
         il.Append(il.Create(OpCodes.Brtrue, notSolid));
         il.Append(il.Create(OpCodes.Ldarg_0));

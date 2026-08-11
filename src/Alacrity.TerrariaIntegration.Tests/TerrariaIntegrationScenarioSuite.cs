@@ -143,6 +143,9 @@ public static class TerrariaIntegrationScenarioSuite
         VerifyGenerationReuse(tracker, PluginEntityKind.Player, 3);
         VerifyGenerationReuse(tracker, PluginEntityKind.Npc, 4);
         VerifyGenerationReuse(tracker, PluginEntityKind.Projectile, 5);
+        VerifyGenerationDemandGap(tracker, PluginEntityKind.Player, 6);
+        VerifyGenerationDemandGap(tracker, PluginEntityKind.Npc, 6);
+        VerifyGenerationDemandGap(tracker, PluginEntityKind.Projectile, 6);
         Assert(!tracker.GetHandle(PluginEntityKind.Projectile, 99, true).IsValid, "Out-of-range slots must never produce a handle.");
         Assert(!tracker.GetHandle(PluginEntityKind.Player, -1, true).IsValid, "Negative slots must never produce a handle.");
     }
@@ -155,6 +158,14 @@ public static class TerrariaIntegrationScenarioSuite
         tracker.GetHandle(kind, slot, false);
         PluginEntityHandle replacement = tracker.GetHandle(kind, slot, true);
         Assert(replacement != first && replacement.Slot == first.Slot && replacement.Kind == kind, "Slot reuse must produce a new handle generation for every slot-backed entity kind.");
+    }
+
+    private static void VerifyGenerationDemandGap(EntityGenerationTracker tracker, PluginEntityKind kind, int slot)
+    {
+        PluginEntityHandle beforeGap = tracker.GetHandle(kind, slot, true);
+        tracker.InvalidateObservation(kind);
+        PluginEntityHandle afterGap = tracker.GetHandle(kind, slot, true);
+        Assert(afterGap != beforeGap, "An entity observed after a demand gap must not retain the former occupant's generation.");
     }
 
     private static void VerifyConcurrentSnapshotDemandAcquisition()
@@ -242,7 +253,7 @@ public static class TerrariaIntegrationScenarioSuite
         VerifyStaticBridgeMethod(bridge, "ShouldRunGoreSystem", typeof(bool));
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
-        Assert((string)handshake.Invoke(null, null) == "2|2|2|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
+        Assert((string)handshake.Invoke(null, null) == "3|2|2|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
         Assert((string)handshake.Invoke(null, null) == string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi),
             "The self-contained bridge handshake must remain synchronized with the SDK compatibility constants.");
     }
@@ -284,7 +295,7 @@ public static class TerrariaIntegrationScenarioSuite
         FieldInfo expectedCompatibility = facadeRuntime.GetField("ExpectedBridgeCompatibility", BindingFlags.NonPublic | BindingFlags.Static);
         object expected = expectedCompatibility.GetValue(null);
         MethodInfo formatHandshake = expected.GetType().GetMethod("ToHandshake", BindingFlags.Public | BindingFlags.Instance);
-        Assert((string)formatHandshake.Invoke(expected, null) == "2|2|2|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
+        Assert((string)formatHandshake.Invoke(expected, null) == "3|2|2|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
 
         Assembly bootstrap = Assembly.LoadFrom(bootstrapPath);
         Type runtime = bootstrap.GetType("AlacrityTerraria.AlacrityBootstrapRuntime", true);
@@ -334,7 +345,7 @@ public static class TerrariaIntegrationScenarioSuite
     internal static void VerifyBridgeHandshakeParsing()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
-        Assert(BridgeCompatibilityDescriptor.TryParse("2|2|2|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
+        Assert(BridgeCompatibilityDescriptor.TryParse("3|2|2|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
             "The current bridge handshake must parse and validate through the shared compatibility descriptor.");
         Assert(!BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic) && diagnostic.Contains("exactly four"), "A handshake with the wrong field count must diagnose its shape.");
         Assert(!BridgeCompatibilityDescriptor.TryParse("x|2|2|1.4.5.6", out _, out diagnostic) && diagnostic.Contains("PluginSdk"), "An invalid compatibility integer must identify its field.");
