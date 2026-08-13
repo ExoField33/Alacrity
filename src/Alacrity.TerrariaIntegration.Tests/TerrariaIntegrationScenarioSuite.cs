@@ -253,7 +253,7 @@ public static class TerrariaIntegrationScenarioSuite
         VerifyStaticBridgeMethod(bridge, "ShouldRunGoreSystem", typeof(bool));
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
-        Assert((string)handshake.Invoke(null, null) == "3|2|3|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
+        Assert((string)handshake.Invoke(null, null) == "4|2|5|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
         Assert((string)handshake.Invoke(null, null) == string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi),
             "The self-contained bridge handshake must remain synchronized with the SDK compatibility constants.");
     }
@@ -292,10 +292,14 @@ public static class TerrariaIntegrationScenarioSuite
             Assert(reference.Name != "Alacrity.PluginSdk", "The injected facade must not require PluginSdk just to validate a stale bridge handshake.");
         }
         Type facadeRuntime = facade.GetType("AlacrityTerraria.PluginUiRuntime", true);
-        FieldInfo expectedCompatibility = facadeRuntime.GetField("ExpectedBridgeCompatibility", BindingFlags.NonPublic | BindingFlags.Static);
-        object expected = expectedCompatibility.GetValue(null);
+        FieldInfo stateField = facadeRuntime.GetField("State", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert(stateField != null, "The facade must retain its internal bridge state.");
+        object state = stateField.GetValue(null);
+        FieldInfo expectedCompatibility = state.GetType().GetField("ExpectedBridgeCompatibility", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert(expectedCompatibility != null, "The facade bridge state must retain its compatibility expectation.");
+        object expected = expectedCompatibility.GetValue(state);
         MethodInfo formatHandshake = expected.GetType().GetMethod("ToHandshake", BindingFlags.Public | BindingFlags.Instance);
-        Assert((string)formatHandshake.Invoke(expected, null) == "3|2|3|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
+        Assert((string)formatHandshake.Invoke(expected, null) == "4|2|5|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
 
         Assembly bootstrap = Assembly.LoadFrom(bootstrapPath);
         Type runtime = bootstrap.GetType("AlacrityTerraria.AlacrityBootstrapRuntime", true);
@@ -345,7 +349,7 @@ public static class TerrariaIntegrationScenarioSuite
     internal static void VerifyBridgeHandshakeParsing()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
-        Assert(BridgeCompatibilityDescriptor.TryParse("3|2|3|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
+        Assert(BridgeCompatibilityDescriptor.TryParse("4|2|5|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
             "The current bridge handshake must parse and validate through the shared compatibility descriptor.");
         Assert(!BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic) && diagnostic.Contains("exactly four"), "A handshake with the wrong field count must diagnose its shape.");
         Assert(!BridgeCompatibilityDescriptor.TryParse("x|2|2|1.4.5.6", out _, out diagnostic) && diagnostic.Contains("PluginSdk"), "An invalid compatibility integer must identify its field.");

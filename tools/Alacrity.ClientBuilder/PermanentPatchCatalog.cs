@@ -169,7 +169,7 @@ internal sealed class ClientPatchOperation
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r16";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r19";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
@@ -201,6 +201,13 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("render.notifications", "Terraria.Main", "DrawInterface_33_MouseText()", "method entry and static Main.spriteBatch field", "insert before first instruction", "DrawNotifications"),
             new ClientPatchTarget("render.world-overlays", "Terraria.Main", "DrawInterface_1_1_DrawEmoteBubblesInWorld()", "EmoteBubble.DrawAll(SpriteBatch) continuation", "insert after native emote bubble draw", "DrawHitboxes"),
             new ClientPatchTarget("combat.melee-capture", "Terraria.Player", "ItemCheck_GetMeleeHitbox(Item, Rectangle, Boolean&, Rectangle&)", "all returns in the verified four-parameter method", "insert before return and retarget branch/EH references", ClientPatchPostconditionMode.BeforeEveryReturn, "CaptureSwingHitbox")),
+        CreateDefinition(
+            "patch.runtime.presentation-suppression",
+            PermanentPatchPlan.ApplyPermanentPresentationSuppression,
+            "render.presentation-suppression",
+            "Terraria.Main",
+            "Optional local presentation element gates",
+            new ClientPatchTarget("render.paladin-shield-icon", "Terraria.Main", "DrawPaladinsShieldBoundary(Vector2, Vector2)", "the verified endpoint sparkle followed by the unique LoadItem(938) icon anchor and SpriteBatch.Draw", "skip only the optional endpoint sparkle and icon when requested", "ShouldDrawPaladinShieldIcon")),
         CreateDefinition(
             "patch.runtime.render-culling",
             PermanentPatchPlan.ApplyPermanentRenderCulling,
@@ -284,6 +291,14 @@ internal static class PermanentPatchCatalog
             "Terraria.Main",
             "Version-locked batched mechanical laser-ruler presentation with native fallback",
             new ClientPatchTarget("laser-ruler.draw", "Terraria.Main", "DrawInterface_3_LaserRuler()", "the verified static ruler method with its native ReverseGravitySupport grid draws", "call the generic host renderer first and continue through vanilla when it declines", "TryDrawLaserRulerPresentation")),
+        CreateDefinition(
+            "patch.runtime.static-tile-chunk-presentation",
+            PermanentPatchPlan.ApplyPermanentStaticTileChunkPresentation,
+            "render.static-tile-chunk-presentation",
+            "Terraria.GameContent.Drawing.TileDrawing / Terraria.WorldGen / Terraria.Wiring / Terraria.Main",
+            "Conservative fixed 20 by 20 static-tile descriptor cache with live native lighting and fallback",
+            new ClientPatchTarget("static-tile-chunk.draw", "Terraria.GameContent.Drawing.TileDrawing", "Draw(System.Boolean,System.Boolean,System.Int32)", "the one verified DrawSingleTile invocation in the visible-tile loop", "replace the call with a wrapper that asks the generic host cache before using the untouched native method", "TryDrawStaticTileChunk"),
+            new ClientPatchTarget("static-tile-chunk.network-mutation", "Terraria.Main", "OnTileChangeEvent(System.Int32,System.Int32,...)", "the shared native multiplayer tile-change event", "mark the affected static descriptor region dirty", "InvalidateStaticTileChunks")),
         CreateDefinition(
             "patch.runtime.chat-input-and-commands",
             PermanentPatchPlan.ApplyPermanentChatInputAndCommands,
@@ -741,6 +756,12 @@ internal static class PermanentPatchCatalog
     /// </summary>
     private static void ValidateTargetBridgePostcondition(ClientPatchTarget target, IReadOnlyList<MethodDefinition> targetMethods, string bridgeMethod)
     {
+        if (string.Equals(target.Id, "static-tile-chunk.draw", StringComparison.Ordinal))
+        {
+            ValidateStaticTileChunkWrapperBridgeCall(target, targetMethods, bridgeMethod);
+            return;
+        }
+
         bool allReturns = target.BridgeCallMode == ClientPatchPostconditionMode.BeforeEveryReturn;
         int expected = allReturns ? CountReturns(targetMethods) : target.ExpectedBridgeCallCount;
         int actual = CountBridgeMethodCalls(targetMethods, bridgeMethod);
@@ -773,6 +794,28 @@ internal static class PermanentPatchCatalog
                     }
                 }
             }
+        }
+    }
+
+    private static void ValidateStaticTileChunkWrapperBridgeCall(
+        ClientPatchTarget target,
+        IReadOnlyList<MethodDefinition> targetMethods,
+        string bridgeMethod)
+    {
+        TypeDefinition type = targetMethods[0].DeclaringType;
+        MethodDefinition? wrapper = type.Methods.SingleOrDefault(method =>
+            string.Equals(method.Name, "AlacrityDrawStaticChunkAwareTile", StringComparison.Ordinal));
+        if (wrapper == null || !wrapper.HasBody)
+        {
+            throw new ClientBuildException("Patch target " + target.Id + " did not create its verified static tile wrapper.");
+        }
+
+        int actual = CountBridgeMethodCalls(new[] { wrapper }, bridgeMethod);
+        if (actual != target.ExpectedBridgeCallCount)
+        {
+            throw new ClientBuildException(
+                "Patch target " + target.Id + " expected " + target.ExpectedBridgeCallCount +
+                " call(s) to " + bridgeMethod + " in its generated wrapper but found " + actual + ".");
         }
     }
 
@@ -875,6 +918,15 @@ internal static class PermanentPatchCatalog
                     "alacrityLiquidBehindLayerInitialized",
                     "AlacrityGetTileDrawDataLight",
                     "AlacritySetLiquidBehindLayer");
+                return;
+
+            case "static-tile-chunk.draw":
+                RequireGeneratedMembers(type, "AlacrityDrawStaticChunkAwareTile");
+                RequireMethodCall(methods[0], "AlacrityDrawStaticChunkAwareTile");
+                return;
+
+            case "static-tile-chunk.network-mutation":
+                RequireMethodCall(methods[0], "InvalidateStaticTileChunks");
                 return;
 
             case "draw.render-now-lighting-area":

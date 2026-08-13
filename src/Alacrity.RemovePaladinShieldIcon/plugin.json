@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "alacrity.remove-paladin-shield-icon",
+  "name": "Remove Paladin Shield Icon",
+  "version": "0.1.0",
+  "publisher": "ExoField",
+  "description": "Removes the annoying paladin shield icon that appears on top of players.",
+  "supportedGameVersions": [ "1.4.5.6" ],
+  "pluginSdkCompatibilityVersion": 4,
+  "hostCompatibilityVersion": 2,
+  "bridgeAbiVersion": 5,
+  "capabilities": [ "Rendering" ],
+  "permissions": [],
+  "multiplayerSafety": "ClientPresentationOnly",
+  "changelog": "0.1.0 - Add plugin.",
+  "entryAssembly": "Alacrity.RemovePaladinShieldIcon.dll",
+  "entryType": "Alacrity.RemovePaladinShieldIcon.RemovePaladinShieldIconPlugin"
+}

@@ -25,7 +25,8 @@ internal sealed class FakePluginHost : IDisposable
         Overlays = new PluginOverlayHost();
         Hud = new PluginHudHost();
         RenderingOptimizations = new PluginRenderingOptimizationHost();
-        contexts = new PluginHostContextFactory(root, Services, Extensions, Commands, overlays: Overlays, notifications: Notifications, hud: Hud, renderingOptimizations: RenderingOptimizations);
+        PresentationSuppressions = new PluginPresentationSuppressionHost();
+        contexts = new PluginHostContextFactory(root, Services, Extensions, Commands, overlays: Overlays, notifications: Notifications, hud: Hud, renderingOptimizations: RenderingOptimizations, presentation: PresentationSuppressions);
     }
 
     internal PluginNotificationCenter Notifications { get; }
@@ -35,6 +36,7 @@ internal sealed class FakePluginHost : IDisposable
     internal PluginOverlayHost Overlays { get; }
     internal PluginHudHost Hud { get; }
     internal PluginRenderingOptimizationHost RenderingOptimizations { get; }
+    internal PluginPresentationSuppressionHost PresentationSuppressions { get; }
     /// <summary>Plugin-attributed log output captured by the framework-neutral test host.</summary>
     internal IReadOnlyList<string> Diagnostics => diagnostics;
     /// <summary>Current host-rendered notifications, captured through the real notification center.</summary>

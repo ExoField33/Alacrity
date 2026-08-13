@@ -17,23 +17,23 @@ public sealed class ClientManifestIntegrityTests : IDisposable
         string executable = Path.Combine(directory, "Alacrity.exe");
         File.WriteAllText(runtime, "bridge");
         File.WriteAllText(executable, "client");
-        WriteManifest("3|2|3|1.4.5.6", Hash(executable), "bin/Alacrity.PluginUiCoreBridge.dll", Hash(runtime));
+        WriteManifest("4|2|5|1.4.5.6", Hash(executable), "bin/Alacrity.PluginUiCoreBridge.dll", Hash(runtime));
 
-        Assert.True(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out string diagnostic), diagnostic);
+        Assert.True(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out string diagnostic), diagnostic);
 
         File.WriteAllText(runtime, "tampered");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out diagnostic));
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out diagnostic));
         Assert.Contains("failed integrity", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void RejectsMissingOrIncompatibleClientManifests()
     {
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out _));
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out _));
 
         Directory.CreateDirectory(directory);
         WriteManifest("1|2|2|1.4.5.6", "00", "bin/missing.dll", "00");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out string diagnostic));
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out string diagnostic));
         Assert.Contains("handshake", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -42,13 +42,13 @@ public sealed class ClientManifestIntegrityTests : IDisposable
     {
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "alacrity-client-manifest.json"), "not json");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out string diagnostic));
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out string diagnostic));
         Assert.Contains("validation failed", diagnostic, StringComparison.OrdinalIgnoreCase);
 
         string executable = Path.Combine(directory, "Alacrity.exe");
         File.WriteAllText(executable, "client");
-        WriteManifest("3|2|3|1.4.5.6", Hash(executable), "../outside.dll", "00");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out diagnostic));
+        WriteManifest("4|2|5|1.4.5.6", Hash(executable), "../outside.dll", "00");
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out diagnostic));
         Assert.Contains("escapes", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -62,7 +62,7 @@ public sealed class ClientManifestIntegrityTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "alacrity-client-manifest.json"), manifest);
 
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out string diagnostic));
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out string diagnostic));
         Assert.Contains("formatVersion", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -72,16 +72,16 @@ public sealed class ClientManifestIntegrityTests : IDisposable
         Directory.CreateDirectory(Path.Combine(directory, "bin"));
         string executable = Path.Combine(directory, "Alacrity.exe");
         File.WriteAllText(executable, "client");
-        WriteManifest("3|2|3|1.4.5.6", "00", "bin/Alacrity.PluginUiCoreBridge.dll", "00");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out string diagnostic));
+        WriteManifest("4|2|5|1.4.5.6", "00", "bin/Alacrity.PluginUiCoreBridge.dll", "00");
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out string diagnostic));
         Assert.Contains("Alacrity.exe failed", diagnostic, StringComparison.OrdinalIgnoreCase);
 
-        WriteManifest("3|2|3|1.4.5.6", Hash(executable), "bin/Alacrity.PluginUiCoreBridge.dll", "00");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out diagnostic));
+        WriteManifest("4|2|5|1.4.5.6", Hash(executable), "bin/Alacrity.PluginUiCoreBridge.dll", "00");
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out diagnostic));
         Assert.Contains("Alacrity.PluginUiCoreBridge.dll", diagnostic, StringComparison.OrdinalIgnoreCase);
 
-        WriteManifest("3|2|3|1.4.5.6", Hash(executable), "Alacrity.Core.dll", "00");
-        Assert.False(ClientManifestIntegrity.TryValidate(directory, "3|2|3|1.4.5.6", out diagnostic));
+        WriteManifest("4|2|5|1.4.5.6", Hash(executable), "Alacrity.Core.dll", "00");
+        Assert.False(ClientManifestIntegrity.TryValidate(directory, "4|2|5|1.4.5.6", out diagnostic));
         Assert.Contains("Alacrity.Core.dll", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 

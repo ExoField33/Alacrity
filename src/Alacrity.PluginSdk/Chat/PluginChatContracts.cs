@@ -21,6 +21,8 @@ public interface ITerrariaServices
     IPluginRenderCullingService RenderCulling { get; }
     /// Scoped requests for host-implemented local renderer preparation optimizations.
     IPluginRenderingOptimizationService RenderingOptimizations { get; }
+    /// Scoped requests to suppress supported local presentation elements without renderer access.
+    IPluginPresentationSuppressionService Presentation { get; }
     /// Read-only world/server presentation data such as the display name and sampled ping.
     IPluginSessionPresentationService Session { get; }
     /// Demand-gated hostile NPC-to-player targeting relationships for presentation diagnostics.

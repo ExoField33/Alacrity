@@ -1,5 +1,7 @@
 using Alacrity.Core;
 using Alacrity.PluginSdk;
+using Microsoft.Xna.Framework;
+using Terraria.GameContent.Drawing;
 
 namespace AlacrityTerraria;
 
@@ -91,4 +93,35 @@ public static partial class PluginUiRuntime
             (host.GetEffectiveOptimizations() & PluginRenderingOptimization.LaserRulerPresentation) != 0 &&
             Rendering.LaserRuler.TerrariaLaserRulerPresentation.TryDraw();
     }
+
+    /// <summary>
+    /// Draws one audited static block through the host-owned 20 by 20 descriptor cache. False
+    /// leaves the version-locked TileDrawing caller on its exact native implementation.
+    /// </summary>
+    public static bool TryDrawStaticTileChunk(
+        TileDrawing drawing,
+        bool solidLayer,
+        Vector2 screenPosition,
+        Vector2 screenOffset,
+        int tileX,
+        int tileY)
+    {
+        PluginRenderingOptimizationHost host = _renderingOptimizations;
+        return host != null &&
+            (host.GetEffectiveOptimizations() & PluginRenderingOptimization.StaticTileChunkPresentation) != 0 &&
+            Rendering.TileChunks.TerrariaStaticTileChunkRenderer.TryDraw(
+                drawing,
+                solidLayer,
+                screenPosition,
+                screenOffset,
+                tileX,
+                tileY);
+    }
+
+    /// <summary>Marks cached static descriptors near a native tile mutation as dirty.</summary>
+    public static void InvalidateStaticTileChunks(int tileX, int tileY)
+    {
+        Rendering.TileChunks.TerrariaStaticTileChunkRenderer.Invalidate(tileX, tileY);
+    }
+
 }

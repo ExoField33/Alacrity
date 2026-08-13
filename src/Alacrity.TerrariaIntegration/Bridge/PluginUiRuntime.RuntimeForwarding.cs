@@ -9,6 +9,7 @@ using Microsoft.Xna.Framework.Graphics;
 using Terraria.Audio;
 using Terraria;
 using Terraria.GameContent.UI.States;
+using Terraria.GameContent.Drawing;
 using Terraria.Graphics.Renderers;
 
 namespace AlacrityTerraria
@@ -325,6 +326,17 @@ namespace AlacrityTerraria
             return InvokeGate(callback, "Gore-system gate");
         }
 
+        /// <summary>
+        /// Leaves native Paladin shield presentation intact unless the managed runtime has an
+        /// active local presentation suppression policy. A missing bridge always draws the icon.
+        /// </summary>
+        public static bool ShouldDrawPaladinShieldIcon()
+        {
+            Func<bool> callback = State.ShouldDrawPaladinShieldIcon;
+            if (callback == null && EnsureRuntimeCapabilities()) callback = State.ShouldDrawPaladinShieldIcon;
+            return callback == null || InvokeOptionalGate(callback, "Paladin shield icon presentation gate");
+        }
+
         /// <summary>Returns whether the generic paint-preparation optimization policy is active.</summary>
         public static bool IsPaintPreparationOptimizationEnabled()
         {
@@ -382,6 +394,65 @@ namespace AlacrityTerraria
             Func<bool> callback = State.TryDrawLaserRulerPresentation;
             if (callback == null && EnsureRuntimeCapabilities()) callback = State.TryDrawLaserRulerPresentation;
             return callback != null && InvokeOptionalGate(callback, "Laser-ruler presentation optimization");
+        }
+
+        /// <summary>
+        /// Allows the Core bridge to replace only audited, static TileDrawing entries. Returning
+        /// false preserves Terraria's native DrawSingleTile call for every unsupported case.
+        /// </summary>
+        public static bool TryDrawStaticTileChunk(
+            TileDrawing drawing,
+            bool solidLayer,
+            Vector2 screenPosition,
+            Vector2 screenOffset,
+            int tileX,
+            int tileY)
+        {
+            PluginUiRuntimeBridgeState.StaticTileChunkDrawDelegate callback = State.TryDrawStaticTileChunk;
+            if (callback == null && EnsureRuntimeCapabilities())
+            {
+                callback = State.TryDrawStaticTileChunk;
+            }
+
+            if (callback == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return callback(drawing, solidLayer, screenPosition, screenOffset, tileX, tileY);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Static tile-chunk presentation optimization", exception);
+                return false;
+            }
+        }
+
+
+        /// <summary>Forwards a native tile mutation to the host-owned static descriptor cache.</summary>
+        public static void InvalidateStaticTileChunks(int tileX, int tileY)
+        {
+            Action<int, int> callback = State.InvalidateStaticTileChunks;
+            if (callback == null && EnsureRuntimeCapabilities())
+            {
+                callback = State.InvalidateStaticTileChunks;
+            }
+
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback(tileX, tileY);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Static tile-chunk invalidation", exception);
+            }
         }
 
         private static bool InvokeGate(Func<bool> callback, string operation)
@@ -601,7 +672,7 @@ namespace AlacrityTerraria
 
             State.BridgeLoadAttempted = true;
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "Alacrity.PluginUiCoreBridge.dll");
-            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "3|2|3|1.4.5.6", out string integrityDiagnostic))
+            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "4|2|5|1.4.5.6", out string integrityDiagnostic))
             {
                 RecordUnavailable("Client integrity check failed: " + integrityDiagnostic);
                 return false;
@@ -708,7 +779,10 @@ namespace AlacrityTerraria
             if (TryResolveOptionalCapability(bridgeType, "waterfall-presentation", "IsWaterfallPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsWaterfallPresentationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "tile-drawing-presentation", "IsTileDrawingPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsTileDrawingPresentationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "draw-orchestration", "IsDrawOrchestrationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsDrawOrchestrationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "paladin-shield-icon", "ShouldDrawPaladinShieldIcon", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.ShouldDrawPaladinShieldIcon = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "laser-ruler-presentation", "TryDrawLaserRulerPresentation", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.TryDrawLaserRulerPresentation = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "static-tile-chunk-presentation", "TryDrawStaticTileChunk", typeof(PluginUiRuntimeBridgeState.StaticTileChunkDrawDelegate), typeof(bool), new[] { typeof(TileDrawing), typeof(bool), typeof(Vector2), typeof(Vector2), typeof(int), typeof(int) }, out callback)) State.TryDrawStaticTileChunk = (PluginUiRuntimeBridgeState.StaticTileChunkDrawDelegate)callback;
+            if (TryResolveOptionalCapability(bridgeType, "static-tile-chunk-invalidation", "InvalidateStaticTileChunks", typeof(Action<int, int>), typeof(void), new[] { typeof(int), typeof(int) }, out callback)) State.InvalidateStaticTileChunks = (Action<int, int>)callback;
             if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) State.TryHandlePluginChatCommand = (Func<string, bool>)callback;
         }
 
@@ -818,7 +892,10 @@ namespace AlacrityTerraria
             State.IsWaterfallPresentationOptimizationEnabled = null;
             State.IsTileDrawingPresentationOptimizationEnabled = null;
             State.IsDrawOrchestrationOptimizationEnabled = null;
+            State.ShouldDrawPaladinShieldIcon = null;
             State.TryDrawLaserRulerPresentation = null;
+            State.TryDrawStaticTileChunk = null;
+            State.InvalidateStaticTileChunks = null;
             State.TryHandlePluginChatCommand = null;
             State.BootstrapPluginRuntime = null;
             State.ShutdownPluginRuntime = null;

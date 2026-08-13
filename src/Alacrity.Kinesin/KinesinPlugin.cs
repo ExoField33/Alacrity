@@ -17,6 +17,7 @@ public sealed class KinesinPlugin : IAlacrityPlugin
     private bool tileDrawingPresentationEnabled = true;
     private bool drawOrchestrationEnabled = true;
     private bool laserRulerPresentationEnabled = true;
+    private bool staticTileChunkPresentationEnabled = true;
 
     public void Initialize(IPluginContext context)
     {
@@ -103,6 +104,19 @@ public sealed class KinesinPlugin : IAlacrityPlugin
                 "laser-ruler-presentation",
                 "Optimize Laser Ruler Rendering",
                 laserRulerPresentationSetting).InPage("kinesin"));
+        IPluginSetting<bool> staticTileChunkPresentationSetting = context.Settings.Register(
+            new PluginSettingDefinition<bool>("staticTileChunkPresentation", true));
+        staticTileChunkPresentationEnabled = staticTileChunkPresentationSetting.Value;
+        staticTileChunkPresentationSetting.Subscribe(value =>
+        {
+            staticTileChunkPresentationEnabled = value;
+            RefreshPolicy();
+        });
+        context.Ui.RegisterSettingsControl(
+            PluginSettingControl.Toggle(
+                "static-tile-chunk-presentation",
+                "Optimize Static Tile Chunks",
+                staticTileChunkPresentationSetting).InPage("kinesin"));
         RefreshPolicy();
     }
 
@@ -157,6 +171,10 @@ public sealed class KinesinPlugin : IAlacrityPlugin
         if (laserRulerPresentationEnabled)
         {
             optimizations |= PluginRenderingOptimization.LaserRulerPresentation;
+        }
+        if (staticTileChunkPresentationEnabled)
+        {
+            optimizations |= PluginRenderingOptimization.StaticTileChunkPresentation;
         }
         if (optimizations == PluginRenderingOptimization.None)
         {

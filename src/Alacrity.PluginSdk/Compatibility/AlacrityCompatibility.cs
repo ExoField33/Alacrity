@@ -6,13 +6,13 @@ namespace Alacrity.PluginSdk;
 public static class AlacrityCompatibility
 {
     /// <summary>Current public SDK contract level.</summary>
-    // ITerrariaServices gained RenderingOptimizations. Adding an interface member is a binary
-    // break for third-party implementations, so it intentionally starts SDK compatibility v3.
-    public const int PluginSdk = 3;
+    // ITerrariaServices gained Presentation. Adding an interface member is a binary break for
+    // third-party implementations, so current packages require SDK compatibility v4.
+    public const int PluginSdk = 4;
     /// <summary>Current Core host contract level.</summary>
     public const int Host = 2;
     /// <summary>Current static Terraria bridge ABI level.</summary>
-    public const int BridgeAbi = 3;
+    public const int BridgeAbi = 5;
 }
 
 /// <summary>Immutable package requirements checked before a plugin assembly is loaded.</summary>

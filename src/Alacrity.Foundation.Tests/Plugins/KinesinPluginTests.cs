@@ -22,16 +22,18 @@ public sealed class KinesinPluginTests
             PluginRenderingOptimization.WaterfallPresentation |
             PluginRenderingOptimization.TileDrawingPresentation |
             PluginRenderingOptimization.DrawOrchestration |
-            PluginRenderingOptimization.LaserRulerPresentation,
+            PluginRenderingOptimization.LaserRulerPresentation |
+            PluginRenderingOptimization.StaticTileChunkPresentation,
             host.RenderingOptimizations.GetEffectiveOptimizations());
         PluginSettingControl[] settings = host.GetSettingsControls(manifest.Id).ToArray();
-        Assert.Equal(6, settings.Length);
+        Assert.Equal(7, settings.Length);
         PluginSettingControl paintedTiles = Assert.Single(settings, setting => setting.Id == "painted-tile-preparation");
         PluginSettingControl clothingEntities = Assert.Single(settings, setting => setting.Id == "clothing-entity-presentation");
         PluginSettingControl waterfalls = Assert.Single(settings, setting => setting.Id == "waterfall-presentation");
         PluginSettingControl tileDrawing = Assert.Single(settings, setting => setting.Id == "tile-drawing-presentation");
         PluginSettingControl drawOrchestration = Assert.Single(settings, setting => setting.Id == "draw-orchestration");
         PluginSettingControl laserRuler = Assert.Single(settings, setting => setting.Id == "laser-ruler-presentation");
+        PluginSettingControl staticTileChunks = Assert.Single(settings, setting => setting.Id == "static-tile-chunk-presentation");
 
         paintedTiles.SetToggle!(false);
         Assert.Equal(
@@ -39,7 +41,8 @@ public sealed class KinesinPluginTests
             PluginRenderingOptimization.WaterfallPresentation |
             PluginRenderingOptimization.TileDrawingPresentation |
             PluginRenderingOptimization.DrawOrchestration |
-            PluginRenderingOptimization.LaserRulerPresentation,
+            PluginRenderingOptimization.LaserRulerPresentation |
+            PluginRenderingOptimization.StaticTileChunkPresentation,
             host.RenderingOptimizations.GetEffectiveOptimizations());
 
         clothingEntities.SetToggle!(false);
@@ -47,13 +50,15 @@ public sealed class KinesinPluginTests
             PluginRenderingOptimization.WaterfallPresentation |
             PluginRenderingOptimization.TileDrawingPresentation |
             PluginRenderingOptimization.DrawOrchestration |
-            PluginRenderingOptimization.LaserRulerPresentation,
+            PluginRenderingOptimization.LaserRulerPresentation |
+            PluginRenderingOptimization.StaticTileChunkPresentation,
             host.RenderingOptimizations.GetEffectiveOptimizations());
 
         waterfalls.SetToggle!(false);
         tileDrawing.SetToggle!(false);
         drawOrchestration.SetToggle!(false);
         laserRuler.SetToggle!(false);
+        staticTileChunks.SetToggle!(false);
         Assert.Equal(PluginRenderingOptimization.None, host.RenderingOptimizations.GetEffectiveOptimizations());
 
         paintedTiles.SetToggle!(true);

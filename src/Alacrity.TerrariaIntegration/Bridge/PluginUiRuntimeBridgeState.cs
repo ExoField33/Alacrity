@@ -6,6 +6,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria;
 using Terraria.GameContent.UI.States;
+using Terraria.GameContent.Drawing;
 using Terraria.Graphics.Renderers;
 
 namespace AlacrityTerraria
@@ -17,7 +18,9 @@ namespace AlacrityTerraria
     /// </summary>
     internal sealed class PluginUiRuntimeBridgeState
     {
-        internal readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(3, 2, 3, "1.4.5.6");
+        // This is compiled into the facade so a stale PluginSdk cannot make the compatibility
+        // diagnostic itself uncallable. Keep it synchronized with the Core bridge handshake.
+        internal readonly BridgeCompatibilityDescriptor ExpectedBridgeCompatibility = new BridgeCompatibilityDescriptor(4, 2, 5, "1.4.5.6");
         internal readonly BridgeReflectionResolver Reflection = new BridgeReflectionResolver();
         internal readonly object CapabilityDiagnosticGate = new object();
         internal readonly Dictionary<string, string> CapabilityDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -53,7 +56,10 @@ namespace AlacrityTerraria
         internal Func<bool> IsWaterfallPresentationOptimizationEnabled;
         internal Func<bool> IsTileDrawingPresentationOptimizationEnabled;
         internal Func<bool> IsDrawOrchestrationOptimizationEnabled;
+        internal Func<bool> ShouldDrawPaladinShieldIcon;
         internal Func<bool> TryDrawLaserRulerPresentation;
+        internal StaticTileChunkDrawDelegate TryDrawStaticTileChunk;
+        internal Action<int, int> InvalidateStaticTileChunks;
         internal Func<string, bool> TryHandlePluginChatCommand;
         internal Func<bool> HandlePluginMenuInput;
         internal Func<bool> HasChatInputEditors;
@@ -77,5 +83,13 @@ namespace AlacrityTerraria
         internal bool NotificationCapabilitiesResolved;
         internal string LastDiagnostic;
         internal bool ShutdownHooked;
+
+        internal delegate bool StaticTileChunkDrawDelegate(
+            TileDrawing drawing,
+            bool solidLayer,
+            Vector2 screenPosition,
+            Vector2 screenOffset,
+            int tileX,
+            int tileY);
     }
 }

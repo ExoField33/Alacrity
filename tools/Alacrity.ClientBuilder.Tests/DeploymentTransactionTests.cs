@@ -113,7 +113,7 @@ public sealed class DeploymentTransactionTests : IDisposable
         var manifest = new ClientBuildManifest
         {
             OutputExecutableSha256 = SupportedTerrariaBuildCatalog.ComputeSha256(Path.Combine(temporary, "Alacrity.exe")),
-            BridgeHandshake = "3|2|3|1.4.5.6"
+            BridgeHandshake = "4|2|5|1.4.5.6"
         };
 
         ClientBuildPipeline.DeploymentMutationFailureInjector = point =>

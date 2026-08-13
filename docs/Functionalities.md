@@ -36,7 +36,8 @@ whether an existing context service can be extended without duplicating a host b
 | `context.Terraria.Session` | Server/world display name, capacity, and a bounded sampled ping value. |
 | `context.Terraria.VisualEffects` | Scoped dust/gore presentation policies. |
 | `context.Terraria.RenderCulling` | Scoped conservative local culling requests for verified world player, dropped-item, Dust, and common world-particle draw paths. It requires the generic `Rendering` capability, not raw renderer or UI access. |
-| `context.Terraria.RenderingOptimizations` | Scoped requests for verified, host-owned local renderer preparation/presentation optimizations, including painted-tile preparation, clothing-entity rendering, waterfall presentation, TileDrawing common-path, draw-orchestration reductions, and batched laser-ruler presentation. Plugins select documented policy categories; they never receive raw renderer, texture, or graphics-device access. |
+| `context.Terraria.RenderingOptimizations` | Scoped requests for verified, host-owned local renderer preparation/presentation optimizations, including painted-tile preparation, clothing-entity rendering, waterfall presentation, TileDrawing common-path, draw-orchestration reductions, batched laser-ruler presentation, and conservative static 20-by-20 tile descriptors with live lighting. Plugins select documented policy categories; they never receive raw renderer, texture, or graphics-device access. |
+| `context.Terraria.Presentation` | Scoped requests to suppress specific host-supported local presentation elements. Policies compose by element union, require the generic `Rendering` capability, and never expose renderer state. |
 | `context.Terraria.NpcTargets` | Demand-gated immutable hostile NPC-to-player targeting relationships for local presentation diagnostics. |
 | `context.Terraria.WorldSections` | Bounded immutable visible client tile-section state captured at the host update boundary; callers choose a margin from `0` through `PluginWorldSectionLimits.MaximumMargin` (currently `8`) rather than reading the full section grid. The first read activates capture for that activation and may return an empty/previous frame until the next update. |
 
@@ -59,6 +60,9 @@ whether an existing context service can be extended without duplicating a host b
 - Use `context.Terraria.RenderingOptimizations` only for explicitly documented, version-verified
   optimization categories. Policies compose by category union and fail closed to unchanged vanilla
   work when the integration bridge is unavailable.
+- Use `context.Terraria.Presentation` for deliberately narrow local presentation choices such as
+  hiding a supported endpoint indicator. This is not gameplay access: unsupported elements and a
+  missing bridge always leave Terraria's native presentation intact.
 
 ## Extension guidance
 

@@ -30,7 +30,10 @@ internal static partial class PermanentPatchPlan
         "IsWaterfallPresentationOptimizationEnabled",
         "IsTileDrawingPresentationOptimizationEnabled",
         "IsDrawOrchestrationOptimizationEnabled",
+        "ShouldDrawPaladinShieldIcon",
         "TryDrawLaserRulerPresentation",
+        "TryDrawStaticTileChunk",
+        "InvalidateStaticTileChunks",
         "ShouldDrawWorldPlayer",
         "ShouldDrawWorldItem",
         "ShouldDrawWorldParticle",
@@ -108,6 +111,13 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldRunGoreSystem", "System.Boolean"));
     }
 
+    internal static void ApplyPermanentPresentationSuppression(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchPaladinShieldIcon(
+            CecilPatchPrimitives.RequireType(module, "Terraria.Main"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawPaladinShieldIcon", "System.Boolean"));
+    }
+
     internal static void ApplyPermanentRenderCulling(ModuleDefinition module, string sourceExecutablePath)
     {
         var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
@@ -155,6 +165,14 @@ internal static partial class PermanentPatchPlan
         PatchLaserRulerPresentation(
             module,
             ImportRuntimeMethod(module, sourceExecutablePath, "TryDrawLaserRulerPresentation", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentStaticTileChunkPresentation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchStaticTileChunkPresentation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryDrawStaticTileChunk", "System.Boolean", "Terraria.GameContent.Drawing.TileDrawing", "System.Boolean", "Microsoft.Xna.Framework.Vector2", "Microsoft.Xna.Framework.Vector2", "System.Int32", "System.Int32"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "InvalidateStaticTileChunks", "System.Void", "System.Int32", "System.Int32"));
     }
 
     internal static void ApplyPermanentDrawOrchestration(ModuleDefinition module, string sourceExecutablePath)

@@ -39,6 +39,7 @@ internal sealed class PluginUiRuntimeState
         VisualEffects = new TerrariaVisualEffectsAdapter(services.VisualEffects.Policies, reportFailure);
         RenderCulling = new TerrariaRenderCullingAdapter(services.RenderCulling.Policies, reportFailure);
         RenderingOptimizations = services.RenderingOptimizations.Policies;
+        PresentationSuppressions = services.Presentation.Policies;
         EnabledStateStore = new TerrariaPluginEnabledStateStore(root);
         KeybindRuntime = new TerrariaKeybindRuntime(root, Extensions, Notifications, reportFailure);
         Operations = new TerrariaPluginOperationCoordinator(Runtime, persistEnabledState, publishNotification);
@@ -64,6 +65,7 @@ internal sealed class PluginUiRuntimeState
     internal TerrariaVisualEffectsAdapter VisualEffects { get; }
     internal TerrariaRenderCullingAdapter RenderCulling { get; }
     internal PluginRenderingOptimizationHost RenderingOptimizations { get; }
+    internal PluginPresentationSuppressionHost PresentationSuppressions { get; }
     internal TerrariaPluginEnabledStateStore EnabledStateStore { get; }
     internal TerrariaPluginOperationCoordinator Operations { get; }
     internal TerrariaKeybindRuntime KeybindRuntime { get; }

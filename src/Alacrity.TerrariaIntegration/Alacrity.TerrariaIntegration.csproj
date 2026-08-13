@@ -67,7 +67,10 @@
     <Compile Include="Rendering\TerrariaPluginDrawAdapter.cs" />
     <Compile Include="Rendering\PluginUiRuntime.RenderingBridge.cs" />
     <Compile Include="Rendering\PluginUiRuntime.PaintPreparationBridge.cs" />
+    <Compile Include="Rendering\PluginUiRuntime.PresentationSuppressionBridge.cs" />
     <Compile Include="Rendering\LaserRuler\TerrariaLaserRulerPresentation.cs" />
+    <Compile Include="Rendering\TileChunks\StaticTileChunkEligibility.Generated.cs" />
+    <Compile Include="Rendering\TileChunks\TerrariaStaticTileChunkRenderer.cs" />
     <Compile Include="Rendering\Culling\TerrariaRenderCullingAdapter.cs" />
     <Compile Include="Rendering\Culling\TerrariaRenderCullingBounds.cs" />
     <Compile Include="Rendering\Culling\PluginUiRuntime.RenderCullingBridge.cs" />
@@ -86,7 +89,5 @@
     <Compile Include="UserInterface\Settings\PluginUiRuntime.SettingsMenu.cs" />
     <Compile Include="UserInterface\Settings\PluginUiRuntime.IngamePluginList.cs" />
     <Compile Include="UserInterface\Settings\PluginUiRuntime.IngamePluginSettings.cs" />
-    <Compile Include="TileStorage.cs" />
-    <Compile Include="TileDataCompatibility.cs" />
   </ItemGroup>
 </Project>

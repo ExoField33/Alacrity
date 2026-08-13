@@ -40,7 +40,14 @@ public enum PluginRenderingOptimization
     /// Replaces Terraria's repeated per-cell laser-ruler presentation with a version-verified
     /// batched grid. This is a local presentation request and never exposes renderer access.
     /// </summary>
-    LaserRulerPresentation = 32
+    LaserRulerPresentation = 32,
+
+    /// <summary>
+    /// Reuses verified static tile draw descriptors in fixed 20 by 20 tile regions while
+    /// continuing to calculate Terraria's lighting for every rendered frame. Unsupported,
+    /// animated, painted, or visibility-sensitive tiles remain on Terraria's native path.
+    /// </summary>
+    StaticTileChunkPresentation = 64
 }
 
 /// <summary>

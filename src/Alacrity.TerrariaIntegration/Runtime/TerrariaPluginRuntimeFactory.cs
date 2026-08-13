@@ -20,6 +20,7 @@ internal interface ITerrariaClientRuntime
     TerrariaVisualEffectsRuntime VisualEffects { get; }
     TerrariaRenderCullingRuntime RenderCulling { get; }
     TerrariaRenderingOptimizationRuntime RenderingOptimizations { get; }
+    TerrariaPresentationRuntime Presentation { get; }
 }
 
 /// <summary>Concrete, explicit Terraria runtime composition. It is created once per process.</summary>
@@ -33,6 +34,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
     internal TerrariaVisualEffectsRuntime VisualEffects { get; private set; }
     internal TerrariaRenderCullingRuntime RenderCulling { get; private set; }
     internal TerrariaRenderingOptimizationRuntime RenderingOptimizations { get; private set; }
+    internal TerrariaPresentationRuntime Presentation { get; private set; }
     TerrariaLifecycleRuntime ITerrariaClientRuntime.Lifecycle => Lifecycle;
     TerrariaGameStateRuntime ITerrariaClientRuntime.GameState => GameState;
     TerrariaRenderingRuntime ITerrariaClientRuntime.Rendering => Rendering;
@@ -41,6 +43,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
     TerrariaVisualEffectsRuntime ITerrariaClientRuntime.VisualEffects => VisualEffects;
     TerrariaRenderCullingRuntime ITerrariaClientRuntime.RenderCulling => RenderCulling;
     TerrariaRenderingOptimizationRuntime ITerrariaClientRuntime.RenderingOptimizations => RenderingOptimizations;
+    TerrariaPresentationRuntime ITerrariaClientRuntime.Presentation => Presentation;
 
     internal static ITerrariaClientRuntime Create(string root)
     {
@@ -66,6 +69,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
         var visualEffects = new PluginVisualEffectsHost();
         var renderCulling = new PluginRenderCullingHost();
         var renderingOptimizations = new PluginRenderingOptimizationHost();
+        var presentation = new PluginPresentationSuppressionHost();
         var contexts = new PluginHostContextFactory(
             root,
             serviceHub,
@@ -84,7 +88,8 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
                 entitySnapshots.CreateNpcTargetService(manifest, resources),
                 TerrariaWorldSectionService.CreateService(worldSections, manifest, resources),
                 renderCulling.CreateService(manifest, resources),
-                renderingOptimizations.CreateService(manifest, resources)),
+                renderingOptimizations.CreateService(manifest, resources),
+                presentation.CreateService(manifest, resources)),
             dispatcher,
             null,
             hud,
@@ -106,7 +111,8 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
             PluginUi = new TerrariaPluginUiRuntime(new PluginManagementMenu(runtime), extensions, serviceHub),
             VisualEffects = new TerrariaVisualEffectsRuntime(visualEffects),
             RenderCulling = new TerrariaRenderCullingRuntime(renderCulling),
-            RenderingOptimizations = new TerrariaRenderingOptimizationRuntime(renderingOptimizations)
+            RenderingOptimizations = new TerrariaRenderingOptimizationRuntime(renderingOptimizations),
+            Presentation = new TerrariaPresentationRuntime(presentation)
         };
     }
 }
@@ -171,6 +177,17 @@ internal sealed class TerrariaRenderCullingRuntime
 {
     internal TerrariaRenderCullingRuntime(PluginRenderCullingHost policies) { Policies = policies; }
     internal PluginRenderCullingHost Policies { get; }
+}
+
+/// <summary>Host-owned composition for optional local presentation suppression policies.</summary>
+internal sealed class TerrariaPresentationRuntime
+{
+    internal TerrariaPresentationRuntime(PluginPresentationSuppressionHost policies)
+    {
+        Policies = policies;
+    }
+
+    internal PluginPresentationSuppressionHost Policies { get; }
 }
 
 /// <summary>Reusable host-owned local rendering optimization policies.</summary>

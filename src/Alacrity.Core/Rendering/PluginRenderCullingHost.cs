@@ -59,6 +59,13 @@ public sealed class PluginRenderCullingHost
         {
             resources.Own("render-culling-policy", PluginResourceKind.RenderingHandler, entry);
         }
+        catch (InvalidOperationException)
+        {
+            entry.Dispose();
+            throw new ObjectDisposedException(
+                "IPluginResourceScope",
+                "The owning plugin scope was released during render-culling registration.");
+        }
         catch
         {
             entry.Dispose();

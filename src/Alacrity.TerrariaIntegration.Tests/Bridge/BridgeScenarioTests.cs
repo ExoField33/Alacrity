@@ -27,10 +27,12 @@ public sealed class BridgeScenarioTests
         VerifyStaticBridgeMethod(bridge, "DrawHudWidgets", typeof(void), typeof(SpriteBatch));
         VerifyStaticBridgeMethod(bridge, "ShouldCreateDust", typeof(bool), typeof(int));
         VerifyStaticBridgeMethod(bridge, "ShouldRunGoreSystem", typeof(bool));
+        VerifyStaticBridgeMethod(bridge, "ShouldDrawPaladinShieldIcon", typeof(bool));
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
-        Assert.Equal("3|2|3|1.4.5.6", (string)handshake.Invoke(null, null));
+        Assert.Equal("4|2|5|1.4.5.6", (string)handshake.Invoke(null, null));
         Assert.Equal(string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi), (string)handshake.Invoke(null, null));
+
     }
 
     [Fact]
@@ -53,6 +55,7 @@ public sealed class BridgeScenarioTests
         AssertBundledPluginPackage(root, "alacrity.visual-diagnostics", "Alacrity.VisualDiagnostics.dll");
         AssertBundledPluginPackage(root, "alacrity.off-screen-culling", "Alacrity.OffScreenCulling.dll");
         AssertBundledPluginPackage(root, "alacrity.kinesin", "Alacrity.Kinesin.dll");
+        AssertBundledPluginPackage(root, "alacrity.remove-paladin-shield-icon", "Alacrity.RemovePaladinShieldIcon.dll");
         string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
         Assert.Contains("Alacrity.BetterChat.dll", manifest);
         Assert.Contains("Alacrity.PlayerList.dll", manifest);
@@ -84,7 +87,7 @@ public sealed class BridgeScenarioTests
     public void HandshakeParsingReportsCompatibilityFailures()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
-        Assert.True(BridgeCompatibilityDescriptor.TryParse("3|2|3|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic));
+        Assert.True(BridgeCompatibilityDescriptor.TryParse("4|2|5|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic));
         Assert.NotNull(current);
         Assert.True(current.TryValidateAgainst(expected, out _));
         Assert.False(BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic));
