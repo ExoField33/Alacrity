@@ -10,7 +10,9 @@ movement, Shift selection, Home/End, Ctrl word movement and deletion, Ctrl A/C/X
 Insert/Delete, tag-aware movement for Terraria item/glyph tags, and surrogate-pair-safe movement.
 `clrInput()` resets that transient state with Terraria's own input reset. Terraria's version-locked
 `UITextBox` draw path reads the retained caret and draws the active selection without modifying its
-stored text, so native search controls retain both correct cursor movement and visible selection.
+stored text. Presentation is tied to the concrete version-locked `UITextBox` instance rather than
+its string value, so two equal fields cannot borrow one another's caret or selection. If that
+identity cannot be established, the field retains Terraria's normal end-caret presentation.
 Legacy menu fields retain Terraria's own blinking ticker, but the version-locked `DrawMenu` patch
 places that ticker at the retained caret, including same-length password masks. Player chat draws the
 same selection behind its normal chat snippets. IME composition remains delegated to

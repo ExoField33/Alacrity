@@ -49,6 +49,13 @@ The generated loops use each dictionary's already-captured `TileEntity.ID` and c
 the current frame. Entries whose ID is `-1`, removed entries, and replaced entities are skipped
 safely. Hat racks remain before display dolls, matching vanilla ordering.
 
+Dense rooms can expose a cold `LegacyPlayerRenderer`/content path: display dolls and occupied
+hat-rack slots invoke Terraria's full fake-player preparation and draw sequence, including the
+same asset and dye/shader access that real player rendering uses. That sequence is not safe to run
+on a worker: it mutates the tile entity's fake `Player` and touches Terraria content and XNA state.
+Alacrity therefore preserves every native clothing draw. It does not defer, cache, or suppress a
+visible mannequin or hat rack while attempting to smooth this cold path.
+
 During `CacheSpecialDraws_Part1`, each visible segment of a display doll or hat rack resolves to
 the same top-left entity point. Vanilla still hashes that point through `ContainsKey` for every
 segment. The optimized path captures the policy once for the solid draw and remembers only the
@@ -85,7 +92,8 @@ vanilla discovery every solid draw, naturally handling placement, removal, destr
 change, area movement, and multiplayer tile-entity changes. A stale or wrong ID fails the typed
 `TryGet<T>` check and is not drawn.
 
-Further caching inside `TEHatRack.Draw` or `TEDisplayDoll.Draw` was intentionally deferred. Their
-equipment and dye data can change independently of the visible-set discovery, while lighting and
-shader state are frame-dependent. Caching those values without a verified content-change signal
-would risk visual regressions.
+Further caching inside `TEHatRack.Draw` or `TEDisplayDoll.Draw` remains intentionally absent. Their
+fake-player state, lighting, shader state, and native `PlayerRenderer` calls are frame-dependent.
+Skipping individual non-empty hat-rack slots or merging the two immediate-mode batches was also
+rejected: neither preserves the renderer's shader/state boundaries with enough confidence for a
+version-locked visual optimization.

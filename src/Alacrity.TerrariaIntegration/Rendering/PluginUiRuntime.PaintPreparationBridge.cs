@@ -51,6 +51,31 @@ public static partial class PluginUiRuntime
     }
 
     /// <summary>
+    /// Starts one render-frame budget for first-use display-doll and hat-rack configurations.
+    /// This never prepares assets before visibility and never moves native rendering off-thread.
+    /// </summary>
+    public static void BeginClothingEntityPreparationFrame()
+    {
+        Rendering.Clothing.TerrariaClothingEntityPreparation.BeginFrame();
+    }
+
+    /// <summary>
+    /// Returns whether a cold clothing configuration may enter Terraria's native draw path this
+    /// frame. A denied configuration is retried on a later frame; warm configurations pass
+    /// immediately.
+    /// </summary>
+    public static bool TryBeginClothingEntityPreparation(int entityKind, long visualConfiguration)
+    {
+        return Rendering.Clothing.TerrariaClothingEntityPreparation.TryAdmit(entityKind, visualConfiguration);
+    }
+
+    /// <summary>Records that Terraria completed native rendering for an admitted configuration.</summary>
+    public static void CompleteClothingEntityPreparation(int entityKind, long visualConfiguration)
+    {
+        Rendering.Clothing.TerrariaClothingEntityPreparation.Complete(entityKind, visualConfiguration);
+    }
+
+    /// <summary>
     /// Returns whether a scoped plugin requested the verified local waterfall presentation
     /// optimization. A missing bridge leaves Terraria on its unmodified rendering path.
     /// </summary>
@@ -129,6 +154,22 @@ public static partial class PluginUiRuntime
         return host != null &&
             (host.GetEffectiveOptimizations() & PluginRenderingOptimization.RainPresentation) != 0 &&
             Rendering.Rain.TerrariaInstancedRainPresentation.TryBegin(useWorldTransform);
+    }
+
+    /// <summary>Prepares optional rain GPU resources once the device is valid, before a storm's first draw.</summary>
+    internal static void PrewarmRainPresentation()
+    {
+        PluginRenderingOptimizationHost host = _renderingOptimizations;
+        if (host != null && (host.GetEffectiveOptimizations() & PluginRenderingOptimization.RainPresentation) != 0)
+        {
+            Rendering.Rain.TerrariaInstancedRainPresentation.Prewarm();
+        }
+
+        PluginRenderingOptimizationHost tileHost = _renderingOptimizations;
+        if (tileHost != null && (tileHost.GetEffectiveOptimizations() & PluginRenderingOptimization.StaticTileChunkPresentation) != 0)
+        {
+            Rendering.TileChunks.TerrariaStaticTileChunkRenderer.Prewarm();
+        }
     }
 
     /// <summary>Queues one native active rain entry without changing Terraria's update timing.</summary>

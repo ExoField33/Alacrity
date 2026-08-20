@@ -14,6 +14,9 @@ internal static partial class PermanentPatchPlan
     private const string DisplayDollDrawMethodName = "DrawEntities_AlacrityDisplayDolls";
     private const string HatRackEntryDrawMethodName = "DrawEntities_AlacrityHatRackEntries";
     private const string DisplayDollEntryDrawMethodName = "DrawEntities_AlacrityDisplayDollEntries";
+    // Retained temporarily by the private patch-builder helper below; the generated client no
+    // longer emits this method because visual admission must fail open to native drawing.
+    private const string VisualConfigurationMethodName = "GetAlacrityVisualConfiguration";
     private const string ClothingOptimizationEnabledFieldName = "alacrityClothingEntityPresentationOptimizationEnabled";
     private const string DisplayDollLastPointValidFieldName = "alacrityDisplayDollLastPointValid";
     private const string DisplayDollLastPointXFieldName = "alacrityDisplayDollLastPointX";
@@ -385,6 +388,174 @@ internal static partial class PermanentPatchPlan
         return match == null
             ? throw new InvalidOperationException("Terraria 1.4.5.6 TEHatRack.ContainsItems was not found.")
             : module.ImportReference(match);
+    }
+
+    private static MethodDefinition CreateVisualConfigurationMethod(ModuleDefinition module, TypeDefinition entityType)
+    {
+        TypeDefinition itemType = CecilPatchPrimitives.RequireType(module, "Terraria.Item");
+        IReadOnlyList<FieldDefinition> itemArrays = GetVisualItemArrays(entityType, itemType);
+        FieldDefinition itemTypeField = RequireField(itemType, "type", "System.Int32");
+        FieldDefinition itemPrefixField = RequireIntegralField(itemType, "prefix");
+        FieldDefinition itemStackField = RequireField(itemType, "stack", "System.Int32");
+
+        var method = new MethodDefinition(
+            VisualConfigurationMethodName,
+            MethodAttributes.Assembly | MethodAttributes.HideBySig,
+            module.TypeSystem.Int64);
+        var hash = new VariableDefinition(module.TypeSystem.Int64);
+        method.Body.InitLocals = true;
+        method.Body.Variables.Add(hash);
+        ILProcessor il = method.Body.GetILProcessor();
+
+        // FNV-1a style mixing is deterministic, allocation-free, and includes every mutable
+        // item/dye field that can select a different player visual or shader path.
+        il.Append(il.Create(OpCodes.Ldc_I8, unchecked((long)1469598103934665603UL)));
+        il.Append(StoreLocal(il, hash));
+        for (int index = 0; index < itemArrays.Count; index++)
+        {
+            AppendVisualConfigurationArray(
+                module,
+                il,
+                hash,
+                itemArrays[index],
+                itemTypeField,
+                itemPrefixField,
+                itemStackField,
+                index + 1);
+        }
+
+        if (string.Equals(entityType.FullName, "Terraria.GameContent.Tile_Entities.TEDisplayDoll", StringComparison.Ordinal))
+        {
+            AppendVisualConfigurationFieldValue(il, hash, RequireIntegralField(entityType, "_pose"));
+        }
+        il.Append(LoadLocal(il, hash));
+        il.Append(il.Create(OpCodes.Ret));
+        return method;
+    }
+
+    private static FieldDefinition RequireIntegralField(TypeDefinition type, string name)
+    {
+        for (int index = 0; index < type.Fields.Count; index++)
+        {
+            FieldDefinition candidate = type.Fields[index];
+            if (!string.Equals(candidate.Name, name, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string fieldType = candidate.FieldType.FullName;
+            if (fieldType == "System.Byte" || fieldType == "System.SByte" ||
+                fieldType == "System.Int16" || fieldType == "System.UInt16" ||
+                fieldType == "System.Int32" || fieldType == "System.UInt32")
+            {
+                return candidate;
+            }
+
+            throw new InvalidOperationException("Terraria 1.4.5.6 " + type.FullName + "." + name + " is not a verified integral visual field.");
+        }
+
+        throw new InvalidOperationException("Terraria 1.4.5.6 " + type.FullName + "." + name + " was not found.");
+    }
+
+    private static IReadOnlyList<FieldDefinition> GetVisualItemArrays(TypeDefinition type, TypeDefinition itemType)
+    {
+        var fields = new List<FieldDefinition>();
+        for (int index = 0; index < type.Fields.Count; index++)
+        {
+            FieldDefinition candidate = type.Fields[index];
+            if (candidate.FieldType is ArrayType array && array.Rank == 1 &&
+                string.Equals(array.ElementType.FullName, itemType.FullName, StringComparison.Ordinal))
+            {
+                fields.Add(candidate);
+            }
+        }
+
+        if (fields.Count == 0)
+        {
+            throw new InvalidOperationException("Terraria 1.4.5.6 " + type.FullName + " does not expose verified Item[] visual storage.");
+        }
+
+        return fields;
+    }
+
+    private static void AppendVisualConfigurationArray(
+        ModuleDefinition module,
+        ILProcessor il,
+        VariableDefinition hash,
+        FieldDefinition items,
+        FieldDefinition itemType,
+        FieldDefinition itemPrefix,
+        FieldDefinition itemStack,
+        int arrayDiscriminator)
+    {
+        // Hat racks hold two slots and display dolls hold eight. Reading the array length keeps
+        // the injected helper exact for the verified native storage without hardcoding either.
+        var index = new VariableDefinition(module.TypeSystem.Int32);
+        il.Body.Variables.Add(index);
+        Instruction loopBody = il.Create(OpCodes.Nop);
+        Instruction loopCheck = il.Create(OpCodes.Nop);
+        AppendVisualConfigurationConstant(il, hash, arrayDiscriminator);
+        il.Append(il.Create(OpCodes.Ldc_I4_0));
+        il.Append(StoreLocal(il, index));
+        il.Append(il.Create(OpCodes.Br, loopCheck));
+        il.Append(loopBody);
+        AppendVisualConfigurationField(il, hash, items, index, itemType);
+        AppendVisualConfigurationField(il, hash, items, index, itemPrefix);
+        AppendVisualConfigurationField(il, hash, items, index, itemStack);
+        il.Append(LoadLocal(il, index));
+        il.Append(il.Create(OpCodes.Ldc_I4_1));
+        il.Append(il.Create(OpCodes.Add));
+        il.Append(StoreLocal(il, index));
+        il.Append(loopCheck);
+        il.Append(il.Create(OpCodes.Ldarg_0));
+        il.Append(il.Create(OpCodes.Ldfld, items));
+        il.Append(il.Create(OpCodes.Ldlen));
+        il.Append(il.Create(OpCodes.Conv_I4));
+        il.Append(LoadLocal(il, index));
+        il.Append(il.Create(OpCodes.Bgt, loopBody));
+    }
+
+    private static void AppendVisualConfigurationField(
+        ILProcessor il,
+        VariableDefinition hash,
+        FieldDefinition items,
+        VariableDefinition index,
+        FieldDefinition field)
+    {
+        il.Append(LoadLocal(il, hash));
+        il.Append(il.Create(OpCodes.Ldc_I8, 1099511628211L));
+        il.Append(il.Create(OpCodes.Mul));
+        il.Append(il.Create(OpCodes.Ldarg_0));
+        il.Append(il.Create(OpCodes.Ldfld, items));
+        il.Append(LoadLocal(il, index));
+        il.Append(il.Create(OpCodes.Ldelem_Ref));
+        il.Append(il.Create(OpCodes.Ldfld, field));
+        il.Append(il.Create(OpCodes.Conv_I8));
+        il.Append(il.Create(OpCodes.Xor));
+        il.Append(StoreLocal(il, hash));
+    }
+
+    private static void AppendVisualConfigurationFieldValue(ILProcessor il, VariableDefinition hash, FieldDefinition field)
+    {
+        il.Append(LoadLocal(il, hash));
+        il.Append(il.Create(OpCodes.Ldc_I8, 1099511628211L));
+        il.Append(il.Create(OpCodes.Mul));
+        il.Append(il.Create(OpCodes.Ldarg_0));
+        il.Append(il.Create(OpCodes.Ldfld, field));
+        il.Append(il.Create(OpCodes.Conv_I8));
+        il.Append(il.Create(OpCodes.Xor));
+        il.Append(StoreLocal(il, hash));
+    }
+
+    private static void AppendVisualConfigurationConstant(ILProcessor il, VariableDefinition hash, int value)
+    {
+        il.Append(LoadLocal(il, hash));
+        il.Append(il.Create(OpCodes.Ldc_I8, 1099511628211L));
+        il.Append(il.Create(OpCodes.Mul));
+        il.Append(il.Create(OpCodes.Ldc_I4, value));
+        il.Append(il.Create(OpCodes.Conv_I8));
+        il.Append(il.Create(OpCodes.Xor));
+        il.Append(StoreLocal(il, hash));
     }
 
     private static MethodDefinition CreateEntryDrawMethod(

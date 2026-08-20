@@ -19,6 +19,38 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
     }
 
     [Fact]
+    public void PipelineValidatesPostconditionsAfterReopeningTheSerializedExecutable()
+    {
+        using var module = ModuleDefinition.ReadModule(typeof(ClientBuildPipeline).Assembly.Location);
+        TypeDefinition pipeline = module.Types.Single(type => type.Name == nameof(ClientBuildPipeline));
+        MethodDefinition generate = pipeline.Methods.Single(method => method.Name == "Generate" && method.Parameters.Count == 1);
+
+        var reopenedModuleReads = 0;
+        var validatesPostconditions = false;
+        foreach (Instruction instruction in generate.Body.Instructions)
+        {
+            if (instruction.Operand is not MethodReference method)
+            {
+                continue;
+            }
+
+            if (method.DeclaringType.Name == "ModuleDefinition" && method.Name == "ReadModule")
+            {
+                reopenedModuleReads++;
+            }
+
+            if (method.DeclaringType.Name == nameof(PermanentPatchCatalog) &&
+                method.Name == nameof(PermanentPatchCatalog.ValidatePostconditions))
+            {
+                validatesPostconditions = true;
+            }
+        }
+
+        Assert.True(reopenedModuleReads >= 2, "The patch pipeline must reopen the serialized executable before publication.");
+        Assert.True(validatesPostconditions, "The reopened executable must be checked against permanent patch postconditions.");
+    }
+
+    [Fact]
     public void PermanentPatchCatalogHasStableUniqueOperationContracts()
     {
         PermanentPatchCatalog.ValidateCatalog();
@@ -47,6 +79,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 "patch.runtime.startup-and-menu",
                 "patch.runtime.input-and-keybinds",
                 "patch.runtime.rendering-and-combat",
+                "patch.runtime.banner-search",
                 "patch.runtime.presentation-suppression",
                 "patch.runtime.render-culling",
                  "patch.runtime.visual-effects",
@@ -69,6 +102,7 @@ public sealed class RuntimeStageAndAbiTests : IDisposable
                 "runtime.startup-and-menu",
                 "runtime.input-and-keybinds",
                 "runtime.rendering-and-combat",
+                "ui.banner-search",
                 "render.presentation-suppression",
                 "render.culling",
                  "runtime.visual-effects",

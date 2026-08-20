@@ -43,6 +43,7 @@
     <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Session\TerrariaSessionPresentationService.cs" Link="TerrariaSessionPresentationService.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Culling\TerrariaRenderCullingBounds.cs" Link="TerrariaRenderCullingBounds.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Optimization\TerrariaLightingParallelExecutor.cs" Link="TerrariaLightingParallelExecutor.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Clothing\ClothingEntityPreparationGate.cs" Link="ClothingEntityPreparationGate.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Input\NativeTextEditState.cs" Link="NativeTextEditState.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\UserInterface\PluginDropdownFilter.cs" Link="PluginDropdownFilter.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\UserInterface\PluginSearchTextBuffer.cs" Link="PluginSearchTextBuffer.cs" />
@@ -51,6 +52,7 @@
     <Compile Include="GameState\SessionPresentationTests.cs" />
     <Compile Include="Rendering\RenderCullingBoundsTests.cs" />
     <Compile Include="Rendering\LightingParallelExecutorTests.cs" />
+    <Compile Include="Rendering\ClothingEntityPreparationGateTests.cs" />
     <Compile Include="Input\NativeTextEditStateTests.cs" />
     <Compile Include="UserInterface\PluginDropdownFilterTests.cs" />
     <Compile Include="UserInterface\PluginSearchTextBufferTests.cs" />

@@ -91,6 +91,24 @@ internal sealed class ClientPatchTarget
         string injection,
         int expectedBridgeCallCount,
         params string[] bridgeMethods)
+        : this(id, typeName, memberSignature, anchor, injection, expectedBridgeCallCount, generatedMember: false, bridgeMethods)
+    {
+    }
+
+    /// <summary>
+    /// Describes a narrow helper method created by the same patch operation. Generated helpers
+    /// are not expected to exist in the clean executable, but must satisfy the exact same
+    /// structural and bridge-call postconditions after the module is written and reopened.
+    /// </summary>
+    internal ClientPatchTarget(
+        string id,
+        string typeName,
+        string memberSignature,
+        string anchor,
+        string injection,
+        int expectedBridgeCallCount,
+        bool generatedMember,
+        params string[] bridgeMethods)
         : this(id, typeName, memberSignature, anchor, injection, bridgeMethods)
     {
         if (expectedBridgeCallCount <= 0)
@@ -99,6 +117,7 @@ internal sealed class ClientPatchTarget
         }
 
         ExpectedBridgeCallCount = expectedBridgeCallCount;
+        GeneratedMember = generatedMember;
     }
 
     internal string Id { get; }
@@ -111,6 +130,7 @@ internal sealed class ClientPatchTarget
     internal IReadOnlyList<string> BridgeMethods { get; }
     internal int ExpectedBridgeCallCount { get; } = 1;
     internal ClientPatchPostconditionMode BridgeCallMode { get; }
+    internal bool GeneratedMember { get; }
 }
 
 /// <summary>Explicit bridge placement semantics. Never infer IL requirements from prose inventory text.</summary>
@@ -203,6 +223,15 @@ internal static class PermanentPatchCatalog
             new ClientPatchTarget("render.world-overlays", "Terraria.Main", "DrawInterface_1_1_DrawEmoteBubblesInWorld()", "EmoteBubble.DrawAll(SpriteBatch) continuation", "insert after native emote bubble draw", "DrawHitboxes"),
             new ClientPatchTarget("combat.melee-capture", "Terraria.Player", "ItemCheck_GetMeleeHitbox(Item, Rectangle, Boolean&, Rectangle&)", "all returns in the verified four-parameter method", "insert before return and retarget branch/EH references", ClientPatchPostconditionMode.BeforeEveryReturn, "CaptureSwingHitbox")),
         CreateDefinition(
+            "patch.runtime.banner-search",
+            PermanentPatchPlan.ApplyPermanentBannerSearch,
+            "ui.banner-search",
+            "Terraria.UI.BannerClaimingUI",
+            "Native banner-claiming search that filters only the local player's current kill-count claimable entries",
+            new ClientPatchTarget("banner-search.filter", "Terraria.UI.BannerClaimingUI", "UpdateAndGetClaimableItemsCount()", "the verified positive claimable-count branch before native entry compaction", "skip nonmatching available banner entries before both native list and grid views consume the compact array", "ShouldDisplayAvailableBanner"),
+            new ClientPatchTarget("banner-search.grid-field", "Terraria.UI.BannerClaimingUI", "DrawBannersGrid(SpriteBatch)", "the refreshed claimable-count store at method entry", "draw the local search field immediately left of the native grid's first row", "DrawAvailableBannerSearch"),
+            new ClientPatchTarget("banner-search.empty-results", "Terraria.UI.BannerClaimingUI", "UpdateAndGetClaimableItemsCount()", "the native AnyAvailableBanners assignment", "retain the local Banners menu while an active local filter has zero matches", "ShouldKeepBannerMenuAvailable")),
+        CreateDefinition(
             "patch.runtime.presentation-suppression",
             PermanentPatchPlan.ApplyPermanentPresentationSuppression,
             "render.presentation-suppression",
@@ -250,10 +279,10 @@ internal static class PermanentPatchCatalog
             PermanentPatchPlan.ApplyPermanentClothingEntityPresentation,
             "render.clothing-entity-presentation",
             "Terraria.GameContent.Drawing.TileDrawing / Terraria.DataStructures.TileEntity",
-            "Reserve discovery-map capacity, deduplicate repeated multi-tile discovery, skip empty hat-rack presentation, and use the IDs already resolved during tile drawing",
+            "Reserve discovery-map capacity, deduplicate repeated multi-tile discovery, skip empty hat-rack presentation, use IDs already resolved during tile drawing, and spread first-use visual configurations across bounded draw frames",
             new ClientPatchTarget("clothing.dictionary-capacity", "Terraria.GameContent.Drawing.TileDrawing", ".ctor(Terraria.GameContent.TilePaintSystemV2)", "the exact default Dictionary<Point, Int32> constructors assigned to clothing position fields", "replace each with a capacity-reserving constructor"),
             new ClientPatchTarget("clothing.discovery-deduplication", "Terraria.GameContent.Drawing.TileDrawing", "ClearCachedTileDraws(System.Boolean)", "the verified solid-layer cache reset followed by display-doll/hat-rack ContainsKey branches", "capture the policy once and skip repeated lookups for consecutive segments resolving to the same clothing entity point", "IsClothingEntityPresentationOptimizationEnabled"),
-            new ClientPatchTarget("clothing.post-draw", "Terraria.GameContent.Drawing.TileDrawing", "PostDrawTiles(System.Boolean)", "the consecutive verified DrawEntities_HatRacks and DrawEntities_DisplayDolls calls in the solid-layer branch", "replace both calls with policy-gated ID-based draw paths and skip transparent empty hat racks", "IsClothingEntityPresentationOptimizationEnabled")),
+            new ClientPatchTarget("clothing.post-draw", "Terraria.GameContent.Drawing.TileDrawing", "PostDrawTiles(System.Boolean)", "the consecutive verified DrawEntities_HatRacks and DrawEntities_DisplayDolls calls in the solid-layer branch", "replace both calls with policy-gated ID-based draw paths while preserving every native clothing draw", "IsClothingEntityPresentationOptimizationEnabled")),
         CreateDefinition(
             "patch.runtime.waterfall-presentation",
             PermanentPatchPlan.ApplyPermanentWaterfallPresentation,
@@ -322,7 +351,7 @@ internal static class PermanentPatchCatalog
             "Terraria.Main / Terraria.Program",
             "Chat editing, command consumption, startup, and input formatting",
             new ClientPatchTarget("native-text.input-edit", "Terraria.Main", "GetInputText(String, Boolean)", "method entry and native fallback body", "try the core-owned generic text editor before retaining Terraria's original input path", "TryProcessNativeTextInput"),
-            new ClientPatchTarget("native-text.caret", "Terraria.GameContent.UI.Elements.UITextBox", "DrawSelf(SpriteBatch)", "verified _cursor = Text.Length setup and UITextPanel base draw", "replace end-only cursor positioning and draw the retained selection without mutating stored text", "GetNativeTextInputCaret", "DrawNativeTextBoxSelection"),
+            new ClientPatchTarget("native-text.caret", "Terraria.GameContent.UI.Elements.UITextBox", "DrawSelf(SpriteBatch)", "verified _cursor = Text.Length setup and UITextPanel base draw", "replace end-only cursor positioning and draw the retained selection without mutating stored text", "GetNativeTextInputCaretForField", "DrawNativeTextBoxSelectionForField"),
             new ClientPatchTarget("native-text.menu-presentation", "Terraria.Main", "DrawMenu(GameTime)", "the four verified menu String[] render loads after the first String measurement", "move Terraria's existing trailing input ticker to the generic edit-state caret for legacy menu fields", 4, "FormatNativeTextInputDisplay"),
             new ClientPatchTarget("native-text.reset", "Terraria.Main", "clrInput()", "method entry", "reset core-owned caret, selection, and repeat state with Terraria's text-input reset", "ResetNativeTextInput"),
             new ClientPatchTarget("chat.native-navigation", "Terraria.Main", "DoUpdate_HandleChat()", "verified independent Up and Down key branches before IChatMonitor.Offset", "guard each native direction independently without suppressing the other", 2, "ShouldHandleChatInputAction"),
@@ -670,6 +699,11 @@ internal static class PermanentPatchCatalog
             for (int targetIndex = 0; targetIndex < operation.Targets.Count; targetIndex++)
             {
                 ClientPatchTarget target = operation.Targets[targetIndex];
+                if (target.GeneratedMember)
+                {
+                    continue;
+                }
+
                 TypeDefinition type = CecilPatchPrimitives.RequireType(module, target.TypeName);
                 _ = ResolveTargetMethods(type, target);
             }

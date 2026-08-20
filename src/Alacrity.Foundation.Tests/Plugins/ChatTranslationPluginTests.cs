@@ -368,6 +368,46 @@ public sealed class ChatTranslationPluginTests
     }
 
     [Fact]
+    public void PersistedLanguageSettingsNormalizeToSupportedCatalogValues()
+    {
+        using var host = new FakePluginHost();
+        var context = host.Create(CreateManifest());
+        var plugin = new ChatTranslationPlugin();
+        plugin.Initialize(context);
+        plugin.Enable();
+
+        context.Settings.Set("sourceLanguage", "not-a-language");
+        context.Settings.Set("targetLanguage", "zz");
+        context.Settings.Set("outgoingLanguage", "auto");
+
+        IReadOnlyList<ChatActionMenuItem> items = host.Chat.GetActionButtonMenuItems(new PluginId("alacrity.chat-translation"), "translation");
+        Assert.Equal("Auto detect", Assert.Single(items, item => item.Id == "source").Value);
+        Assert.Equal("English", Assert.Single(items, item => item.Id == "target").Value);
+        Assert.Equal("English", Assert.Single(items, item => item.Id == "outgoing-target").Value);
+    }
+
+    [Fact]
+    public async Task DistinctSupportedLanguageVariantsAreNotTreatedAsEquivalent()
+    {
+        using var host = new FakePluginHost();
+        host.NetworkBackend.Handler = (_, _) => Task.FromResult(
+            new PluginWebResponse(200, "{\"translations\":[{\"detectedLanguageCode\":\"zh-TW\",\"translatedText\":\"translated\"}]}"));
+        PluginManifest manifest = CreateManifest();
+        var context = host.Create(manifest);
+        var plugin = new ChatTranslationPlugin();
+        plugin.Initialize(context);
+        plugin.Enable();
+        context.Settings.Set("targetLanguage", "zh");
+
+        var handle = new ChatMessageHandle(91);
+        host.Chat.Decorate(new ChatMessageSnapshot("message", handle));
+        Assert.True(host.Chat.TryActivateMessageAction(manifest.Id, "toggle-translation", handle, "toggle", false));
+
+        ChatMessagePresentation presentation = await WaitForPresentation(host.Chat, handle);
+        Assert.Equal("translated", presentation.Spans[0].Text);
+    }
+
+    [Fact]
     public async Task DisableDuringRequest_PreventsOldActivationFromPublishingPresentation()
     {
         using var host = new FakePluginHost();

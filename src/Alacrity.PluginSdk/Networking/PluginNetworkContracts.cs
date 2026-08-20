@@ -69,10 +69,11 @@ public sealed class PluginWebRequest
 public sealed class PluginWebResponse
 {
     /// <summary>Creates an immutable response.</summary>
-    public PluginWebResponse(int statusCode, string content)
+    public PluginWebResponse(int statusCode, string content, Uri? redirectLocation = null)
     {
         StatusCode = statusCode;
         Content = content ?? string.Empty;
+        RedirectLocation = redirectLocation;
     }
 
     /// <summary>HTTP status code returned by the remote endpoint.</summary>
@@ -80,6 +81,10 @@ public sealed class PluginWebResponse
 
     /// <summary>Bounded response body decoded as UTF-8.</summary>
     public string Content { get; }
+
+    /// <summary>Optional redirect destination reported by the host transport. The host validates
+    /// every redirect before issuing the next request; plugins should not follow this value.</summary>
+    public Uri? RedirectLocation { get; }
 
     /// <summary>Whether the response represents a successful HTTP status code.</summary>
     public bool IsSuccessStatusCode => StatusCode >= 200 && StatusCode <= 299;

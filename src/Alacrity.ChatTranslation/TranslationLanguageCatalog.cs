@@ -18,6 +18,29 @@ internal static class TranslationLanguageCatalog
         return sources;
     }
 
+    internal static bool IsSupportedSource(string value)
+    {
+        return string.Equals(value, "auto", StringComparison.Ordinal) || IsSupported(DefaultTargets, value);
+    }
+
+    internal static bool IsSupportedTarget(string value)
+    {
+        return IsSupported(DefaultTargets, value);
+    }
+
+    private static bool IsSupported(PluginSettingOption[] options, string value)
+    {
+        for (int index = 0; index < options.Length; index++)
+        {
+            if (string.Equals(options[index].Value, value, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static PluginSettingOption[] CreateTargets()
     {
         return new[]

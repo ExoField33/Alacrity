@@ -114,6 +114,21 @@ public static partial class PluginUiRuntime
         }
     }
 
+    /// <summary>Version-locked textbox presentation using the actual native field identity.</summary>
+    public static int GetNativeTextInputCaretForField(string text, object field)
+    {
+        try
+        {
+            return nativeTextEditState.TryGetPresentation(text, field, out int caret, out _, out _)
+                ? caret
+                : (text ?? string.Empty).Length;
+        }
+        catch
+        {
+            return (text ?? string.Empty).Length;
+        }
+    }
+
     /// <summary>
     /// Formats legacy menu input text for presentation only. Those menu screens append their
     /// own ticker to a detached display string instead of drawing a UITextBox.
@@ -160,6 +175,27 @@ public static partial class PluginUiRuntime
     public static void DrawNativeTextBoxSelection(SpriteBatch spriteBatch, string text, Vector2 textPosition, object font, float textScale)
     {
         if (spriteBatch == null || font == null || !nativeTextEditState.TryGetPresentation(text, out _, out int start, out int end) || start == end)
+        {
+            return;
+        }
+
+        try
+        {
+            float left = MeasureTextBox(font, text.Substring(0, start)).X * textScale;
+            float right = MeasureTextBox(font, text.Substring(0, end)).X * textScale;
+            float height = MeasureTextBox(font, " ").Y * textScale;
+            DrawSelection(spriteBatch, textPosition.X + left, textPosition.Y, right - left, height);
+        }
+        catch
+        {
+            // Optional presentation cannot prevent the native field from rendering.
+        }
+    }
+
+    /// <summary>Draws a selection only for the same native textbox that owns this edit state.</summary>
+    public static void DrawNativeTextBoxSelectionForField(SpriteBatch spriteBatch, string text, Vector2 textPosition, object font, float textScale, object field)
+    {
+        if (spriteBatch == null || font == null || !nativeTextEditState.TryGetPresentation(text, field, out _, out int start, out int end) || start == end)
         {
             return;
         }

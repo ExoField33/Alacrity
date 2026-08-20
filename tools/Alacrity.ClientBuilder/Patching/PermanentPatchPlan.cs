@@ -17,6 +17,9 @@ internal static partial class PermanentPatchPlan
         "EnsurePluginKeybindStateShape",
         "AppendPluginKeybindControls",
         "DrawNotifications",
+        "ShouldDisplayAvailableBanner",
+        "DrawAvailableBannerSearch",
+        "ShouldKeepBannerMenuAvailable",
         "DrawHitboxes",
         "CaptureSwingHitbox",
         "ShouldRunDustSystem",
@@ -43,9 +46,9 @@ internal static partial class PermanentPatchPlan
         "ShouldDrawWorldParticle",
         "TryProcessNativeTextInput",
         "FormatNativeTextInputDisplay",
-        "GetNativeTextInputCaret",
+        "GetNativeTextInputCaretForField",
         "DrawNativePlayerChatSelection",
-        "DrawNativeTextBoxSelection",
+        "DrawNativeTextBoxSelectionForField",
         "ResetNativeTextInput",
         "ShouldHandleChatInputAction",
         "TryHandlePluginChatCommand",
@@ -126,6 +129,16 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldUpdateDustInstance", "System.Boolean", "Terraria.Dust"),
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDrawDustInstance", "System.Boolean", "Terraria.Dust"),
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldRunGoreSystem", "System.Boolean"));
+    }
+
+    internal static void ApplyPermanentBannerSearch(ModuleDefinition module, string sourceExecutablePath)
+    {
+        var bannerClaimingUi = CecilPatchPrimitives.RequireType(module, "Terraria.UI.BannerClaimingUI");
+        PatchBannerSearch(
+            bannerClaimingUi,
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDisplayAvailableBanner", "System.Boolean", "System.Int32"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawAvailableBannerSearch", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch", "System.Int32", "System.Int32"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ShouldKeepBannerMenuAvailable", "System.Boolean"));
     }
 
     internal static void ApplyPermanentPresentationSuppression(ModuleDefinition module, string sourceExecutablePath)
@@ -236,8 +249,8 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "FormatNativeTextInputDisplay", "System.String", "System.String"));
         PatchNativeTextInputCaret(
             module,
-            ImportRuntimeMethod(module, sourceExecutablePath, "GetNativeTextInputCaret", "System.Int32", "System.String"),
-            ImportRuntimeMethod(module, sourceExecutablePath, "DrawNativeTextBoxSelection", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch", "System.String", "Microsoft.Xna.Framework.Vector2", "System.Object", "System.Single"));
+            ImportRuntimeMethod(module, sourceExecutablePath, "GetNativeTextInputCaretForField", "System.Int32", "System.String", "System.Object"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawNativeTextBoxSelectionForField", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch", "System.String", "Microsoft.Xna.Framework.Vector2", "System.Object", "System.Single", "System.Object"));
         PatchChatInputActionOwnership(
             mainType,
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldHandleChatInputAction", "System.Boolean", "System.String"));

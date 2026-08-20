@@ -45,6 +45,7 @@ internal static class TerrariaInstancedRainPresentation
     private static RainInstance[] instances;
     private static bool sessionActive;
     private static bool sessionUsesWorldTransform;
+    private static Texture2D sessionRainTexture;
     private static int instanceCount;
     private static int rendererFaulted;
     private static Func<Texture2D> rainTextureGetter;
@@ -86,6 +87,7 @@ internal static class TerrariaInstancedRainPresentation
             Main.spriteBatch.End();
             sessionActive = true;
             sessionUsesWorldTransform = useWorldTransform;
+            sessionRainTexture = rainTexture;
             instanceCount = 0;
             return true;
         }
@@ -119,9 +121,10 @@ internal static class TerrariaInstancedRainPresentation
 
         try
         {
-            if (rainTexture == null || !source.HasValue || instanceCount >= instances.Length)
+            if (rainTexture == null || !ReferenceEquals(rainTexture, sessionRainTexture) || !source.HasValue || instanceCount >= instances.Length)
             {
-                return true;
+                AbortToNative();
+                return false;
             }
 
             Rectangle sourceRectangle = source.Value;
@@ -147,11 +150,9 @@ internal static class TerrariaInstancedRainPresentation
         }
         catch (Exception exception)
         {
-            // Beginning the direct pass means the native batch is intentionally closed. Continue
-            // consuming this frame's native draw calls, restore it in End, and disable this
-            // optional renderer for later frames rather than leaving SpriteBatch invalid.
             RecordRendererFailure(exception);
-            return true;
+            AbortToNative();
+            return false;
         }
     }
 
@@ -179,6 +180,7 @@ internal static class TerrariaInstancedRainPresentation
         {
             sessionActive = false;
             sessionUsesWorldTransform = false;
+            sessionRainTexture = null;
             instanceCount = 0;
             RestoreNativeSpriteBatch(useWorldTransform);
         }
@@ -196,6 +198,61 @@ internal static class TerrariaInstancedRainPresentation
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Allocates optional GPU state before rain is drawn, at an existing main-thread update
+    /// boundary.  A failed prewarm merely disables this presentation; native rain remains intact.
+    /// </summary>
+    internal static void Prewarm()
+    {
+        if (rendererFaulted != 0 || sessionActive || Main.gameMenu)
+        {
+            return;
+        }
+
+        try
+        {
+            GraphicsDevice device = Main.graphics == null ? null : Main.graphics.GraphicsDevice;
+            Texture2D texture = GetRainTexture();
+            if (device != null && texture != null)
+            {
+                EnsureResources(device, Main.maxRain);
+            }
+        }
+        catch (Exception exception)
+        {
+            RecordRendererFailure(exception);
+        }
+    }
+
+    private static void AbortToNative()
+    {
+        if (!sessionActive)
+        {
+            return;
+        }
+
+        bool useWorldTransform = sessionUsesWorldTransform;
+        try
+        {
+            if (rendererFaulted == 0 && instanceCount != 0)
+            {
+                DrawInstances();
+            }
+        }
+        catch (Exception exception)
+        {
+            RecordRendererFailure(exception);
+        }
+        finally
+        {
+            sessionActive = false;
+            sessionUsesWorldTransform = false;
+            sessionRainTexture = null;
+            instanceCount = 0;
+            RestoreNativeSpriteBatch(useWorldTransform);
+        }
     }
 
     private static bool EnsureResources(GraphicsDevice device, int capacity)

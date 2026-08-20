@@ -12,6 +12,9 @@ namespace Alacrity.Core;
 public sealed partial class PluginChatHost
 {
     private const int MaximumRetainedPresentations = 512;
+    // An outgoing transformer owns the native chat submit only briefly.  It must never be able
+    // to leave the textbox permanently deferred when a remote service or plugin callback hangs.
+    internal static TimeSpan OutgoingTransformTimeout { get; set; } = TimeSpan.FromSeconds(10);
     private readonly List<MessageActionEntry> messageActions = new List<MessageActionEntry>();
     private readonly List<ChatActionButtonEntry> actionButtons = new List<ChatActionButtonEntry>();
     private readonly List<OutgoingTransformerEntry> outgoingTransformers = new List<OutgoingTransformerEntry>();
@@ -274,6 +277,7 @@ public sealed partial class PluginChatHost
             if (readyOutgoingSubmission != null && string.Equals(readyOutgoingSubmission, text, StringComparison.Ordinal))
             {
                 readyOutgoingSubmission = null;
+                readyOutgoingSource = null;
                 readyOutgoingOwner = default;
                 return false;
             }
@@ -382,9 +386,40 @@ public sealed partial class PluginChatHost
 
             replacement = pending.Result.Text;
             readyOutgoingSubmission = replacement;
+            readyOutgoingSource = pending.Message.Text;
             readyOutgoingOwner = pending.Entry.Owner;
             return true;
         }
+    }
+
+    /// <summary>
+    /// Observes the current native player-chat text.  Editing the field while a transform is
+    /// pending revokes that transform's ownership, so a stale completion cannot submit or
+    /// replace a newer line.
+    /// </summary>
+    public void ObserveOutgoingInput(string text)
+    {
+        PendingOutgoingMessage? cancelled = null;
+        text = text ?? string.Empty;
+        lock (gate)
+        {
+            if (pendingOutgoing != null && !string.Equals(pendingOutgoing.Message.Text, text, StringComparison.Ordinal))
+            {
+                cancelled = pendingOutgoing;
+                pendingOutgoing = null;
+            }
+
+            if (readyOutgoingSubmission != null &&
+                !string.Equals(readyOutgoingSource, text, StringComparison.Ordinal) &&
+                !string.Equals(readyOutgoingSubmission, text, StringComparison.Ordinal))
+            {
+                readyOutgoingSubmission = null;
+                readyOutgoingSource = null;
+                readyOutgoingOwner = default;
+            }
+        }
+
+        cancelled?.Cancel();
     }
 
     private async Task TransformOutgoingAsync(PendingOutgoingMessage pending, CancellationToken cancellationToken)
@@ -399,17 +434,40 @@ public sealed partial class PluginChatHost
         {
             using (lease)
             {
-                result = await pending.Entry.Transformer.TransformAsync(pending.Message, cancellationToken).ConfigureAwait(false) ?? ChatOutgoingMessageTransformResult.Fail();
+                var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, pending.Cancellation.Token);
+                try
+                {
+                    Task<ChatOutgoingMessageTransformResult> transformTask = pending.Entry.Transformer.TransformAsync(pending.Message, linkedCancellation.Token);
+                    Task timeoutTask = Task.Delay(OutgoingTransformTimeout, linkedCancellation.Token);
+                    if (await Task.WhenAny(transformTask, timeoutTask).ConfigureAwait(false) != transformTask)
+                    {
+                        linkedCancellation.Cancel();
+                        ObserveTimedOutTransform(transformTask, linkedCancellation);
+                        ClearPendingFailure(pending, "The outgoing chat transform timed out.");
+                        return;
+                    }
+
+                    result = await transformTask.ConfigureAwait(false) ?? ChatOutgoingMessageTransformResult.Fail();
+                }
+                catch
+                {
+                    linkedCancellation.Dispose();
+                    throw;
+                }
+
+                linkedCancellation.Dispose();
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || pending.Entry.IsReleased)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || pending.Cancellation.IsCancellationRequested || pending.Entry.IsReleased)
         {
+            ClearPendingFailure(pending, null);
             return;
         }
         catch (Exception exception)
         {
             pending.Entry.Logger.Error("Outgoing chat transformer '" + pending.Entry.Descriptor.Id + "' failed for plugin '" + pending.Entry.Owner.Value + "'.", exception);
-            result = ChatOutgoingMessageTransformResult.Fail("Translation request failed.");
+            ClearPendingFailure(pending, "Translation request failed.");
+            return;
         }
 
         lock (gate)
@@ -420,6 +478,39 @@ public sealed partial class PluginChatHost
                 pending.Completed = true;
             }
         }
+    }
+
+    private void ClearPendingFailure(PendingOutgoingMessage pending, string? diagnostic)
+    {
+        bool report = false;
+        lock (gate)
+        {
+            if (ReferenceEquals(pendingOutgoing, pending))
+            {
+                pendingOutgoing = null;
+                report = !string.IsNullOrWhiteSpace(diagnostic);
+            }
+        }
+
+        if (report)
+        {
+            pending.Entry.Logger.Error("Outgoing chat transform failed for plugin '" + pending.Entry.Owner.Value + "': " + diagnostic, null);
+        }
+    }
+
+    private static void ObserveTimedOutTransform(Task<ChatOutgoingMessageTransformResult> transformTask, CancellationTokenSource cancellation)
+    {
+        // A plugin may temporarily ignore cancellation.  Preserve its token source until it
+        // finishes, observe any eventual exception, and avoid keeping the chat submission owned.
+        _ = transformTask.ContinueWith(
+            task =>
+            {
+                _ = task.Exception;
+                cancellation.Dispose();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private ChatActionButtonEntry? FindActionButton(PluginId owner, string id)
@@ -493,12 +584,26 @@ public sealed partial class PluginChatHost
             Entry = entry;
             Message = message;
             Result = ChatOutgoingMessageTransformResult.Fail();
+            Cancellation = new CancellationTokenSource();
         }
 
         internal OutgoingTransformerEntry Entry { get; }
         internal ChatOutgoingMessageSnapshot Message { get; }
         internal ChatOutgoingMessageTransformResult Result { get; set; }
         internal bool Completed { get; set; }
+        internal CancellationTokenSource Cancellation { get; }
+
+        internal void Cancel()
+        {
+            try
+            {
+                Cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Cancellation is intentionally idempotent across teardown and stale input.
+            }
+        }
     }
 
     private sealed class MessageActionEntry : Entry

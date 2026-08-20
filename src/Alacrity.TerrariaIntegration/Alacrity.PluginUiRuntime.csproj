@@ -17,6 +17,9 @@
   <ItemGroup>
     <Compile Include="Input\NativeTextEditState.cs" />
     <Compile Include="Input\PluginUiRuntime.NativeTextInput.cs" />
+    <Compile Include="UserInterface\PluginSearchKeyRepeatState.cs" />
+    <Compile Include="UserInterface\PluginSearchTextBuffer.cs" />
+    <Compile Include="UserInterface\Banners\BannerSearchPresenter.cs" />
     <Compile Include="Bridge\PluginUiRuntime.RuntimeForwarding.cs" />
     <Compile Include="Bridge\PluginUiRuntimeBridgeState.cs" />
     <Compile Include="Bridge\ClientManifestIntegrity.cs" />

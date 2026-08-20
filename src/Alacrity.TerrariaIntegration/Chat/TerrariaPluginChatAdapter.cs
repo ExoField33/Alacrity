@@ -92,6 +92,7 @@ internal sealed class TerrariaPluginChatAdapter
         try
         {
             ensureRuntime();
+            chat.ObserveOutgoingInput(text);
             // The generic action menu owns wheel input while its chooser is open. Do this before
             // an editor can apply BetterChat's scroll action, because the menu is drawn later.
             TerrariaChatActionStrip.TryConsumeScrollWheel(chat);
@@ -198,7 +199,12 @@ internal sealed class TerrariaPluginChatAdapter
 
     internal string FormatInputForDraw(string text)
     {
-        try { return TerrariaChatRuntime.FormatForDraw(HasInputEditors(), text); }
+        try
+        {
+            ensureRuntime();
+            chat.ObserveOutgoingInput(text);
+            return TerrariaChatRuntime.FormatForDraw(HasInputEditors(), text);
+        }
         catch (Exception exception) { reportFailure("Chat extension draw text", exception); return text; }
     }
 

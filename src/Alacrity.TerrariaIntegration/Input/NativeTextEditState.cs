@@ -13,6 +13,9 @@ internal sealed class NativeTextEditState
     private int caret;
     private int selectionAnchor = -1;
     private bool synchronized;
+    // UITextBox instances are version-locked native UI objects.  Retaining one only for the
+    // current edit presentation prevents equal strings in unrelated fields sharing a caret.
+    private object presentationIdentity;
 
     internal int Caret => caret;
 
@@ -35,6 +38,41 @@ internal sealed class NativeTextEditState
     {
         text = text ?? string.Empty;
         if (!synchronized || !string.Equals(lastText, text, StringComparison.Ordinal))
+        {
+            currentCaret = text.Length;
+            selectionStart = 0;
+            selectionEnd = 0;
+            return false;
+        }
+
+        currentCaret = Clamp(caret, 0, text.Length);
+        selectionStart = HasSelection ? SelectionStart() : currentCaret;
+        selectionEnd = HasSelection ? SelectionEnd() : currentCaret;
+        return true;
+    }
+
+    /// <summary>
+    /// Returns presentation only for the concrete native field that first establishes the
+    /// current edit display.  A different field with identical text deliberately falls back to
+    /// vanilla positioning instead of borrowing another field's caret or selection.
+    /// </summary>
+    internal bool TryGetPresentation(string text, object identity, out int currentCaret, out int selectionStart, out int selectionEnd)
+    {
+        text = text ?? string.Empty;
+        if (identity == null || !synchronized || !string.Equals(lastText, text, StringComparison.Ordinal))
+        {
+            currentCaret = text.Length;
+            selectionStart = 0;
+            selectionEnd = 0;
+            return false;
+        }
+
+        if (presentationIdentity == null)
+        {
+            presentationIdentity = identity;
+        }
+
+        if (!ReferenceEquals(presentationIdentity, identity))
         {
             currentCaret = text.Length;
             selectionStart = 0;
@@ -76,6 +114,7 @@ internal sealed class NativeTextEditState
         caret = 0;
         selectionAnchor = -1;
         synchronized = false;
+        presentationIdentity = null;
     }
 
     internal void Synchronize(string text)
@@ -86,6 +125,7 @@ internal sealed class NativeTextEditState
             caret = text.Length;
             selectionAnchor = -1;
             synchronized = true;
+            presentationIdentity = null;
         }
 
         caret = Clamp(caret, 0, text.Length);
@@ -115,6 +155,7 @@ internal sealed class NativeTextEditState
             ? -1
             : Clamp(requestedSelectionAnchor, 0, lastText.Length);
         synchronized = true;
+        presentationIdentity = null;
     }
 
     internal void SelectAll(string text)

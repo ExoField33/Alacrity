@@ -88,21 +88,20 @@ internal static class TerrariaStaticTileChunkRenderer
         ChunkSlot slot = Slots[(chunkX & ChunkSlotMaskX) + ((chunkY & ChunkSlotMaskY) * ChunkSlotWidth)];
         if (!slot.Matches(chunkX, chunkY) || slot.Dirty)
         {
-            Populate(slot, chunkX, chunkY, tiles, drawing);
+            slot.Prepare(chunkX, chunkY);
         }
 
         int localX = tileX - chunkX * ChunkTileSize;
         int localY = tileY - chunkY * ChunkTileSize;
         ref Descriptor descriptor = ref slot.Descriptors[localX + localY * ChunkTileSize];
-        if (!descriptor.Matches(tile) || !IsCacheable(tile, tileX, tileY))
+        if (!descriptor.Matches(tile, slot.Revision))
         {
-            slot.Dirty = true;
-            Populate(slot, chunkX, chunkY, tiles, drawing);
-            descriptor = ref slot.Descriptors[localX + localY * ChunkTileSize];
-            if (!descriptor.Matches(tile) || !descriptor.IsStatic)
-            {
-                return false;
-            }
+            PopulateDescriptor(ref descriptor, slot.Revision, tile, tileX, tileY, drawing);
+        }
+
+        if (!descriptor.IsStatic || !IsCacheable(tile, tileX, tileY))
+        {
+            return false;
         }
 
         Color light = Lighting.GetColor(tileX, tileY);
@@ -158,6 +157,15 @@ internal static class TerrariaStaticTileChunkRenderer
         }
     }
 
+    /// <summary>Resolves the version-locked native dust emitter away from the first visible tile draw.</summary>
+    internal static void Prewarm()
+    {
+        if (emitterResolutionAttempted == 0)
+        {
+            ResolveEmitter();
+        }
+    }
+
     private static bool CanUseStaticChunks()
     {
         if (Main.gameMenu || Main.shimmerAlpha > 0f || DebugOptions.devLightTilesCheat)
@@ -180,37 +188,22 @@ internal static class TerrariaStaticTileChunkRenderer
         InvalidateAll();
     }
 
-    private static void Populate(ChunkSlot slot, int chunkX, int chunkY, Tile[,] tiles, TileDrawing drawing)
+    /// <summary>
+    /// Fills only the descriptor actually requested by Terraria.  Earlier revisions eagerly
+    /// inspected all 400 tiles on first chunk contact, causing a visible main-thread burst while
+    /// the native loop was already walking those same tiles.  Per-descriptor revisions preserve
+    /// invalidation correctness while naturally warming a chunk across its normal draw traversal.
+    /// </summary>
+    private static void PopulateDescriptor(ref Descriptor descriptor, int revision, Tile tile, int tileX, int tileY, TileDrawing drawing)
     {
-        slot.ChunkX = chunkX;
-        slot.ChunkY = chunkY;
-        slot.Dirty = false;
-
-        int firstX = chunkX * ChunkTileSize;
-        int firstY = chunkY * ChunkTileSize;
-        for (int localY = 0; localY < ChunkTileSize; localY++)
+        descriptor.Clear();
+        descriptor.Revision = revision;
+        if (!IsCacheable(tile, tileX, tileY))
         {
-            int y = firstY + localY;
-            for (int localX = 0; localX < ChunkTileSize; localX++)
-            {
-                int x = firstX + localX;
-                ref Descriptor descriptor = ref slot.Descriptors[localX + localY * ChunkTileSize];
-                if (x <= 0 || y <= 0 || x >= Main.maxTilesX - 1 || y >= Main.maxTilesY - 1)
-                {
-                    descriptor.Clear();
-                    continue;
-                }
-
-                Tile tile = tiles[x, y];
-                if (!IsCacheable(tile, x, y))
-                {
-                    descriptor.Clear();
-                    continue;
-                }
-
-                descriptor.Set(tile, drawing.GetTileDrawTexture(tile, x, y));
-            }
+            return;
         }
+
+        descriptor.Set(tile, drawing.GetTileDrawTexture(tile, tileX, tileY));
     }
 
     private static bool IsCacheable(Tile tile, int tileX, int tileY)
@@ -417,6 +410,7 @@ internal static class TerrariaStaticTileChunkRenderer
         internal int ChunkX = int.MinValue;
         internal int ChunkY = int.MinValue;
         internal bool Dirty = true;
+        internal int Revision;
 
         internal bool Matches(int chunkX, int chunkY)
         {
@@ -428,6 +422,21 @@ internal static class TerrariaStaticTileChunkRenderer
             ChunkX = int.MinValue;
             ChunkY = int.MinValue;
             Dirty = true;
+            unchecked
+            {
+                Revision++;
+            }
+        }
+
+        internal void Prepare(int chunkX, int chunkY)
+        {
+            ChunkX = chunkX;
+            ChunkY = chunkY;
+            Dirty = false;
+            unchecked
+            {
+                Revision++;
+            }
         }
     }
 
@@ -438,6 +447,7 @@ internal static class TerrariaStaticTileChunkRenderer
         internal short FrameY;
         internal Texture2D Texture;
         internal bool IsStatic;
+        internal int Revision;
 
         internal void Set(Tile tile, Texture2D texture)
         {
@@ -448,9 +458,9 @@ internal static class TerrariaStaticTileChunkRenderer
             IsStatic = texture != null;
         }
 
-        internal bool Matches(Tile tile)
+        internal bool Matches(Tile tile, int revision)
         {
-            return IsStatic && tile != null && tile.active() && tile.type == Type && tile.frameX == FrameX && tile.frameY == FrameY;
+            return Revision == revision && IsStatic && tile != null && tile.active() && tile.type == Type && tile.frameX == FrameX && tile.frameY == FrameY;
         }
 
         internal void Clear()

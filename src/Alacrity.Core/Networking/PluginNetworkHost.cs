@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -12,7 +13,9 @@ namespace Alacrity.Core;
 public sealed class PluginNetworkHost
 {
     private const int MaximumRequestCharacters = 32 * 1024;
-    private const int MaximumResponseCharacters = 128 * 1024;
+    internal const int MaximumResponseBytes = 128 * 1024;
+    private const int MaximumRedirects = 4;
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
     private readonly IPluginNetworkBackend backend;
 
     /// <summary>Creates the production network host.</summary>
@@ -68,18 +71,44 @@ public sealed class PluginNetworkHost
             ThrowIfClosed();
             if (request == null) throw new ArgumentNullException(nameof(request));
             EnsurePermission();
-            ValidateRequest(request);
 
             try
             {
-                PluginWebResponse response = await backend.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                ThrowIfClosed();
-                if (response.Content.Length > MaximumResponseCharacters)
+                using (var timeout = new CancellationTokenSource(RequestTimeout))
+                using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, guard.Token, timeout.Token))
                 {
-                    throw new InvalidOperationException("The remote response exceeded the host response limit.");
-                }
+                    PluginWebRequest current = request;
+                    for (int redirectCount = 0; ; redirectCount++)
+                    {
+                        ThrowIfClosed();
+                        ValidateRequest(current);
+                        PluginWebResponse response = await backend.SendAsync(current, linked.Token).ConfigureAwait(false);
+                        ThrowIfClosed();
+                        ValidateResponseSize(response);
 
-                return response;
+                        if (!IsRedirect(response.StatusCode))
+                        {
+                            return response;
+                        }
+
+                        if (redirectCount == MaximumRedirects || response.RedirectLocation == null)
+                        {
+                            throw new InvalidOperationException("The remote response requested an unsupported or excessive redirect.");
+                        }
+
+                        Uri redirect = response.RedirectLocation.IsAbsoluteUri
+                            ? response.RedirectLocation
+                            : new Uri(current.Uri, response.RedirectLocation);
+                        PluginWebRequestMethod redirectMethod = response.StatusCode == 303
+                            ? PluginWebRequestMethod.Get
+                            : current.Method;
+                        current = new PluginWebRequest(
+                            redirectMethod,
+                            redirect,
+                            redirectMethod == PluginWebRequestMethod.Get ? null : current.Content,
+                            current.ContentType);
+                    }
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || guard.IsReleased)
             {
@@ -125,6 +154,19 @@ public sealed class PluginNetworkHost
             }
         }
 
+        private static void ValidateResponseSize(PluginWebResponse response)
+        {
+            if (Encoding.UTF8.GetByteCount(response.Content) > MaximumResponseBytes)
+            {
+                throw new InvalidOperationException("The remote response exceeded the host response limit.");
+            }
+        }
+
+        private static bool IsRedirect(int statusCode)
+        {
+            return statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308;
+        }
+
         private void ThrowIfClosed()
         {
             if (guard.IsReleased)
@@ -136,13 +178,19 @@ public sealed class PluginNetworkHost
 
     private sealed class NetworkScopeGuard : IDisposable
     {
+        private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private int released;
 
         internal bool IsReleased => Volatile.Read(ref released) != 0;
 
+        internal CancellationToken Token => cancellation.Token;
+
         public void Dispose()
         {
-            Interlocked.Exchange(ref released, 1);
+            if (Interlocked.Exchange(ref released, 1) == 0)
+            {
+                cancellation.Cancel();
+            }
         }
     }
 }
@@ -154,13 +202,25 @@ public interface IPluginNetworkBackend
     Task<PluginWebResponse> SendAsync(PluginWebRequest request, CancellationToken cancellationToken);
 }
 
-internal sealed class HttpPluginNetworkBackend : IPluginNetworkBackend
+internal sealed class HttpPluginNetworkBackend : IPluginNetworkBackend, IDisposable
 {
     internal static readonly HttpPluginNetworkBackend Instance = new HttpPluginNetworkBackend();
-    private static readonly HttpClient Client = new HttpClient();
+    private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
+    private readonly HttpClient client;
 
     private HttpPluginNetworkBackend()
+        : this(CreateClient())
     {
+    }
+
+    internal HttpPluginNetworkBackend(HttpMessageHandler handler)
+        : this(new HttpClient(handler ?? throw new ArgumentNullException(nameof(handler)), disposeHandler: true))
+    {
+    }
+
+    private HttpPluginNetworkBackend(HttpClient client)
+    {
+        this.client = client;
     }
 
     public async Task<PluginWebResponse> SendAsync(PluginWebRequest request, CancellationToken cancellationToken)
@@ -172,12 +232,70 @@ internal sealed class HttpPluginNetworkBackend : IPluginNetworkBackend
                 message.Content = new StringContent(request.Content, Encoding.UTF8, request.ContentType);
             }
 
-            using (HttpResponseMessage response = await Client.SendAsync(message, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false))
+            using (HttpResponseMessage response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
             {
-                string content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                return new PluginWebResponse((int)response.StatusCode, content);
+                if (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value > PluginNetworkHost.MaximumResponseBytes)
+                {
+                    throw new InvalidOperationException("The remote response exceeded the host response limit.");
+                }
+
+                Uri? redirect = response.Headers.Location;
+                if (IsRedirect((int)response.StatusCode))
+                {
+                    return new PluginWebResponse((int)response.StatusCode, string.Empty, redirect);
+                }
+
+                string content = await ReadBoundedUtf8Async(response.Content, cancellationToken).ConfigureAwait(false);
+                return new PluginWebResponse((int)response.StatusCode, content, redirect);
             }
         }
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        };
+        return new HttpClient(handler, disposeHandler: true);
+    }
+
+    private static bool IsRedirect(int statusCode)
+    {
+        return statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308;
+    }
+
+    private static async Task<string> ReadBoundedUtf8Async(HttpContent content, CancellationToken cancellationToken)
+    {
+        using (Stream stream = await content.ReadAsStreamAsync().ConfigureAwait(false))
+        using (var buffer = new MemoryStream())
+        {
+            var readBuffer = new byte[8192];
+            while (true)
+            {
+                int remaining = PluginNetworkHost.MaximumResponseBytes - checked((int)buffer.Length);
+                int requested = Math.Min(readBuffer.Length, remaining + 1);
+                int read = await stream.ReadAsync(readBuffer, 0, requested, cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                if (buffer.Length > PluginNetworkHost.MaximumResponseBytes - read)
+                {
+                    throw new InvalidOperationException("The remote response exceeded the host response limit.");
+                }
+
+                buffer.Write(readBuffer, 0, read);
+            }
+
+            return StrictUtf8.GetString(buffer.GetBuffer(), 0, checked((int)buffer.Length));
+        }
+    }
+
+    public void Dispose()
+    {
+        client.Dispose();
     }
 }
 

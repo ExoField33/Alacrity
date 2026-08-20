@@ -144,6 +144,23 @@ public sealed class NativeTextEditStateTests
     }
 
     [Fact]
+    public void EqualTextInDifferentNativeFieldsDoesNotSharePresentationState()
+    {
+        var state = new NativeTextEditState();
+        var activeField = new object();
+        var otherField = new object();
+        const string text = "same";
+        state.Synchronize(text);
+        state.MoveHome(extendSelection: false);
+        state.Complete(text);
+
+        Assert.True(state.TryGetPresentation(text, activeField, out int caret, out _, out _));
+        Assert.Equal(0, caret);
+        Assert.False(state.TryGetPresentation(text, otherField, out int fallbackCaret, out _, out _));
+        Assert.Equal(text.Length, fallbackCaret);
+    }
+
+    [Fact]
     public void HostActionReplacementRetainsItsRequestedCaretAndSelection()
     {
         var state = new NativeTextEditState();

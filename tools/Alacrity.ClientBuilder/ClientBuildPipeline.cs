@@ -59,6 +59,7 @@ internal static class ClientBuildPipeline
                 BridgeAbiCatalog.ValidatePatchedExecutable(patched, temporaryDirectory);
                 ValidatePatchedAssemblyReferences(patched, originalAssemblyReferences);
                 ValidatePatchedGenericAccessorMetadata(patched);
+                PermanentPatchCatalog.ValidatePostconditions(patched);
             }
 
             var manifest = new ClientBuildManifest

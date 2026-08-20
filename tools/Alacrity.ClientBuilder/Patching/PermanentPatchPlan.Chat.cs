@@ -101,6 +101,7 @@ internal static partial class PermanentPatchPlan
         il.InsertBefore(fieldInstance, il.Create(OpCodes.Ldarg_0));
         il.InsertBefore(fieldInstance, il.Create(OpCodes.Ldarg_0));
         il.InsertBefore(fieldInstance, il.Create(OpCodes.Call, getText));
+        il.InsertBefore(fieldInstance, il.Create(OpCodes.Ldarg_0));
         il.InsertBefore(fieldInstance, il.Create(OpCodes.Call, getCaret));
         il.InsertBefore(fieldInstance, il.Create(OpCodes.Stfld, cursor));
 
@@ -141,6 +142,7 @@ internal static partial class PermanentPatchPlan
         il.InsertBefore(afterBaseDraw, il.Create(OpCodes.Call, font));
         il.InsertBefore(afterBaseDraw, il.Create(OpCodes.Ldarg_0));
         il.InsertBefore(afterBaseDraw, il.Create(OpCodes.Call, textScale));
+        il.InsertBefore(afterBaseDraw, il.Create(OpCodes.Ldarg_0));
         il.InsertBefore(afterBaseDraw, il.Create(OpCodes.Call, drawSelection));
 
     }

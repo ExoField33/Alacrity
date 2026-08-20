@@ -42,6 +42,29 @@ internal sealed class PluginSearchTextBuffer
 
     internal bool Insert(string value)
     {
+        if (!TryBuildInsertedText(value, out string result))
+        {
+            return false;
+        }
+
+        int start = SelectionStart();
+        int selectedLength = SelectedLength();
+        int available = MaximumLength - (text.Length - selectedLength);
+        int insertedLength = Math.Min(value.Length, available);
+        text = result;
+        caret = start + insertedLength;
+        selectionAnchor = -1;
+        return true;
+    }
+
+    /// <summary>
+    /// Produces the exact text that <see cref="Insert"/> would commit without changing cursor or
+    /// selection state. Specialized search controls use this to validate an edit before accepting
+    /// input that would otherwise leave their native view without a valid result.
+    /// </summary>
+    internal bool TryBuildInsertedText(string value, out string result)
+    {
+        result = text;
         if (string.IsNullOrEmpty(value))
         {
             return false;
@@ -56,10 +79,7 @@ internal sealed class PluginSearchTextBuffer
 
         string insertion = value.Length > available ? value.Substring(0, available) : value;
         int start = SelectionStart();
-        int length = selectedLength;
-        text = text.Remove(start, length).Insert(start, insertion);
-        caret = start + insertion.Length;
-        selectionAnchor = -1;
+        result = text.Remove(start, selectedLength).Insert(start, insertion);
         return true;
     }
 

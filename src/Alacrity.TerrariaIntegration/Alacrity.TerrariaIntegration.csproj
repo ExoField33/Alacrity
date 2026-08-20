@@ -68,6 +68,8 @@
     <Compile Include="Rendering\PluginUiRuntime.RenderingBridge.cs" />
     <Compile Include="Rendering\PluginUiRuntime.PaintPreparationBridge.cs" />
     <Compile Include="Rendering\PluginUiRuntime.PresentationSuppressionBridge.cs" />
+    <Compile Include="Rendering\Clothing\ClothingEntityPreparationGate.cs" />
+    <Compile Include="Rendering\Clothing\TerrariaClothingEntityPreparation.cs" />
     <Compile Include="Rendering\LaserRuler\TerrariaLaserRulerPresentation.cs" />
     <Compile Include="Rendering\Rain\TerrariaInstancedRainPresentation.cs" />
     <Compile Include="Rendering\Optimization\TerrariaLightingParallelExecutor.cs" />

@@ -53,6 +53,9 @@ namespace AlacrityTerraria
         internal Func<bool> IsPaintPreparationOptimizationEnabled;
         internal Func<int, bool> IsPaintExtraPreparationRelevant;
         internal Func<bool> IsClothingEntityPresentationOptimizationEnabled;
+        internal Action BeginClothingEntityPreparationFrame;
+        internal Func<int, long, bool> TryBeginClothingEntityPreparation;
+        internal Action<int, long> CompleteClothingEntityPreparation;
         internal Func<bool> IsWaterfallPresentationOptimizationEnabled;
         internal Func<bool> IsTileDrawingPresentationOptimizationEnabled;
         internal Func<bool> IsDrawOrchestrationOptimizationEnabled;

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using Alacrity.PluginSdk;
+using AlacrityTerraria.UserInterface.Banners;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria.Audio;
@@ -22,6 +23,7 @@ namespace AlacrityTerraria
         private const int PluginMenuMode = 888;
         private const int IngamePluginsCategory = 777016;
         private static readonly PluginUiRuntimeBridgeState State = new PluginUiRuntimeBridgeState();
+        private static readonly BannerSearchPresenter BannerSearch = new BannerSearchPresenter();
 
         /// <summary>Latest bridge availability or failure diagnostic for support and crash reports.</summary>
         public static string LastBridgeDiagnostic { get { return State.LastDiagnostic ?? string.Empty; } }
@@ -81,6 +83,48 @@ namespace AlacrityTerraria
                 if (TryGetMenuModeField(out menuMode))
                     SetMenuMode(menuMode, 0);
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// Filters one native banner-claiming entry. The list itself remains entirely native; this
+        /// presentation predicate only considers entries Terraria has already made claimable.
+        /// </summary>
+        public static bool ShouldDisplayAvailableBanner(int bannerIndex)
+        {
+            try
+            {
+                return BannerSearch.MatchesAvailableBanner(bannerIndex);
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        /// <summary>Draws the native banner-claiming search field within Terraria's existing inventory batch.</summary>
+        public static void DrawAvailableBannerSearch(SpriteBatch spriteBatch, int x, int y)
+        {
+            try
+            {
+                BannerSearch.Draw(spriteBatch, x, y);
+            }
+            catch
+            {
+                // The native banner-claiming window must remain available when presentation fails.
+            }
+        }
+
+        /// <summary>Keeps the banner menu available while its local filter has no matches.</summary>
+        public static bool ShouldKeepBannerMenuAvailable()
+        {
+            try
+            {
+                return BannerSearch.HasActiveFilter;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -401,6 +445,73 @@ namespace AlacrityTerraria
             return callback != null && InvokeOptionalGate(callback, "Clothing-entity presentation optimization gate");
         }
 
+        /// <summary>Starts the optional bounded cold-work frame for clothing entities.</summary>
+        public static void BeginClothingEntityPreparationFrame()
+        {
+            Action callback = State.BeginClothingEntityPreparationFrame;
+            if (callback == null && EnsureRuntimeCapabilities())
+            {
+                callback = State.BeginClothingEntityPreparationFrame;
+            }
+
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback();
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Clothing-entity preparation frame", exception);
+            }
+        }
+
+        /// <summary>
+        /// Keeps native clothing drawing fail-open when the optional cold-work coordinator is
+        /// unavailable or faulted.
+        /// </summary>
+        public static bool TryBeginClothingEntityPreparation(int entityKind, long visualConfiguration)
+        {
+            Func<int, long, bool> callback = State.TryBeginClothingEntityPreparation;
+            if (callback == null && EnsureRuntimeCapabilities())
+            {
+                callback = State.TryBeginClothingEntityPreparation;
+            }
+
+            return callback == null || InvokeOptionalGate(
+                callback,
+                entityKind,
+                visualConfiguration,
+                "Clothing-entity preparation admission");
+        }
+
+        /// <summary>Completes one admitted native clothing draw without affecting vanilla fallback.</summary>
+        public static void CompleteClothingEntityPreparation(int entityKind, long visualConfiguration)
+        {
+            Action<int, long> callback = State.CompleteClothingEntityPreparation;
+            if (callback == null && EnsureRuntimeCapabilities())
+            {
+                callback = State.CompleteClothingEntityPreparation;
+            }
+
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback(entityKind, visualConfiguration);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Clothing-entity preparation completion", exception);
+            }
+        }
+
         /// <summary>Returns whether the generic waterfall presentation policy is active.</summary>
         public static bool IsWaterfallPresentationOptimizationEnabled()
         {
@@ -609,6 +720,16 @@ namespace AlacrityTerraria
         private static bool InvokeOptionalGate<T>(Func<T, bool> callback, T value, string operation)
         {
             try { return callback(value); }
+            catch (Exception exception) { RecordFailure(operation, exception); return true; }
+        }
+
+        private static bool InvokeOptionalGate<TFirst, TSecond>(
+            Func<TFirst, TSecond, bool> callback,
+            TFirst first,
+            TSecond second,
+            string operation)
+        {
+            try { return callback(first, second); }
             catch (Exception exception) { RecordFailure(operation, exception); return true; }
         }
 
@@ -969,6 +1090,9 @@ namespace AlacrityTerraria
             if (TryResolveOptionalCapability(bridgeType, "paint-preparation", "IsPaintPreparationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsPaintPreparationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "paint-extra-preparation", "IsPaintExtraPreparationRelevant", typeof(Func<int, bool>), typeof(bool), new[] { typeof(int) }, out callback)) State.IsPaintExtraPreparationRelevant = (Func<int, bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "clothing-entity-presentation", "IsClothingEntityPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsClothingEntityPresentationOptimizationEnabled = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "clothing-entity-preparation-frame", "BeginClothingEntityPreparationFrame", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) State.BeginClothingEntityPreparationFrame = (Action)callback;
+            if (TryResolveOptionalCapability(bridgeType, "clothing-entity-preparation-admission", "TryBeginClothingEntityPreparation", typeof(Func<int, long, bool>), typeof(bool), new[] { typeof(int), typeof(long) }, out callback)) State.TryBeginClothingEntityPreparation = (Func<int, long, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "clothing-entity-preparation-completion", "CompleteClothingEntityPreparation", typeof(Action<int, long>), typeof(void), new[] { typeof(int), typeof(long) }, out callback)) State.CompleteClothingEntityPreparation = (Action<int, long>)callback;
             if (TryResolveOptionalCapability(bridgeType, "waterfall-presentation", "IsWaterfallPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsWaterfallPresentationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "tile-drawing-presentation", "IsTileDrawingPresentationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsTileDrawingPresentationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "draw-orchestration", "IsDrawOrchestrationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsDrawOrchestrationOptimizationEnabled = (Func<bool>)callback;
@@ -1124,6 +1248,9 @@ namespace AlacrityTerraria
             State.IsPaintPreparationOptimizationEnabled = null;
             State.IsPaintExtraPreparationRelevant = null;
             State.IsClothingEntityPresentationOptimizationEnabled = null;
+            State.BeginClothingEntityPreparationFrame = null;
+            State.TryBeginClothingEntityPreparation = null;
+            State.CompleteClothingEntityPreparation = null;
             State.IsWaterfallPresentationOptimizationEnabled = null;
             State.IsTileDrawingPresentationOptimizationEnabled = null;
             State.IsDrawOrchestrationOptimizationEnabled = null;

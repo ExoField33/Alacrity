@@ -25,6 +25,7 @@ public sealed partial class PluginChatHost
     private readonly Dictionary<long, MessagePresentationEntry> presentations = new Dictionary<long, MessagePresentationEntry>();
     private PendingOutgoingMessage? pendingOutgoing;
     private string? readyOutgoingSubmission;
+    private string? readyOutgoingSource;
     private PluginId readyOutgoingOwner;
 
     /// <summary>
@@ -376,22 +377,27 @@ public sealed partial class PluginChatHost
     private void RemoveActionButton(ChatActionButtonEntry entry) { lock (gate) { actionButtons.Remove(entry); RebuildActionButtonSnapshot(); } }
     private void RemoveOutgoingTransformer(OutgoingTransformerEntry entry)
     {
+        PendingOutgoingMessage? cancelled = null;
         lock (gate)
         {
             outgoingTransformers.Remove(entry);
             if (pendingOutgoing != null && ReferenceEquals(pendingOutgoing.Entry, entry))
             {
+                cancelled = pendingOutgoing;
                 pendingOutgoing = null;
             }
 
             if (readyOutgoingOwner == entry.Owner)
             {
                 readyOutgoingSubmission = null;
+                readyOutgoingSource = null;
                 readyOutgoingOwner = default;
             }
 
             RebuildOutgoingTransformerSnapshot();
         }
+
+        cancelled?.Cancel();
     }
 
     // Failures are isolated at the host boundary; diagnostics are throttled so malformed chat cannot flood logs.
@@ -478,7 +484,52 @@ public sealed partial class PluginChatHost
         public bool TryUpdateMessagePresentation(ChatMessageHandle message, ChatMessagePresentation presentation) { ThrowIfClosed(); return host.TryUpdateMessagePresentation(manifest.Id, message, presentation); }
         private void ThrowIfClosed() { if (callbackGate != null && callbackGate.IsClosed) throw new ObjectDisposedException("Plugin activation"); }
     }
-    private abstract class Entry : IPluginRegistration { private readonly Action<Entry> remove; private readonly ActivationCallbackGate? callbackGate; private bool released; protected Entry(PluginId owner, string name, Action<Entry> remove, ActivationCallbackGate? callbackGate) { Owner = owner; Name = name; this.remove = remove; this.callbackGate = callbackGate; } public PluginId Owner { get; } public string Name { get; } public bool IsReleased => released; public bool IsAdmissionOpen => !released && (callbackGate == null || !callbackGate.IsClosed); public bool TryEnter(out ActivationCallbackGate.Lease lease) { if (IsReleased) { lease = default; return false; } if (callbackGate == null) { lease = default; return true; } return callbackGate.TryEnter(out lease); } public void Dispose() { if (released) return; released = true; remove(this); } }
+    private abstract class Entry : IPluginRegistration
+    {
+        private readonly Action<Entry> remove;
+        private readonly ActivationCallbackGate? callbackGate;
+        private int released;
+
+        protected Entry(PluginId owner, string name, Action<Entry> remove, ActivationCallbackGate? callbackGate)
+        {
+            Owner = owner;
+            Name = name;
+            this.remove = remove;
+            this.callbackGate = callbackGate;
+        }
+
+        public PluginId Owner { get; }
+        public string Name { get; }
+        public bool IsReleased => Volatile.Read(ref released) != 0;
+        public bool IsAdmissionOpen => !IsReleased && (callbackGate == null || !callbackGate.IsClosed);
+
+        public bool TryEnter(out ActivationCallbackGate.Lease lease)
+        {
+            if (IsReleased)
+            {
+                lease = default;
+                return false;
+            }
+
+            if (callbackGate == null)
+            {
+                lease = default;
+                return true;
+            }
+
+            return callbackGate.TryEnter(out lease);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0)
+            {
+                return;
+            }
+
+            remove(this);
+        }
+    }
     private sealed class EditorEntry : Entry { public EditorEntry(PluginId owner, ChatInputEditorDescriptor descriptor, IChatInputEditor editor, IPluginUserInteractionService? userInteraction, Action<EditorEntry> remove, ActivationCallbackGate? callbackGate) : base(owner, "chat-editor:" + descriptor.Id, entry => remove((EditorEntry)entry), callbackGate) { Descriptor = descriptor; Editor = editor; UserInteraction = userInteraction; } public ChatInputEditorDescriptor Descriptor { get; } public IChatInputEditor Editor { get; } public IPluginUserInteractionService? UserInteraction { get; } }
     private sealed class DecoratorEntry : Entry { public DecoratorEntry(PluginId owner, ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator, IPluginUserInteractionService? userInteraction, Action<DecoratorEntry> remove, ActivationCallbackGate? callbackGate) : base(owner, "chat-decorator:" + descriptor.Id, entry => remove((DecoratorEntry)entry), callbackGate) { Descriptor = descriptor; Decorator = decorator; UserInteraction = userInteraction; } public ChatMessageDecoratorDescriptor Descriptor { get; } public IChatMessageDecorator Decorator { get; } public IPluginUserInteractionService? UserInteraction { get; } }
     private sealed class FilterEntry : Entry { public FilterEntry(PluginId owner, ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter, Action<FilterEntry> remove, ActivationCallbackGate? callbackGate) : base(owner, "chat-filter:" + descriptor.Id, entry => remove((FilterEntry)entry), callbackGate) { Descriptor = descriptor; Filter = filter; } public ChatMessageFilterDescriptor Descriptor { get; } public IChatMessageFilter Filter { get; } }

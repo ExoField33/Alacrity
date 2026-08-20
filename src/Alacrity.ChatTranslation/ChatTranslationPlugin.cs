@@ -849,13 +849,13 @@ public sealed class ChatTranslationPlugin : IAlacrityPlugin
     private static string NormalizeSourceLanguage(string value)
     {
         string normalized = NormalizeLanguageCode(value);
-        return string.Equals(normalized, "auto", StringComparison.Ordinal) || IsLanguageCode(normalized) ? normalized : "auto";
+        return TranslationLanguageCatalog.IsSupportedSource(normalized) ? normalized : "auto";
     }
 
     private static string NormalizeTargetLanguage(string value)
     {
         string normalized = NormalizeLanguageCode(value);
-        return string.Equals(normalized, "auto", StringComparison.Ordinal) || !IsLanguageCode(normalized) ? "en" : normalized;
+        return TranslationLanguageCatalog.IsSupportedTarget(normalized) ? normalized : "en";
     }
 
     private static string NormalizeLanguageCode(string value)
@@ -863,30 +863,13 @@ public sealed class ChatTranslationPlugin : IAlacrityPlugin
         return (value ?? string.Empty).Trim().ToLowerInvariant();
     }
 
-    private static bool IsLanguageCode(string value)
-    {
-        if (value.Length < 2 || value.Length > 12)
-        {
-            return false;
-        }
-
-        for (int index = 0; index < value.Length; index++)
-        {
-            char character = value[index];
-            if ((character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     private static bool SameLanguage(string source, string target)
     {
-        string left = (source ?? string.Empty).Split('-')[0];
-        string right = (target ?? string.Empty).Split('-')[0];
-        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        string normalizedSource = NormalizeLanguageCode(source);
+        string normalizedTarget = NormalizeLanguageCode(target);
+        return TranslationLanguageCatalog.IsSupportedSource(normalizedSource) &&
+            TranslationLanguageCatalog.IsSupportedTarget(normalizedTarget) &&
+            string.Equals(normalizedSource, normalizedTarget, StringComparison.Ordinal);
     }
 
     private string LanguageName(string code)

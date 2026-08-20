@@ -41,15 +41,17 @@ Links are deliberately left to their producing chat plugin rather than being rew
 
 With automatic outgoing translation enabled, ordinary chat is translated in an activation-owned
 background task before Terraria performs its usual submission. Slash commands keep native command
-behavior. Translation failure or cancellation keeps the original input in the chat box; it is not
-silently sent. Chat translation cache and message state are cleared when returning to the game
-menu, disabling the plugin, or ending its activation.
+behavior. The host bounds each transform; timeout, cancellation, or failure releases the pending
+submission and keeps the original input unsent. Editing the chat box revokes a pending transform so
+a late result can never replace newer player text. Chat translation cache and message state are
+cleared when returning to the game menu, disabling the plugin, or ending its activation.
 
 ## Generic host facilities
 
 This plugin demonstrates reusable host capabilities rather than plugin-specific integration:
 
-- `context.Network` accepts only bounded HTTPS requests to manifest-approved DNS hosts.
+- `context.Network` accepts only bounded streamed HTTPS responses. Redirect hops are separately
+  checked against the manifest's exact approved host list and are cancelled with the activation.
 - `context.Terraria.Chat.RegisterMessageAction` associates a click with the span's producing
   plugin activation.
 - `context.Terraria.Chat.RegisterActionButton` provides the generic chat action strip and

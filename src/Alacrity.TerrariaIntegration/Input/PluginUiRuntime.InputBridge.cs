@@ -21,9 +21,10 @@ namespace AlacrityTerraria
         {
             if (!RuntimeHost.IsBootstrapped || RuntimeHost.IsShuttingDown || _extensions == null)
                 return;
-            try
-            {
-                _entitySnapshots?.CaptureForCurrentTick();
+        try
+        {
+            PrewarmRainPresentation();
+            _entitySnapshots?.CaptureForCurrentTick();
                 _sessionPresentation?.CaptureForCurrentTick();
                 _worldSections?.CaptureForCurrentTick();
                 UpdateIconInteractionInput();

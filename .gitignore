@@ -64,6 +64,5 @@ signing-secrets/
 *.zip
 *.nupkg
 
-# Misc
-Directory.Build.props
-Directory.Build.targets
+# Local MSBuild overrides
+/Directory.Build.props.user
