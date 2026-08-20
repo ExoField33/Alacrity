@@ -11,12 +11,13 @@ using Terraria;
 using Terraria.GameContent.UI.States;
 using Terraria.GameContent.Drawing;
 using Terraria.Graphics.Renderers;
+using Terraria.UI.Gamepad;
 
 namespace AlacrityTerraria
 {
     // The injected entry point source-links the framework-neutral handshake model and never loads Core.
     // Every reflected member is exact-signature checked and cached so unavailable bridge code falls back to Terraria.
-    public static class PluginUiRuntime
+    public static partial class PluginUiRuntime
     {
         private const int PluginMenuMode = 888;
         private const int IngamePluginsCategory = 777016;
@@ -38,11 +39,40 @@ namespace AlacrityTerraria
         {
             try
             {
+                if (State.SuppressNextIngameOptionsClose)
+                {
+                    State.SuppressNextIngameOptionsClose = false;
+                    return false;
+                }
+
                 FieldInfo menuMode;
                 if (!TryGetMenuModeField(out menuMode))
                     return true;
 
-                return ReadMenuMode(menuMode) == PluginMenuMode ? HandlePluginMenuInput() : true;
+                bool inIngamePluginsCategory = IsIngamePluginsCategory();
+                if (ReadMenuMode(menuMode) != PluginMenuMode && !inIngamePluginsCategory)
+                {
+                    return true;
+                }
+
+                bool continueVanillaInput = HandlePluginMenuInput();
+                if (!continueVanillaInput)
+                {
+                    ConsumeCurrentEscapeKey();
+                    if (inIngamePluginsCategory)
+                    {
+                        State.SuppressNextIngameOptionsClose = true;
+                    }
+                    else
+                    {
+                        // MenuUI processes its back command after this input hook. Lock that
+                        // native command for the same frame after the bridge has navigated one
+                        // Alacrity-owned page, rather than letting it immediately close mode 888.
+                        UILinkPointNavigator.Shortcuts.BackButtonLock = true;
+                    }
+                }
+
+                return continueVanillaInput;
             }
             catch (Exception exception)
             {
@@ -52,6 +82,16 @@ namespace AlacrityTerraria
                     SetMenuMode(menuMode, 0);
                 return true;
             }
+        }
+
+        private static void ConsumeCurrentEscapeKey()
+        {
+            // Keep the live state intact. Replacing it would make a held Escape appear as a
+            // fresh press on the next update and immediately consume the next navigation level.
+            // Advancing the previous snapshot consumes only this edge for native UI code.
+            Main.oldKeyState = Main.keyState;
+            Main.inputTextEscape = false;
+            Main.keyCount = 0;
         }
 
         /// <summary>Version-locked startup entry point. It is safe to call more than once.</summary>
@@ -396,6 +436,97 @@ namespace AlacrityTerraria
             return callback != null && InvokeOptionalGate(callback, "Laser-ruler presentation optimization");
         }
 
+        /// <summary>Begins a version-locked optional rain pass, otherwise native drawing continues.</summary>
+        public static bool TryBeginRainPresentation(bool useWorldTransform)
+        {
+            if (!EnsureRainPresentationCapabilities())
+            {
+                return false;
+            }
+
+            try
+            {
+                return State.TryBeginRainPresentation(useWorldTransform);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Rain presentation bridge", exception);
+                return false;
+            }
+        }
+
+        /// <summary>Queues one native active rain entry for the already-started optional pass.</summary>
+        public static bool TryQueueRainPresentation(
+            Texture2D texture,
+            Vector2 position,
+            Rectangle? source,
+            Color color,
+            float rotation,
+            Vector2 origin,
+            float scale,
+            SpriteEffects effects,
+            float layerDepth)
+        {
+            PluginUiRuntimeBridgeState.RainPresentationQueueDelegate callback = State.TryQueueRainPresentation;
+            if (callback == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return callback(texture, position, source, color, rotation, origin, scale, effects, layerDepth);
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Queue rain presentation", exception);
+                return true;
+            }
+        }
+
+        /// <summary>Completes the optional rain pass and restores the native SpriteBatch state.</summary>
+        public static void EndRainPresentation()
+        {
+            Action callback = State.EndRainPresentation;
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback();
+            }
+            catch (Exception exception)
+            {
+                RecordFailure("Finish rain presentation", exception);
+            }
+        }
+
+        /// <summary>
+        /// Executes a version-locked lighting range through the active Core bridge. A missing,
+        /// stale, or disabled bridge uses Terraria's native FastParallel implementation.
+        /// </summary>
+        public static bool TryRunLightingParallel(
+            int fromInclusive,
+            int toExclusive,
+            Delegate callback,
+            object context)
+        {
+            PluginUiRuntimeBridgeState.LightingParallelDelegate optimized = State.TryRunLightingParallel;
+            if (optimized == null && EnsureRuntimeCapabilities())
+            {
+                optimized = State.TryRunLightingParallel;
+            }
+
+            if (optimized == null)
+            {
+                return false;
+            }
+
+            return optimized(fromInclusive, toExclusive, callback, context);
+        }
+
         /// <summary>
         /// Allows the Core bridge to replace only audited, static TileDrawing entries. Returning
         /// false preserves Terraria's native DrawSingleTile call for every unsupported case.
@@ -539,9 +670,32 @@ namespace AlacrityTerraria
                 State.RecordSubmittedChatInput(text);
         }
 
+        public static bool TryDeferOutgoingChatMessage(string text)
+        {
+            return !string.IsNullOrEmpty(text) && EnsureChatBridge() && State.TryDeferOutgoingChatMessage != null && State.TryDeferOutgoingChatMessage(text);
+        }
+
+        public static string TakeReadyOutgoingChatMessage()
+        {
+            return EnsureChatBridge() && State.TakeReadyOutgoingChatMessage != null ? State.TakeReadyOutgoingChatMessage() : null;
+        }
+
+        public static bool HasReadyOutgoingChatMessage()
+        {
+            return EnsureChatBridge() && State.HasReadyOutgoingChatMessage != null && State.HasReadyOutgoingChatMessage();
+        }
+
+        public static void DrawChatActionStrip()
+        {
+            if (EnsureChatBridge() && State.DrawChatActionStrip != null)
+                State.DrawChatActionStrip();
+        }
+
         public static string FormatPlayerChatText(string text)
         {
-            return FormatChatInputForDraw(text);
+            return HasChatInputEditors()
+                ? FormatChatInputForDraw(text)
+                : FormatNativePlayerChatText(text);
         }
 
         public static string FormatChatInputForDraw(string text)
@@ -551,9 +705,48 @@ namespace AlacrityTerraria
             return Main.instance != null && Main.instance.textBlinkerState == 1 ? (text ?? string.Empty) + "|" : text;
         }
 
-        public static object DecorateChatMessage(object snippets, Color baseColor, string originalMessage)
+        public static object DecorateStoredChatMessage(object snippets, Color baseColor, string originalMessage)
         {
-            return EnsureChatBridge() && State.DecorateChatMessage != null ? State.DecorateChatMessage(snippets, baseColor, originalMessage) : snippets;
+            return EnsureChatBridge() && State.DecorateStoredChatMessage != null ? State.DecorateStoredChatMessage(snippets, baseColor, originalMessage) : snippets;
+        }
+
+        public static string PrepareStoredChatMessageText(string originalMessage, object messageContainer)
+        {
+            return EnsureChatBridge() && State.PrepareStoredChatMessageText != null
+                ? State.PrepareStoredChatMessageText(originalMessage, messageContainer)
+                : originalMessage ?? string.Empty;
+        }
+
+        public static void BeginStoredChatMessageDecoration()
+        {
+            if (EnsureChatBridge() && State.BeginStoredChatMessageDecoration != null)
+            {
+                State.BeginStoredChatMessageDecoration();
+            }
+        }
+
+        public static void BeginStoredChatMessageDecorationForContainer(object messageContainer)
+        {
+            if (EnsureChatBridge() && State.BeginStoredChatMessageDecorationForContainer != null)
+            {
+                State.BeginStoredChatMessageDecorationForContainer(messageContainer);
+            }
+        }
+
+        public static void EndStoredChatMessageDecoration()
+        {
+            if (EnsureChatBridge() && State.EndStoredChatMessageDecoration != null)
+            {
+                State.EndStoredChatMessageDecoration();
+            }
+        }
+
+        public static void RefreshStoredChatMessagePresentations()
+        {
+            if (EnsureChatBridge() && State.RefreshStoredChatMessagePresentations != null)
+            {
+                State.RefreshStoredChatMessagePresentations();
+            }
         }
 
         public static bool ShouldDisplayNetworkChatMessage(byte messageAuthor)
@@ -672,7 +865,7 @@ namespace AlacrityTerraria
 
             State.BridgeLoadAttempted = true;
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "Alacrity.PluginUiCoreBridge.dll");
-            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "4|2|5|1.4.5.6", out string integrityDiagnostic))
+            if (!ClientManifestIntegrity.TryValidate(AppDomain.CurrentDomain.BaseDirectory, "5|2|14|1.4.5.6", out string integrityDiagnostic))
             {
                 RecordUnavailable("Client integrity check failed: " + integrityDiagnostic);
                 return false;
@@ -781,6 +974,11 @@ namespace AlacrityTerraria
             if (TryResolveOptionalCapability(bridgeType, "draw-orchestration", "IsDrawOrchestrationOptimizationEnabled", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.IsDrawOrchestrationOptimizationEnabled = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "paladin-shield-icon", "ShouldDrawPaladinShieldIcon", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.ShouldDrawPaladinShieldIcon = (Func<bool>)callback;
             if (TryResolveOptionalCapability(bridgeType, "laser-ruler-presentation", "TryDrawLaserRulerPresentation", typeof(Func<bool>), typeof(bool), Type.EmptyTypes, out callback)) State.TryDrawLaserRulerPresentation = (Func<bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "rain-presentation-begin", "TryBeginRainPresentation", typeof(Func<bool, bool>), typeof(bool), new[] { typeof(bool) }, out callback)) State.TryBeginRainPresentation = (Func<bool, bool>)callback;
+            if (TryResolveOptionalCapability(bridgeType, "rain-presentation-queue", "TryQueueRainPresentation", typeof(PluginUiRuntimeBridgeState.RainPresentationQueueDelegate), typeof(bool), new[] { typeof(Texture2D), typeof(Vector2), typeof(Rectangle?), typeof(Color), typeof(float), typeof(Vector2), typeof(float), typeof(SpriteEffects), typeof(float) }, out callback)) State.TryQueueRainPresentation = (PluginUiRuntimeBridgeState.RainPresentationQueueDelegate)callback;
+            if (TryResolveOptionalCapability(bridgeType, "rain-presentation-end", "EndRainPresentation", typeof(Action), typeof(void), Type.EmptyTypes, out callback)) State.EndRainPresentation = (Action)callback;
+            State.RainPresentationCapabilitiesResolved = State.TryBeginRainPresentation != null && State.TryQueueRainPresentation != null && State.EndRainPresentation != null;
+            if (TryResolveOptionalCapability(bridgeType, "lighting-parallelism", "TryRunLightingParallel", typeof(PluginUiRuntimeBridgeState.LightingParallelDelegate), typeof(bool), new[] { typeof(int), typeof(int), typeof(Delegate), typeof(object) }, out callback)) State.TryRunLightingParallel = (PluginUiRuntimeBridgeState.LightingParallelDelegate)callback;
             if (TryResolveOptionalCapability(bridgeType, "static-tile-chunk-presentation", "TryDrawStaticTileChunk", typeof(PluginUiRuntimeBridgeState.StaticTileChunkDrawDelegate), typeof(bool), new[] { typeof(TileDrawing), typeof(bool), typeof(Vector2), typeof(Vector2), typeof(int), typeof(int) }, out callback)) State.TryDrawStaticTileChunk = (PluginUiRuntimeBridgeState.StaticTileChunkDrawDelegate)callback;
             if (TryResolveOptionalCapability(bridgeType, "static-tile-chunk-invalidation", "InvalidateStaticTileChunks", typeof(Action<int, int>), typeof(void), new[] { typeof(int), typeof(int) }, out callback)) State.InvalidateStaticTileChunks = (Action<int, int>)callback;
             if (TryResolveOptionalCapability(bridgeType, "plugin-commands", "TryHandlePluginChatCommand", typeof(Func<string, bool>), typeof(bool), new[] { typeof(string) }, out callback)) State.TryHandlePluginChatCommand = (Func<string, bool>)callback;
@@ -797,6 +995,19 @@ namespace AlacrityTerraria
                 return false;
             State.DrawNotifications = (Action<SpriteBatch>)callback;
             return true;
+        }
+
+        private static bool EnsureRainPresentationCapabilities()
+        {
+            if (!State.RainPresentationCapabilitiesResolved && !EnsureRuntimeCapabilities())
+            {
+                return false;
+            }
+
+            return State.RainPresentationCapabilitiesResolved &&
+                State.TryBeginRainPresentation != null &&
+                State.TryQueueRainPresentation != null &&
+                State.EndRainPresentation != null;
         }
 
         private static bool TryResolveOptionalCapability(Type bridgeType, string capability, string methodName, Type delegateType, Type returnType, Type[] parameterTypes, out Delegate callback)
@@ -840,12 +1051,36 @@ namespace AlacrityTerraria
                 State.ShouldHandleChatInputAction = (Func<string, bool>)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ProcessChatInput", typeof(string), new[] { typeof(string), typeof(bool) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, bool, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 State.ProcessChatInput = (Func<string, bool, string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "TryProcessChatActionInput", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.TryProcessChatActionInput = (Func<bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "TryHandleChatActionEscape", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.TryHandleChatActionEscape = (Func<bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "TryApplyChatInputAction", typeof(bool), new[] { typeof(string), typeof(int), typeof(int), typeof(string), typeof(bool), typeof(bool), typeof(int), typeof(string).MakeByRefType(), typeof(int).MakeByRefType(), typeof(int).MakeByRefType(), typeof(int).MakeByRefType() }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(PluginUiRuntimeBridgeState.NativeChatActionDelegate), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.TryApplyChatInputAction = (PluginUiRuntimeBridgeState.NativeChatActionDelegate)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "RecordSubmittedChatInput", typeof(void), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action<string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 State.RecordSubmittedChatInput = (Action<string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "TryDeferOutgoingChatMessage", typeof(bool), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.TryDeferOutgoingChatMessage = (Func<string, bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "TakeReadyOutgoingChatMessage", typeof(string), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.TakeReadyOutgoingChatMessage = (Func<string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "HasReadyOutgoingChatMessage", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.HasReadyOutgoingChatMessage = (Func<bool>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "DrawChatActionStrip", typeof(void), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.DrawChatActionStrip = (Action)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "FormatChatInputForDraw", typeof(string), new[] { typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 State.FormatChatInputForDraw = (Func<string, string>)callback;
-                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "DecorateChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
-                State.DecorateChatMessage = (Func<object, Color, string, object>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "DecorateStoredChatMessage", typeof(object), new[] { typeof(object), typeof(Color), typeof(string) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<object, Color, string, object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.DecorateStoredChatMessage = (Func<object, Color, string, object>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "PrepareStoredChatMessageText", typeof(string), new[] { typeof(string), typeof(object) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<string, object, string>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.PrepareStoredChatMessageText = (Func<string, object, string>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "BeginStoredChatMessageDecoration", typeof(void), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.BeginStoredChatMessageDecoration = (Action)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "BeginStoredChatMessageDecorationForContainer", typeof(void), new[] { typeof(object) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action<object>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.BeginStoredChatMessageDecorationForContainer = (Action<object>)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "EndStoredChatMessageDecoration", typeof(void), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.EndStoredChatMessageDecoration = (Action)callback;
+                if (!State.Reflection.TryResolveStaticMethod(bridgeType, "RefreshStoredChatMessagePresentations", typeof(void), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Action), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
+                State.RefreshStoredChatMessagePresentations = (Action)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayNetworkChatMessage", typeof(bool), new[] { typeof(byte) }, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<byte, bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
                 State.ShouldDisplayNetworkChatMessage = (Func<byte, bool>)callback;
                 if (!State.Reflection.TryResolveStaticMethod(bridgeType, "ShouldDisplayLocalChatMessage", typeof(bool), Type.EmptyTypes, out method, out diagnostic) || !State.Reflection.TryCreateDelegate(method, typeof(Func<bool>), out callback, out diagnostic)) { RecordUnavailable(diagnostic); ClearChatDelegates(); return false; }
@@ -894,6 +1129,11 @@ namespace AlacrityTerraria
             State.IsDrawOrchestrationOptimizationEnabled = null;
             State.ShouldDrawPaladinShieldIcon = null;
             State.TryDrawLaserRulerPresentation = null;
+            State.TryBeginRainPresentation = null;
+            State.TryQueueRainPresentation = null;
+            State.EndRainPresentation = null;
+            State.RainPresentationCapabilitiesResolved = false;
+            State.TryRunLightingParallel = null;
             State.TryDrawStaticTileChunk = null;
             State.InvalidateStaticTileChunks = null;
             State.TryHandlePluginChatCommand = null;
@@ -917,15 +1157,68 @@ namespace AlacrityTerraria
             State.HasChatInputEditors = null;
             State.ShouldHandleChatInputAction = null;
             State.ProcessChatInput = null;
+            State.TryProcessChatActionInput = null;
+            State.TryHandleChatActionEscape = null;
+            State.TryApplyChatInputAction = null;
             State.RecordSubmittedChatInput = null;
+            State.TryDeferOutgoingChatMessage = null;
+            State.TakeReadyOutgoingChatMessage = null;
+            State.HasReadyOutgoingChatMessage = null;
+            State.DrawChatActionStrip = null;
             State.FormatChatInputForDraw = null;
-            State.DecorateChatMessage = null;
+            State.DecorateStoredChatMessage = null;
+            State.PrepareStoredChatMessageText = null;
+            State.BeginStoredChatMessageDecoration = null;
+            State.BeginStoredChatMessageDecorationForContainer = null;
+            State.EndStoredChatMessageDecoration = null;
+            State.RefreshStoredChatMessagePresentations = null;
             State.ShouldDisplayNetworkChatMessage = null;
             State.ShouldDisplayLocalChatMessage = null;
             State.HandleChatSnippetHover = null;
             State.HandleChatSnippetClick = null;
             State.GetChatSnippetVisibleColor = null;
             State.CopyChatSnippetContext = null;
+        }
+
+        private static bool TryProcessChatActionInput()
+        {
+            return EnsureChatBridge() && State.TryProcessChatActionInput != null && State.TryProcessChatActionInput();
+        }
+
+        private static bool TryHandleChatActionEscape()
+        {
+            return EnsureChatBridge() && State.TryHandleChatActionEscape != null && State.TryHandleChatActionEscape();
+        }
+
+        private static bool TryApplyChatInputAction(
+            string text,
+            int caret,
+            int selectionAnchor,
+            string actionId,
+            bool control,
+            bool shift,
+            int scrollLines,
+            out string resultText,
+            out int resultCaret,
+            out int resultSelectionAnchor,
+            out int appliedScrollLines)
+        {
+            resultText = text ?? string.Empty;
+            resultCaret = caret;
+            resultSelectionAnchor = selectionAnchor;
+            appliedScrollLines = 0;
+            return EnsureChatBridge() && State.TryApplyChatInputAction != null && State.TryApplyChatInputAction(
+                resultText,
+                caret,
+                selectionAnchor,
+                actionId,
+                control,
+                shift,
+                scrollLines,
+                out resultText,
+                out resultCaret,
+                out resultSelectionAnchor,
+                out appliedScrollLines);
         }
 
         private static bool HandlePluginMenuInput()

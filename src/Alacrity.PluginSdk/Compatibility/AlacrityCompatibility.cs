@@ -8,11 +8,13 @@ public static class AlacrityCompatibility
     /// <summary>Current public SDK contract level.</summary>
     // ITerrariaServices gained Presentation. Adding an interface member is a binary break for
     // third-party implementations, so current packages require SDK compatibility v4.
-    public const int PluginSdk = 4;
+    public const int PluginSdk = 5;
     /// <summary>Current Core host contract level.</summary>
     public const int Host = 2;
     /// <summary>Current static Terraria bridge ABI level.</summary>
-    public const int BridgeAbi = 5;
+    // Native retained-chat preparation runs before word wrapping, so patched executables and
+    // bridge assemblies must be rebuilt together.
+    public const int BridgeAbi = 14;
 }
 
 /// <summary>Immutable package requirements checked before a plugin assembly is loaded.</summary>

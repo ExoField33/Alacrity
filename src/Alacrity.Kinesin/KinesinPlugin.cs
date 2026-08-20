@@ -18,6 +18,8 @@ public sealed class KinesinPlugin : IAlacrityPlugin
     private bool drawOrchestrationEnabled = true;
     private bool laserRulerPresentationEnabled = true;
     private bool staticTileChunkPresentationEnabled = true;
+    private bool rainPresentationEnabled = true;
+    private bool lightingParallelismEnabled = true;
 
     public void Initialize(IPluginContext context)
     {
@@ -117,6 +119,32 @@ public sealed class KinesinPlugin : IAlacrityPlugin
                 "static-tile-chunk-presentation",
                 "Optimize Static Tile Chunks",
                 staticTileChunkPresentationSetting).InPage("kinesin"));
+        IPluginSetting<bool> rainPresentationSetting = context.Settings.Register(
+            new PluginSettingDefinition<bool>("rainPresentation", true));
+        rainPresentationEnabled = rainPresentationSetting.Value;
+        rainPresentationSetting.Subscribe(value =>
+        {
+            rainPresentationEnabled = value;
+            RefreshPolicy();
+        });
+        context.Ui.RegisterSettingsControl(
+            PluginSettingControl.Toggle(
+                "rain-presentation",
+                "Optimize Rain Rendering",
+                rainPresentationSetting).InPage("kinesin"));
+        IPluginSetting<bool> lightingParallelismSetting = context.Settings.Register(
+            new PluginSettingDefinition<bool>("lightingParallelism", true));
+        lightingParallelismEnabled = lightingParallelismSetting.Value;
+        lightingParallelismSetting.Subscribe(value =>
+        {
+            lightingParallelismEnabled = value;
+            RefreshPolicy();
+        });
+        context.Ui.RegisterSettingsControl(
+            PluginSettingControl.Toggle(
+                "lighting-parallelism",
+                "Optimize Lighting Parallelism",
+                lightingParallelismSetting).InPage("kinesin"));
         RefreshPolicy();
     }
 
@@ -175,6 +203,14 @@ public sealed class KinesinPlugin : IAlacrityPlugin
         if (staticTileChunkPresentationEnabled)
         {
             optimizations |= PluginRenderingOptimization.StaticTileChunkPresentation;
+        }
+        if (rainPresentationEnabled)
+        {
+            optimizations |= PluginRenderingOptimization.RainPresentation;
+        }
+        if (lightingParallelismEnabled)
+        {
+            optimizations |= PluginRenderingOptimization.LightingParallelism;
         }
         if (optimizations == PluginRenderingOptimization.None)
         {

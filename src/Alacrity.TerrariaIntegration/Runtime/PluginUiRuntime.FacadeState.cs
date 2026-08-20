@@ -135,6 +135,39 @@ namespace AlacrityTerraria
             get => BridgeState.IngamePointerCaptureId;
             set => BridgeState.IngamePointerCaptureId = value;
         }
+
+        private static string _ingameOpenDropdownControlId
+        {
+            get => BridgeState.IngameOpenDropdownControlId;
+            set => BridgeState.IngameOpenDropdownControlId = value;
+        }
+
+        private static int _ingameDropdownScroll
+        {
+            get => BridgeState.IngameDropdownScroll;
+            set => BridgeState.IngameDropdownScroll = value;
+        }
+        private static int _ingameDropdownTop
+        {
+            get => BridgeState.IngameDropdownTop;
+            set => BridgeState.IngameDropdownTop = value;
+        }
+        private static string _ingameDropdownSearchText
+        {
+            get => BridgeState.IngameDropdownSearchText;
+            set => BridgeState.IngameDropdownSearchText = value;
+        }
+        private static UserInterface.PluginSearchTextBuffer _ingameDropdownSearchBuffer => BridgeState.IngameDropdownSearchBuffer;
+        private static ref UserInterface.PluginSearchKeyRepeatState _ingameDropdownBackspaceRepeat => ref BridgeState.IngameDropdownBackspaceRepeat;
+        private static ref UserInterface.PluginSearchKeyRepeatState _ingameDropdownDeleteRepeat => ref BridgeState.IngameDropdownDeleteRepeat;
+        private static ref UserInterface.PluginSearchKeyRepeatState _ingameDropdownLeftRepeat => ref BridgeState.IngameDropdownLeftRepeat;
+        private static ref UserInterface.PluginSearchKeyRepeatState _ingameDropdownRightRepeat => ref BridgeState.IngameDropdownRightRepeat;
+        private static bool _ingameDropdownSearchFocused
+        {
+            get => BridgeState.IngameDropdownSearchFocused;
+            set => BridgeState.IngameDropdownSearchFocused = value;
+        }
+        private static List<PluginSettingOption> _ingameDropdownFilteredOptions => BridgeState.IngameDropdownFilteredOptions;
         private static TerrariaPluginEnabledStateStore _enabledStateStore => runtimeState == null ? null : runtimeState.EnabledStateStore;
         private static TerrariaVisualEffectsAdapter _visualEffects => runtimeState == null ? null : runtimeState.VisualEffects;
         private static Rendering.Culling.TerrariaRenderCullingAdapter _renderCulling => runtimeState == null ? null : runtimeState.RenderCulling;

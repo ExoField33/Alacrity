@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 
@@ -24,9 +26,11 @@ internal sealed class FakePluginHost : IDisposable
         Services = new PluginServiceHub();
         Overlays = new PluginOverlayHost();
         Hud = new PluginHudHost();
+        Chat = new PluginChatHost();
+        NetworkBackend = new FakePluginNetworkBackend();
         RenderingOptimizations = new PluginRenderingOptimizationHost();
         PresentationSuppressions = new PluginPresentationSuppressionHost();
-        contexts = new PluginHostContextFactory(root, Services, Extensions, Commands, overlays: Overlays, notifications: Notifications, hud: Hud, renderingOptimizations: RenderingOptimizations, presentation: PresentationSuppressions);
+        contexts = new PluginHostContextFactory(root, Services, Extensions, Commands, overlays: Overlays, chat: Chat, notifications: Notifications, hud: Hud, renderingOptimizations: RenderingOptimizations, presentation: PresentationSuppressions, network: new PluginNetworkHost(NetworkBackend));
     }
 
     internal PluginNotificationCenter Notifications { get; }
@@ -35,6 +39,8 @@ internal sealed class FakePluginHost : IDisposable
     internal PluginServiceHub Services { get; }
     internal PluginOverlayHost Overlays { get; }
     internal PluginHudHost Hud { get; }
+    internal PluginChatHost Chat { get; }
+    internal FakePluginNetworkBackend NetworkBackend { get; }
     internal PluginRenderingOptimizationHost RenderingOptimizations { get; }
     internal PluginPresentationSuppressionHost PresentationSuppressions { get; }
     /// <summary>Plugin-attributed log output captured by the framework-neutral test host.</summary>
@@ -78,5 +84,35 @@ internal sealed class FakePluginHost : IDisposable
         public bool IsAlacrityAwareServer => false;
         public ServerIdentity? Server => null;
         public ServerPluginPolicySnapshot? ActivePolicy => null;
+    }
+}
+
+/// <summary>Deterministic transport seam for plugin tests. It is intentionally a host backend,
+/// so tested plugins still exercise Core's real manifest and activation guard.</summary>
+internal sealed class FakePluginNetworkBackend : IPluginNetworkBackend
+{
+    private readonly List<PluginWebRequest> requests = new List<PluginWebRequest>();
+
+    internal Func<PluginWebRequest, CancellationToken, Task<PluginWebResponse>> Handler { get; set; } = (_, _) => Task.FromResult(new PluginWebResponse(503, string.Empty));
+
+    internal IReadOnlyList<PluginWebRequest> Requests
+    {
+        get
+        {
+            lock (requests)
+            {
+                return requests.ToArray();
+            }
+        }
+    }
+
+    public Task<PluginWebResponse> SendAsync(PluginWebRequest request, CancellationToken cancellationToken)
+    {
+        lock (requests)
+        {
+            requests.Add(request);
+        }
+
+        return Handler(request, cancellationToken);
     }
 }

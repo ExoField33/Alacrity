@@ -28,6 +28,7 @@ internal static class Program
         var targets = new[]
         {
             new { Type = "Terraria.Main", Methods = new[] { "GetInputText", "DrawPlayerChat" } },
+            new { Type = "Terraria.GameContent.UI.Elements.UITextBox", Methods = new[] { "DrawSelf" } },
             new { Type = "Terraria.Main", Methods = new[] { "RefreshPlayerDrawOrder", "DrawItems" } },
             new { Type = "Terraria.Main", Methods = new[] { "DrawPaladinsShieldBoundary", "DrawPaladinsShield" } },
             new { Type = "Terraria.Graphics.Renderers.ParticleRenderer", Methods = new[] { "Draw" } },

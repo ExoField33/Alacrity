@@ -2449,6 +2449,7 @@ public static class FoundationScenarioSuite
             Overlays = new TestOverlays();
             Hud = new TestHud();
             UserInteraction = new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance).CreateService(manifest);
+            Network = UnsupportedPluginNetworkService.Instance;
             Terraria = new TestTerrariaServices();
             Multiplayer = new TestMultiplayerSession();
         }
@@ -2469,6 +2470,7 @@ public static class FoundationScenarioSuite
         public IPluginOverlayService Overlays { get; }
         public IPluginHudService Hud { get; }
         public IPluginUserInteractionService UserInteraction { get; }
+        public IPluginNetworkService Network { get; }
         public ITerrariaServices Terraria { get; }
         public IMultiplayerSession Multiplayer { get; }
     }
@@ -2752,6 +2754,10 @@ public static class FoundationScenarioSuite
         public IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator) => new TestRegistration("chat-decorator");
         public IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter) => new TestRegistration("chat-filter");
         public IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler) => new TestRegistration("chat-link");
+        public IPluginRegistration RegisterMessageAction(ChatMessageActionDescriptor descriptor, IChatMessageActionHandler handler) => new TestRegistration("chat-message-action");
+        public IPluginRegistration RegisterActionButton(ChatActionButtonDescriptor descriptor, IChatActionButtonHandler handler) => new TestRegistration("chat-action-button");
+        public IPluginRegistration RegisterOutgoingMessageTransformer(ChatOutgoingMessageTransformerDescriptor descriptor, IChatOutgoingMessageTransformer transformer) => new TestRegistration("chat-outgoing-transformer");
+        public bool TryUpdateMessagePresentation(ChatMessageHandle message, ChatMessagePresentation presentation) => false;
     }
 
     private sealed class TestEntitySnapshots : IPluginEntitySnapshotService

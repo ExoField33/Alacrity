@@ -253,7 +253,7 @@ public static class TerrariaIntegrationScenarioSuite
         VerifyStaticBridgeMethod(bridge, "ShouldRunGoreSystem", typeof(bool));
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
-        Assert((string)handshake.Invoke(null, null) == "4|2|5|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
+        Assert((string)handshake.Invoke(null, null) == "5|2|14|1.4.5.6", "The bridge handshake must identify the matching SDK, host, ABI, and Terraria versions.");
         Assert((string)handshake.Invoke(null, null) == string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi),
             "The self-contained bridge handshake must remain synchronized with the SDK compatibility constants.");
     }
@@ -277,12 +277,14 @@ public static class TerrariaIntegrationScenarioSuite
         AssertBundledPluginPackage(root, "alacrity.visual-diagnostics", "Alacrity.VisualDiagnostics.dll");
         AssertBundledPluginPackage(root, "alacrity.off-screen-culling", "Alacrity.OffScreenCulling.dll");
         AssertBundledPluginPackage(root, "alacrity.kinesin", "Alacrity.Kinesin.dll");
+        AssertBundledPluginPackage(root, "alacrity.chat-translation", "Alacrity.ChatTranslation.dll");
         string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
         Assert(manifest.Contains("Alacrity.BetterChat.dll"), "The stage manifest must identify the BetterChat package assembly from this build.");
         Assert(manifest.Contains("Alacrity.PlayerList.dll"), "The stage manifest must identify the Player List package assembly from this build.");
         Assert(manifest.Contains("Alacrity.DustGoreToggle.dll"), "The stage manifest must identify the Dust/Gore package assembly from this build.");
         Assert(manifest.Contains("Alacrity.Hitboxes.dll"), "The stage manifest must identify the Hitboxes package assembly from this build.");
         Assert(manifest.Contains("Alacrity.VisualDiagnostics.dll"), "The stage manifest must identify the Visual Diagnostics package assembly from this build.");
+        Assert(manifest.Contains("plugins\\alacrity.chat-translation\\assets\\translate-icon.xnb"), "The stage manifest must include the Chat Translation package icon from this build.");
         Assert(manifest.Contains("Alacrity.OffScreenCulling.dll"), "The stage manifest must identify the Off-screen Culling package assembly from this build.");
         Assert(AssemblyName.GetAssemblyName(bridgePath).Name == "Alacrity.PluginUiCoreBridge", "The staged bridge file must carry the assembly identity expected by the runtime facade.");
 
@@ -299,7 +301,7 @@ public static class TerrariaIntegrationScenarioSuite
         Assert(expectedCompatibility != null, "The facade bridge state must retain its compatibility expectation.");
         object expected = expectedCompatibility.GetValue(state);
         MethodInfo formatHandshake = expected.GetType().GetMethod("ToHandshake", BindingFlags.Public | BindingFlags.Instance);
-        Assert((string)formatHandshake.Invoke(expected, null) == "4|2|5|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
+        Assert((string)formatHandshake.Invoke(expected, null) == "5|2|14|1.4.5.6", "The facade compatibility expectation must remain synchronized with the bridge and SDK constants.");
 
         Assembly bootstrap = Assembly.LoadFrom(bootstrapPath);
         Type runtime = bootstrap.GetType("AlacrityTerraria.AlacrityBootstrapRuntime", true);
@@ -349,7 +351,7 @@ public static class TerrariaIntegrationScenarioSuite
     internal static void VerifyBridgeHandshakeParsing()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
-        Assert(BridgeCompatibilityDescriptor.TryParse("4|2|5|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
+        Assert(BridgeCompatibilityDescriptor.TryParse("5|2|14|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic) && current != null && current.TryValidateAgainst(expected, out _),
             "The current bridge handshake must parse and validate through the shared compatibility descriptor.");
         Assert(!BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic) && diagnostic.Contains("exactly four"), "A handshake with the wrong field count must diagnose its shape.");
         Assert(!BridgeCompatibilityDescriptor.TryParse("x|2|2|1.4.5.6", out _, out diagnostic) && diagnostic.Contains("PluginSdk"), "An invalid compatibility integer must identify its field.");

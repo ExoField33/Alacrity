@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PluginPackageDirectory Condition="'$(PluginPackageDirectory)' == ''">$(MSBuildProjectDirectory)\..\..\artifacts\plugins\alacrity.chat-translation</PluginPackageDirectory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Alacrity.PluginSdk\Alacrity.PluginSdk.csproj" />
+    <None Include="..\..\assets\translate-icon.xnb" Link="assets\translate-icon.xnb" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="BuildPluginPackage" AfterTargets="Build">
+    <MakeDir Directories="$(PluginPackageDirectory)\assets" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginPackageDirectory)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\plugin.json" DestinationFolder="$(PluginPackageDirectory)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\assets\translate-icon.xnb" DestinationFolder="$(PluginPackageDirectory)\assets" />
+  </Target>
+</Project>

@@ -25,4 +25,17 @@ public sealed class ChatContractCompatibilityTests
         Assert.NotNull(constructor);
         Assert.Equal(4, constructor!.GetParameters().Length);
     }
+
+    [Fact]
+    public void NestedChatMenuRetainsItsRequestedDirection()
+    {
+        ChatActionMenuItem child = new ChatActionMenuItem("english", "English");
+        ChatActionMenuItem parent = new ChatActionMenuItem(
+            "language",
+            "Language",
+            new[] { child },
+            childMenuDirection: ChatActionMenuDirection.Up);
+
+        Assert.Equal(ChatActionMenuDirection.Up, parent.ChildMenuDirection);
+    }
 }

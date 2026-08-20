@@ -1,6 +1,7 @@
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using Terraria.GameContent.Drawing;
 
 namespace AlacrityTerraria;
@@ -116,6 +117,48 @@ public static partial class PluginUiRuntime
                 screenOffset,
                 tileX,
                 tileY);
+    }
+
+    /// <summary>
+    /// Begins an optional compact rain presentation pass. The patched Terraria caller supplies
+    /// whether its known SpriteBatch context uses Main.Transform; false keeps native drawing.
+    /// </summary>
+    public static bool TryBeginRainPresentation(bool useWorldTransform)
+    {
+        PluginRenderingOptimizationHost host = _renderingOptimizations;
+        return host != null &&
+            (host.GetEffectiveOptimizations() & PluginRenderingOptimization.RainPresentation) != 0 &&
+            Rendering.Rain.TerrariaInstancedRainPresentation.TryBegin(useWorldTransform);
+    }
+
+    /// <summary>Queues one native active rain entry without changing Terraria's update timing.</summary>
+    public static bool TryQueueRainPresentation(
+        Texture2D texture,
+        Vector2 position,
+        Rectangle? source,
+        Color color,
+        float rotation,
+        Vector2 origin,
+        float scale,
+        SpriteEffects effects,
+        float layerDepth)
+    {
+        return Rendering.Rain.TerrariaInstancedRainPresentation.TryQueue(
+            texture,
+            position,
+            source,
+            color,
+            rotation,
+            origin,
+            scale,
+            effects,
+            layerDepth);
+    }
+
+    /// <summary>Flushes queued rain and restores the exact native SpriteBatch context.</summary>
+    public static void EndRainPresentation()
+    {
+        Rendering.Rain.TerrariaInstancedRainPresentation.End();
     }
 
     /// <summary>Marks cached static descriptors near a native tile mutation as dirty.</summary>

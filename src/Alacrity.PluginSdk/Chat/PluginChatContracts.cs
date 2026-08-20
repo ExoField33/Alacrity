@@ -45,6 +45,18 @@ public interface IPluginChatService
 
     /// Registers an external-link activation handler for a declared URI scheme.
     IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler);
+
+    /// <summary>Registers an owner-scoped action for interactive chat text spans.</summary>
+    IPluginRegistration RegisterMessageAction(ChatMessageActionDescriptor descriptor, IChatMessageActionHandler handler);
+
+    /// <summary>Registers an action-strip icon and optional host-rendered side popover beside player chat.</summary>
+    IPluginRegistration RegisterActionButton(ChatActionButtonDescriptor descriptor, IChatActionButtonHandler handler);
+
+    /// <summary>Registers an asynchronous transformer for eligible outgoing player chat messages.</summary>
+    IPluginRegistration RegisterOutgoingMessageTransformer(ChatOutgoingMessageTransformerDescriptor descriptor, IChatOutgoingMessageTransformer transformer);
+
+    /// <summary>Replaces an owned rendered chat segment without exposing Terraria chat-monitor objects.</summary>
+    bool TryUpdateMessagePresentation(ChatMessageHandle message, ChatMessagePresentation presentation);
 }
 
 /// Immutable player-chat text, caret, and selection snapshot.
@@ -152,7 +164,11 @@ public interface IChatInputActionAvailability
 public sealed class ChatMessageSnapshot
 {
     public ChatMessageSnapshot(string text) => Text = text ?? string.Empty;
+    /// <summary>Creates a snapshot associated with one host-owned rendered segment.</summary>
+    public ChatMessageSnapshot(string text, ChatMessageHandle handle) : this(text) => Handle = handle;
     public string Text { get; }
+    /// <summary>Host-generated identity valid for the current displayed-chat session.</summary>
+    public ChatMessageHandle Handle { get; }
 }
 
 public sealed class ChatTextSpan
@@ -160,9 +176,30 @@ public sealed class ChatTextSpan
     public ChatTextSpan(string text, string? linkTarget = null) { Text = text ?? string.Empty; LinkTarget = linkTarget; }
     /// <summary>Host-assigned owner of this presentation span. Plugin-supplied values are ignored by the host.</summary>
     public ChatTextSpan(string text, string? linkTarget, PluginId owner) { Text = text ?? string.Empty; LinkTarget = linkTarget; Owner = owner; }
+    /// <summary>Creates a presentation span with an optional owner-local interaction action and color override.</summary>
+    public ChatTextSpan(string text, string? linkTarget, string? actionId, string? actionTarget, PluginColor? color = null)
+    {
+        Text = text ?? string.Empty;
+        LinkTarget = linkTarget;
+        ActionId = string.IsNullOrWhiteSpace(actionId) ? null : actionId;
+        ActionTarget = actionTarget ?? string.Empty;
+        Color = color;
+    }
+    /// <summary>Host-only cloning overload that retains the owner assigned by the chat registry.</summary>
+    public ChatTextSpan(string text, string? linkTarget, string? actionId, string? actionTarget, PluginColor? color, PluginId owner)
+        : this(text, linkTarget, actionId, actionTarget, color)
+    {
+        Owner = owner;
+    }
     public string Text { get; }
     public string? LinkTarget { get; }
     public PluginId Owner { get; }
+    /// <summary>Optional owner-local interaction action. The host assigns and verifies ownership.</summary>
+    public string? ActionId { get; }
+    /// <summary>Opaque action value supplied back to the owning action handler.</summary>
+    public string ActionTarget { get; } = string.Empty;
+    /// <summary>Optional text color override interpreted by the host renderer.</summary>
+    public PluginColor? Color { get; }
 }
 
 public sealed class ChatMessageDecoratorDescriptor

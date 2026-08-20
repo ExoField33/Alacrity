@@ -95,7 +95,8 @@ public sealed class PluginPackageManifestReader
             entryType: document.EntryType,
             compatibility: document.PluginSdkCompatibilityVersion == 0 && document.HostCompatibilityVersion == 0 && document.BridgeAbiVersion == 0
                 ? PluginCompatibilityRequirements.Legacy
-                : new PluginCompatibilityRequirements(document.PluginSdkCompatibilityVersion, document.HostCompatibilityVersion, document.BridgeAbiVersion));
+                : new PluginCompatibilityRequirements(document.PluginSdkCompatibilityVersion, document.HostCompatibilityVersion, document.BridgeAbiVersion),
+            networkHosts: document.NetworkHosts);
         manifest.Validate();
         return manifest;
     }
@@ -147,6 +148,7 @@ public sealed class PluginPackageManifestReader
         [DataMember(Name = "pluginSdkCompatibilityVersion")] public int PluginSdkCompatibilityVersion { get; set; }
         [DataMember(Name = "hostCompatibilityVersion")] public int HostCompatibilityVersion { get; set; }
         [DataMember(Name = "bridgeAbiVersion")] public int BridgeAbiVersion { get; set; }
+        [DataMember(Name = "networkHosts")] public string[]? NetworkHosts { get; set; }
     }
 
     [DataContract]

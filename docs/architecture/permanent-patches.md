@@ -15,11 +15,11 @@ clean Terraria 1.4.5.6 + exact SHA-256
 
 ## Supported catalog
 
-The current catalog is `alacrity-terraria-1.4.5.6-r3`. It is intentionally version locked to the
+The current catalog is `alacrity-terraria-1.4.5.6-r25`. It is intentionally version locked to the
 single Steam Windows Terraria 1.4.5.6 SHA-256 recorded in `SupportedTerrariaBuildCatalog`.
 Unknown binaries can be inspected, but cannot be generated into a normal Alacrity client.
 
-The six independently applied catalog definitions are the authoritative inventory in
+The independently applied catalog definitions are the authoritative inventory in
 `tools/Alacrity.ClientBuilder/PermanentPatchCatalog.cs`. Each enumerates every exact target member,
 verified anchor, injection style, and bridge ABI postcondition. The source hash makes the exact
 target method bodies part of each definition's precondition; the builder still validates the staged
@@ -35,7 +35,7 @@ duplicate injection and incomplete return coverage after branch or exception-han
 | Rendering | `Terraria.Main` draw paths | notifications and world overlays | notifications and rendering |
 | Combat | melee collision calculation | collision bounds capture | combat presentation |
 | Visual effects | dust/gore creation, update, and draw paths | dust/gore policy gates | visual-effects policy registry |
-| Chat | chat input, draw, parse, snippets, visibility paths | generic input editor, command, decorator, link, and visibility dispatch | chat |
+| Chat | chat input, draw, parse, snippets, visibility paths | core native text editing, command, decorator, link, and visibility dispatch | chat |
 
 The builder rejects a source that already contains an `AlacrityTerraria.PluginUiRuntime` call. This
 prevents duplicate permanent injection. It does not treat a patched executable as a fresh source.

@@ -42,10 +42,18 @@
     <Compile Include="..\Alacrity.TerrariaIntegration\GameState\World\TerrariaWorldSectionService.cs" Link="TerrariaWorldSectionService.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\GameState\Session\TerrariaSessionPresentationService.cs" Link="TerrariaSessionPresentationService.cs" />
     <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Culling\TerrariaRenderCullingBounds.cs" Link="TerrariaRenderCullingBounds.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Rendering\Optimization\TerrariaLightingParallelExecutor.cs" Link="TerrariaLightingParallelExecutor.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\Input\NativeTextEditState.cs" Link="NativeTextEditState.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\UserInterface\PluginDropdownFilter.cs" Link="PluginDropdownFilter.cs" />
+    <Compile Include="..\Alacrity.TerrariaIntegration\UserInterface\PluginSearchTextBuffer.cs" Link="PluginSearchTextBuffer.cs" />
     <Compile Include="Bridge\ClientManifestIntegrityTests.cs" />
     <Compile Include="GameState\WorldSectionSnapshotTests.cs" />
     <Compile Include="GameState\SessionPresentationTests.cs" />
     <Compile Include="Rendering\RenderCullingBoundsTests.cs" />
+    <Compile Include="Rendering\LightingParallelExecutorTests.cs" />
+    <Compile Include="Input\NativeTextEditStateTests.cs" />
+    <Compile Include="UserInterface\PluginDropdownFilterTests.cs" />
+    <Compile Include="UserInterface\PluginSearchTextBufferTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />

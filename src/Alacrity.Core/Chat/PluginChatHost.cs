@@ -8,7 +8,7 @@ using Alacrity.PluginSdk;
 namespace Alacrity.Core;
 
 /// <summary>Host-owned registry for chat extensions. Terraria integration dispatches snapshots through this class.</summary>
-public sealed class PluginChatHost
+public sealed partial class PluginChatHost
 {
     private readonly object gate = new object();
     private readonly List<EditorEntry> editors = new List<EditorEntry>();
@@ -19,6 +19,20 @@ public sealed class PluginChatHost
     private EditorEntry[] editorSnapshot = Array.Empty<EditorEntry>();
     private DecoratorEntry[] decoratorSnapshot = Array.Empty<DecoratorEntry>();
     private FilterEntry[] filterSnapshot = Array.Empty<FilterEntry>();
+    private MessageActionEntry[] messageActionSnapshot = Array.Empty<MessageActionEntry>();
+    private ChatActionButtonRegistrySnapshot actionButtonSnapshot = ChatActionButtonRegistrySnapshot.Empty;
+    private OutgoingTransformerEntry[] outgoingTransformerSnapshot = Array.Empty<OutgoingTransformerEntry>();
+    private readonly Dictionary<long, MessagePresentationEntry> presentations = new Dictionary<long, MessagePresentationEntry>();
+    private PendingOutgoingMessage? pendingOutgoing;
+    private string? readyOutgoingSubmission;
+    private PluginId readyOutgoingOwner;
+
+    /// <summary>
+    /// Raised after an owner-validated retained-message presentation changes. Integration
+    /// adapters use this only to request a later native presentation refresh; plugin callbacks
+    /// are never invoked through this notification.
+    /// </summary>
+    public event Action<ChatMessageHandle>? MessagePresentationUpdated;
 
     /// <summary>Fast-path state used by Terraria integration before entering a chat hook.</summary>
     public bool HasInputEditors => Volatile.Read(ref editorSnapshot).Length != 0;
@@ -83,10 +97,16 @@ public sealed class PluginChatHost
     /// <summary>Creates chat services bound to the owner's activation-scoped interaction capability.</summary>
     public IPluginChatService CreateService(PluginManifest manifest, IPluginResourceScope resources, IPluginUserInteractionService? userInteraction)
     {
+        return CreateService(manifest, resources, userInteraction, null, null);
+    }
+
+    /// <summary>Creates scoped chat services with the activation-owned scheduler used by asynchronous outgoing transforms.</summary>
+    public IPluginChatService CreateService(PluginManifest manifest, IPluginResourceScope resources, IPluginUserInteractionService? userInteraction, IPluginScheduler? scheduler, IPluginLogger? logger)
+    {
         if (manifest == null) throw new ArgumentNullException(nameof(manifest));
         if (resources == null) throw new ArgumentNullException(nameof(resources));
         if (!manifest.Id.IsValid) throw new ArgumentException("Chat services require a valid plugin owner.", nameof(manifest));
-        return new ScopedService(this, manifest, resources, userInteraction, ActivationCallbackGates.TryGet(resources));
+        return new ScopedService(this, manifest, resources, userInteraction, scheduler, logger, ActivationCallbackGates.TryGet(resources));
     }
 
     public ChatInputEditResult Edit(ChatInputSnapshot snapshot, ChatInputAction action)
@@ -166,6 +186,36 @@ public sealed class PluginChatHost
             }
             catch (Exception exception) { ReportFailure(entry, "message decorator", exception); entry.Dispose(); }
         }
+        if (message.Handle.IsValid)
+        {
+            PluginId owner = default;
+            for (int index = 0; index < spans.Count; index++)
+            {
+                if (!string.IsNullOrEmpty(spans[index].ActionId) && spans[index].Owner.IsValid)
+                {
+                    owner = spans[index].Owner;
+                    break;
+                }
+            }
+
+            if (owner.IsValid)
+            {
+                lock (gate)
+                {
+                    // A native chat container can rebuild its wrapped snippets after a retained
+                    // presentation changes. Keep the owner-validated replacement while that
+                    // rebuild reuses the same message handle.
+                    if (!presentations.TryGetValue(message.Handle.Value, out MessagePresentationEntry? existing) ||
+                        existing.Owner != owner ||
+                        existing.SpanCount != spans.Count)
+                    {
+                        presentations[message.Handle.Value] = new MessagePresentationEntry(owner, spans.Count);
+                    }
+                    TrimPresentations();
+                }
+            }
+        }
+
         return spans;
     }
 
@@ -245,6 +295,73 @@ public sealed class PluginChatHost
         if (duplicate) { entry.Dispose(); throw new InvalidOperationException("A chat link handler is already registered for " + descriptor.Scheme + "."); }
         return entry;
     }
+
+    private IPluginRegistration RegisterMessageAction(PluginManifest manifest, IPluginResourceScope resources, ChatMessageActionDescriptor descriptor, IChatMessageActionHandler handler)
+    {
+        EnsureUserInterfaceAccess(manifest, "chat message action");
+        if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
+        if (handler == null) throw new ArgumentNullException(nameof(handler));
+        var entry = new MessageActionEntry(manifest.Id, descriptor, handler, RemoveMessageAction, ActivationCallbackGates.TryGet(resources));
+        Own(resources, entry, "chat-message-action:" + descriptor.Id);
+        lock (gate)
+        {
+            if (entry.IsReleased) throw new ObjectDisposedException("IPluginResourceScope");
+            for (int index = 0; index < messageActions.Count; index++)
+                if (messageActions[index].Owner == manifest.Id && string.Equals(messageActions[index].Descriptor.Id, descriptor.Id, StringComparison.Ordinal))
+                {
+                    entry.Dispose();
+                    throw new InvalidOperationException("A chat message action is already registered for '" + descriptor.Id + "'.");
+                }
+            messageActions.Add(entry);
+            RebuildMessageActionSnapshot();
+        }
+        return entry;
+    }
+
+    private IPluginRegistration RegisterActionButton(PluginManifest manifest, IPluginResourceScope resources, ChatActionButtonDescriptor descriptor, IChatActionButtonHandler handler)
+    {
+        EnsureUserInterfaceAccess(manifest, "chat action button");
+        if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
+        if (handler == null) throw new ArgumentNullException(nameof(handler));
+        var entry = new ChatActionButtonEntry(manifest.Id, descriptor, handler, RemoveActionButton, ActivationCallbackGates.TryGet(resources));
+        Own(resources, entry, "chat-action-button:" + descriptor.Id);
+        lock (gate)
+        {
+            if (entry.IsReleased) throw new ObjectDisposedException("IPluginResourceScope");
+            for (int index = 0; index < actionButtons.Count; index++)
+                if (actionButtons[index].Owner == manifest.Id && string.Equals(actionButtons[index].Descriptor.Id, descriptor.Id, StringComparison.Ordinal))
+                {
+                    entry.Dispose();
+                    throw new InvalidOperationException("A chat action button is already registered for '" + descriptor.Id + "'.");
+                }
+            actionButtons.Add(entry);
+            RebuildActionButtonSnapshot();
+        }
+        return entry;
+    }
+
+    private IPluginRegistration RegisterOutgoingTransformer(PluginManifest manifest, IPluginResourceScope resources, IPluginScheduler? scheduler, IPluginLogger? logger, ChatOutgoingMessageTransformerDescriptor descriptor, IChatOutgoingMessageTransformer transformer)
+    {
+        EnsureCapability(manifest, PluginCapability.Networking, "outgoing chat transformer");
+        if (scheduler == null || logger == null) throw new NotSupportedException("This host does not provide activation-scoped background scheduling for outgoing chat transforms.");
+        if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
+        if (transformer == null) throw new ArgumentNullException(nameof(transformer));
+        var entry = new OutgoingTransformerEntry(manifest.Id, descriptor, transformer, scheduler, logger, RemoveOutgoingTransformer, ActivationCallbackGates.TryGet(resources));
+        Own(resources, entry, "chat-outgoing-transformer:" + descriptor.Id);
+        lock (gate)
+        {
+            if (entry.IsReleased) throw new ObjectDisposedException("IPluginResourceScope");
+            for (int index = 0; index < outgoingTransformers.Count; index++)
+                if (outgoingTransformers[index].Owner == manifest.Id && string.Equals(outgoingTransformers[index].Descriptor.Id, descriptor.Id, StringComparison.Ordinal))
+                {
+                    entry.Dispose();
+                    throw new InvalidOperationException("An outgoing chat transformer is already registered for '" + descriptor.Id + "'.");
+                }
+            outgoingTransformers.Add(entry);
+            RebuildOutgoingTransformerSnapshot();
+        }
+        return entry;
+    }
     private static IPluginRegistration Own(IPluginResourceScope scope, IPluginRegistration registration, string name)
     {
         try { scope.Own(name, PluginResourceKind.UserInterface, registration); }
@@ -255,6 +372,27 @@ public sealed class PluginChatHost
     private void RemoveDecorator(DecoratorEntry entry) { lock (gate) { decorators.Remove(entry); RebuildDecoratorSnapshot(); } }
     private void RemoveFilter(FilterEntry entry) { lock (gate) { filters.Remove(entry); RebuildFilterSnapshot(); } }
     private void RemoveLink(LinkEntry entry) { lock (gate) if (links.TryGetValue(entry.Scheme, out var current) && ReferenceEquals(current, entry)) links.Remove(entry.Scheme); }
+    private void RemoveMessageAction(MessageActionEntry entry) { lock (gate) { messageActions.Remove(entry); RemovePresentations(entry.Owner); RebuildMessageActionSnapshot(); } }
+    private void RemoveActionButton(ChatActionButtonEntry entry) { lock (gate) { actionButtons.Remove(entry); RebuildActionButtonSnapshot(); } }
+    private void RemoveOutgoingTransformer(OutgoingTransformerEntry entry)
+    {
+        lock (gate)
+        {
+            outgoingTransformers.Remove(entry);
+            if (pendingOutgoing != null && ReferenceEquals(pendingOutgoing.Entry, entry))
+            {
+                pendingOutgoing = null;
+            }
+
+            if (readyOutgoingOwner == entry.Owner)
+            {
+                readyOutgoingSubmission = null;
+                readyOutgoingOwner = default;
+            }
+
+            RebuildOutgoingTransformerSnapshot();
+        }
+    }
 
     // Failures are isolated at the host boundary; diagnostics are throttled so malformed chat cannot flood logs.
     private void ReportFailure(Entry entry, string callbackType, Exception exception)
@@ -290,13 +428,26 @@ public sealed class PluginChatHost
     {
         var owned = new ChatTextSpan[spans.Count];
         for (int index = 0; index < spans.Count; index++)
-            owned[index] = new ChatTextSpan(spans[index].Text, spans[index].LinkTarget, owner);
+            owned[index] = new ChatTextSpan(spans[index].Text, spans[index].LinkTarget, spans[index].ActionId, spans[index].ActionTarget, spans[index].Color, owner);
         return owned;
     }
 
     private void RebuildEditorSnapshot() => Volatile.Write(ref editorSnapshot, editors.OrderBy(entry => entry.Descriptor.Priority).ToArray());
     private void RebuildDecoratorSnapshot() => Volatile.Write(ref decoratorSnapshot, decorators.OrderBy(entry => entry.Descriptor.Priority).ToArray());
     private void RebuildFilterSnapshot() => Volatile.Write(ref filterSnapshot, filters.OrderBy(entry => entry.Descriptor.Priority).ToArray());
+    private void RebuildMessageActionSnapshot() => Volatile.Write(ref messageActionSnapshot, messageActions.ToArray());
+    private void RebuildActionButtonSnapshot()
+    {
+        ChatActionButtonEntry[] entries = actionButtons.OrderBy(entry => entry.Descriptor.Priority).ToArray();
+        var views = new ChatActionButtonView[entries.Length];
+        for (int index = 0; index < entries.Length; index++)
+        {
+            views[index] = new ChatActionButtonView(entries[index].Owner, entries[index].Descriptor);
+        }
+
+        Volatile.Write(ref actionButtonSnapshot, new ChatActionButtonRegistrySnapshot(entries, views));
+    }
+    private void RebuildOutgoingTransformerSnapshot() => Volatile.Write(ref outgoingTransformerSnapshot, outgoingTransformers.OrderBy(entry => entry.Descriptor.Priority).ToArray());
     private static void EnsureCapability(PluginManifest manifest, PluginCapability capability, string service)
     {
         if ((manifest.Capabilities & capability) != capability)
@@ -315,12 +466,16 @@ public sealed class PluginChatHost
 
     private sealed class ScopedService : IPluginChatService
     {
-        private readonly PluginChatHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources; private readonly IPluginUserInteractionService? userInteraction; private readonly ActivationCallbackGate? callbackGate;
-        public ScopedService(PluginChatHost host, PluginManifest manifest, IPluginResourceScope resources, IPluginUserInteractionService? userInteraction, ActivationCallbackGate? callbackGate) { this.host = host; this.manifest = manifest; this.resources = resources; this.userInteraction = userInteraction; this.callbackGate = callbackGate; }
+        private readonly PluginChatHost host; private readonly PluginManifest manifest; private readonly IPluginResourceScope resources; private readonly IPluginUserInteractionService? userInteraction; private readonly IPluginScheduler? scheduler; private readonly IPluginLogger? logger; private readonly ActivationCallbackGate? callbackGate;
+        public ScopedService(PluginChatHost host, PluginManifest manifest, IPluginResourceScope resources, IPluginUserInteractionService? userInteraction, IPluginScheduler? scheduler, IPluginLogger? logger, ActivationCallbackGate? callbackGate) { this.host = host; this.manifest = manifest; this.resources = resources; this.userInteraction = userInteraction; this.scheduler = scheduler; this.logger = logger; this.callbackGate = callbackGate; }
         public IPluginRegistration RegisterInputEditor(ChatInputEditorDescriptor descriptor, IChatInputEditor editor) { ThrowIfClosed(); return host.RegisterEditor(manifest, resources, userInteraction, descriptor, editor); }
         public IPluginRegistration RegisterMessageDecorator(ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator) { ThrowIfClosed(); return host.RegisterDecorator(manifest, resources, userInteraction, descriptor, decorator); }
         public IPluginRegistration RegisterMessageFilter(ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter) { ThrowIfClosed(); return host.RegisterFilter(manifest, resources, descriptor, filter); }
         public IPluginRegistration RegisterLinkHandler(ChatLinkHandlerDescriptor descriptor, IChatLinkHandler handler) { ThrowIfClosed(); return host.RegisterLink(manifest, resources, descriptor, handler); }
+        public IPluginRegistration RegisterMessageAction(ChatMessageActionDescriptor descriptor, IChatMessageActionHandler handler) { ThrowIfClosed(); return host.RegisterMessageAction(manifest, resources, descriptor, handler); }
+        public IPluginRegistration RegisterActionButton(ChatActionButtonDescriptor descriptor, IChatActionButtonHandler handler) { ThrowIfClosed(); return host.RegisterActionButton(manifest, resources, descriptor, handler); }
+        public IPluginRegistration RegisterOutgoingMessageTransformer(ChatOutgoingMessageTransformerDescriptor descriptor, IChatOutgoingMessageTransformer transformer) { ThrowIfClosed(); return host.RegisterOutgoingTransformer(manifest, resources, scheduler, logger, descriptor, transformer); }
+        public bool TryUpdateMessagePresentation(ChatMessageHandle message, ChatMessagePresentation presentation) { ThrowIfClosed(); return host.TryUpdateMessagePresentation(manifest.Id, message, presentation); }
         private void ThrowIfClosed() { if (callbackGate != null && callbackGate.IsClosed) throw new ObjectDisposedException("Plugin activation"); }
     }
     private abstract class Entry : IPluginRegistration { private readonly Action<Entry> remove; private readonly ActivationCallbackGate? callbackGate; private bool released; protected Entry(PluginId owner, string name, Action<Entry> remove, ActivationCallbackGate? callbackGate) { Owner = owner; Name = name; this.remove = remove; this.callbackGate = callbackGate; } public PluginId Owner { get; } public string Name { get; } public bool IsReleased => released; public bool IsAdmissionOpen => !released && (callbackGate == null || !callbackGate.IsClosed); public bool TryEnter(out ActivationCallbackGate.Lease lease) { if (IsReleased) { lease = default; return false; } if (callbackGate == null) { lease = default; return true; } return callbackGate.TryEnter(out lease); } public void Dispose() { if (released) return; released = true; remove(this); } }
@@ -328,6 +483,20 @@ public sealed class PluginChatHost
     private sealed class DecoratorEntry : Entry { public DecoratorEntry(PluginId owner, ChatMessageDecoratorDescriptor descriptor, IChatMessageDecorator decorator, IPluginUserInteractionService? userInteraction, Action<DecoratorEntry> remove, ActivationCallbackGate? callbackGate) : base(owner, "chat-decorator:" + descriptor.Id, entry => remove((DecoratorEntry)entry), callbackGate) { Descriptor = descriptor; Decorator = decorator; UserInteraction = userInteraction; } public ChatMessageDecoratorDescriptor Descriptor { get; } public IChatMessageDecorator Decorator { get; } public IPluginUserInteractionService? UserInteraction { get; } }
     private sealed class FilterEntry : Entry { public FilterEntry(PluginId owner, ChatMessageFilterDescriptor descriptor, IChatMessageFilter filter, Action<FilterEntry> remove, ActivationCallbackGate? callbackGate) : base(owner, "chat-filter:" + descriptor.Id, entry => remove((FilterEntry)entry), callbackGate) { Descriptor = descriptor; Filter = filter; } public ChatMessageFilterDescriptor Descriptor { get; } public IChatMessageFilter Filter { get; } }
     private sealed class LinkEntry : Entry { public LinkEntry(PluginId owner, string scheme, IChatLinkHandler handler, Action<LinkEntry> remove, ActivationCallbackGate? callbackGate) : base(owner, "chat-link:" + scheme, entry => remove((LinkEntry)entry), callbackGate) { Scheme = scheme; Handler = handler; } public string Scheme { get; } public IChatLinkHandler Handler { get; } }
+
+    private sealed class ChatActionButtonRegistrySnapshot
+    {
+        internal static readonly ChatActionButtonRegistrySnapshot Empty = new ChatActionButtonRegistrySnapshot(Array.Empty<ChatActionButtonEntry>(), Array.Empty<ChatActionButtonView>());
+
+        internal ChatActionButtonRegistrySnapshot(ChatActionButtonEntry[] entries, ChatActionButtonView[] views)
+        {
+            Entries = entries;
+            Views = views;
+        }
+
+        internal ChatActionButtonEntry[] Entries { get; }
+        internal ChatActionButtonView[] Views { get; }
+    }
 }
 
 /// <summary>Concrete Terraria service grouping assembled by the host.</summary>

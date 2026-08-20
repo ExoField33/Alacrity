@@ -32,23 +32,38 @@ internal static partial class PermanentPatchPlan
         "IsDrawOrchestrationOptimizationEnabled",
         "ShouldDrawPaladinShieldIcon",
         "TryDrawLaserRulerPresentation",
+        "TryBeginRainPresentation",
+        "TryQueueRainPresentation",
+        "EndRainPresentation",
+        "TryRunLightingParallel",
         "TryDrawStaticTileChunk",
         "InvalidateStaticTileChunks",
         "ShouldDrawWorldPlayer",
         "ShouldDrawWorldItem",
         "ShouldDrawWorldParticle",
-        "IsBetterChatActive",
-        "ProcessPlayerChatInput",
+        "TryProcessNativeTextInput",
+        "FormatNativeTextInputDisplay",
+        "GetNativeTextInputCaret",
+        "DrawNativePlayerChatSelection",
+        "DrawNativeTextBoxSelection",
+        "ResetNativeTextInput",
         "ShouldHandleChatInputAction",
         "TryHandlePluginChatCommand",
         "RecordSubmittedChatInput",
+        "TryDeferOutgoingChatMessage",
+        "HasReadyOutgoingChatMessage",
+        "DrawChatActionStrip",
         "BootstrapPluginRuntime",
         "FormatPlayerChatText",
         "HandleChatSnippetHover",
         "HandleChatSnippetClick",
         "GetChatSnippetVisibleColor",
         "CopyChatSnippetContext",
-        "DecorateChatMessage",
+        "DecorateStoredChatMessage",
+        "PrepareStoredChatMessageText",
+        "BeginStoredChatMessageDecorationForContainer",
+        "EndStoredChatMessageDecoration",
+        "RefreshStoredChatMessagePresentations",
         "ShouldDisplayNetworkChatMessage",
         "ShouldDisplayLocalChatMessage"
     };
@@ -78,8 +93,10 @@ internal static partial class PermanentPatchPlan
     internal static void ApplyPermanentInputAndKeybinds(ModuleDefinition module, string sourceExecutablePath)
     {
         var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
+        var playerType = CecilPatchPrimitives.RequireType(module, "Terraria.Player");
         PatchPluginInput(
             mainType,
+            playerType,
             ImportRuntimeMethod(module, sourceExecutablePath, "HandleInput", "System.Boolean"),
             ImportRuntimeMethod(module, sourceExecutablePath, "UpdatePluginKeybinds", "System.Void"));
         PatchPluginKeybindStateShape(module, ImportRuntimeMethod(module, sourceExecutablePath, "EnsurePluginKeybindStateShape", "System.Void"));
@@ -167,6 +184,30 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "TryDrawLaserRulerPresentation", "System.Boolean"));
     }
 
+    internal static void ApplyPermanentRainPresentation(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchRainPresentation(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryBeginRainPresentation", "System.Boolean", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryQueueRainPresentation", "System.Boolean", "Microsoft.Xna.Framework.Graphics.Texture2D", "Microsoft.Xna.Framework.Vector2", "System.Nullable`1<Microsoft.Xna.Framework.Rectangle>", "Microsoft.Xna.Framework.Color", "System.Single", "Microsoft.Xna.Framework.Vector2", "System.Single", "Microsoft.Xna.Framework.Graphics.SpriteEffects", "System.Single"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "EndRainPresentation", "System.Void"));
+    }
+
+    internal static void ApplyPermanentLightingParallelism(ModuleDefinition module, string sourceExecutablePath)
+    {
+        PatchLightingParallelism(
+            module,
+            ImportRuntimeMethod(
+                module,
+                sourceExecutablePath,
+                "TryRunLightingParallel",
+                "System.Boolean",
+                "System.Int32",
+                "System.Int32",
+                "System.Delegate",
+                "System.Object"));
+    }
+
     internal static void ApplyPermanentStaticTileChunkPresentation(ModuleDefinition module, string sourceExecutablePath)
     {
         PatchStaticTileChunkPresentation(
@@ -186,23 +227,39 @@ internal static partial class PermanentPatchPlan
     {
         var mainType = CecilPatchPrimitives.RequireType(module, "Terraria.Main");
         var programType = CecilPatchPrimitives.RequireType(module, "Terraria.Program");
-        PatchBetterChatInput(
+        PatchNativeTextInput(
             mainType,
-            ImportRuntimeMethod(module, sourceExecutablePath, "IsBetterChatActive", "System.Boolean"),
-            ImportRuntimeMethod(module, sourceExecutablePath, "ProcessPlayerChatInput", "System.String", "System.String", "System.Boolean"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryProcessNativeTextInput", "System.Boolean", "System.String", "System.Boolean", "System.String&"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "ResetNativeTextInput", "System.Void"));
+        PatchNativeMenuTextPresentation(
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "FormatNativeTextInputDisplay", "System.String", "System.String"));
+        PatchNativeTextInputCaret(
+            module,
+            ImportRuntimeMethod(module, sourceExecutablePath, "GetNativeTextInputCaret", "System.Int32", "System.String"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawNativeTextBoxSelection", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch", "System.String", "Microsoft.Xna.Framework.Vector2", "System.Object", "System.Single"));
+        PatchChatInputActionOwnership(
+            mainType,
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldHandleChatInputAction", "System.Boolean", "System.String"));
         PatchPluginChatCommands(
             mainType,
             ImportRuntimeMethod(module, sourceExecutablePath, "TryHandlePluginChatCommand", "System.Boolean", "System.String"),
-            ImportRuntimeMethod(module, sourceExecutablePath, "RecordSubmittedChatInput", "System.Void", "System.String"));
+            ImportRuntimeMethod(module, sourceExecutablePath, "RecordSubmittedChatInput", "System.Void", "System.String"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "TryDeferOutgoingChatMessage", "System.Boolean", "System.String"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "HasReadyOutgoingChatMessage", "System.Boolean"));
         PatchBetterChatStartup(programType, ImportRuntimeMethod(module, sourceExecutablePath, "BootstrapPluginRuntime", "System.Void"));
-        PatchBetterChatDraw(mainType, ImportRuntimeMethod(module, sourceExecutablePath, "FormatPlayerChatText", "System.String", "System.String"));
+        PatchBetterChatDraw(
+            mainType,
+            ImportRuntimeMethod(module, sourceExecutablePath, "FormatPlayerChatText", "System.String", "System.String"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawNativePlayerChatSelection", "System.Void", "Microsoft.Xna.Framework.Graphics.SpriteBatch", "System.String"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "DrawChatActionStrip", "System.Void"));
     }
 
     internal static void ApplyPermanentChatDisplayAndInteraction(ModuleDefinition module, string sourceExecutablePath)
     {
         var snippets = CecilPatchPrimitives.RequireType(module, "Terraria.UI.Chat.TextSnippet");
         var chatManager = CecilPatchPrimitives.RequireType(module, "Terraria.UI.Chat.ChatManager");
+        var chatContainer = CecilPatchPrimitives.RequireType(module, "Terraria.UI.Chat.ChatMessageContainer");
         PatchBetterChatSnippet(
             snippets,
             chatManager,
@@ -210,7 +267,15 @@ internal static partial class PermanentPatchPlan
             ImportRuntimeMethod(module, sourceExecutablePath, "HandleChatSnippetClick", "System.Boolean", "System.Object"),
             ImportRuntimeMethod(module, sourceExecutablePath, "GetChatSnippetVisibleColor", "Microsoft.Xna.Framework.Color", "System.Object", "Microsoft.Xna.Framework.Color"),
             ImportRuntimeMethod(module, sourceExecutablePath, "CopyChatSnippetContext", "System.Void", "System.Object", "System.Object"));
-        PatchBetterChatParse(chatManager, ImportRuntimeMethod(module, sourceExecutablePath, "DecorateChatMessage", "System.Object", "System.Object", "Microsoft.Xna.Framework.Color", "System.String"));
+        PatchStoredChatMessageDecoration(
+            chatContainer,
+            ImportRuntimeMethod(module, sourceExecutablePath, "BeginStoredChatMessageDecorationForContainer", "System.Void", "System.Object"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "PrepareStoredChatMessageText", "System.String", "System.String", "System.Object"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "EndStoredChatMessageDecoration", "System.Void"));
+        PatchStoredChatMessagePresentationRefresh(
+            CecilPatchPrimitives.RequireType(module, "Terraria.GameContent.UI.Chat.RemadeChatMonitor"),
+            ImportRuntimeMethod(module, sourceExecutablePath, "RefreshStoredChatMessagePresentations", "System.Void"));
+        PatchBetterChatParse(chatManager, ImportRuntimeMethod(module, sourceExecutablePath, "DecorateStoredChatMessage", "System.Object", "System.Object", "Microsoft.Xna.Framework.Color", "System.String"));
         PatchBetterChatVisibility(
             module,
             ImportRuntimeMethod(module, sourceExecutablePath, "ShouldDisplayNetworkChatMessage", "System.Boolean", "System.Byte"),

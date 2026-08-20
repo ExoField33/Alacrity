@@ -18,6 +18,7 @@
     <ProjectReference Include="..\Alacrity.OffScreenCulling\Alacrity.OffScreenCulling.csproj" />
     <ProjectReference Include="..\Alacrity.Kinesin\Alacrity.Kinesin.csproj" />
     <ProjectReference Include="..\Alacrity.RemovePaladinShieldIcon\Alacrity.RemovePaladinShieldIcon.csproj" />
+    <ProjectReference Include="..\Alacrity.ChatTranslation\Alacrity.ChatTranslation.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Alacrity.TerrariaIntegration\Bridge\BridgeReflectionResolver.cs" Link="BridgeReflectionResolver.cs" />

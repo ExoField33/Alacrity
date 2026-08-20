@@ -70,6 +70,7 @@ internal sealed class TerrariaClientRuntime : ITerrariaClientRuntime
         var renderCulling = new PluginRenderCullingHost();
         var renderingOptimizations = new PluginRenderingOptimizationHost();
         var presentation = new PluginPresentationSuppressionHost();
+        chat.MessagePresentationUpdated += TerrariaChatRuntime.QueuePresentationRefresh;
         var contexts = new PluginHostContextFactory(
             root,
             serviceHub,

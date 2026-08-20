@@ -2,6 +2,7 @@ using System;
 using Alacrity.Core;
 using Alacrity.PluginSdk;
 using Microsoft.Xna.Framework;
+using Terraria;
 
 namespace AlacrityTerraria.Chat;
 
@@ -91,6 +92,9 @@ internal sealed class TerrariaPluginChatAdapter
         try
         {
             ensureRuntime();
+            // The generic action menu owns wheel input while its chooser is open. Do this before
+            // an editor can apply BetterChat's scroll action, because the menu is drawn later.
+            TerrariaChatActionStrip.TryConsumeScrollWheel(chat);
             return chat.HasInputEditors
                 ? TerrariaChatRuntime.Process(chat, activeEditorInteraction(), text, allowMultiLine)
                 : text;
@@ -102,19 +106,111 @@ internal sealed class TerrariaPluginChatAdapter
         }
     }
 
+    internal bool TryProcessActionStripInput()
+    {
+        try
+        {
+            ensureRuntime();
+            if (TerrariaChatActionStrip.TryConsumeScrollWheel(chat))
+            {
+                return true;
+            }
+
+            return TerrariaChatActionStrip.TryProcessSearchInput(Main.inputText, Main.oldInputText);
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat action-menu input", exception);
+            return false;
+        }
+    }
+
+    internal bool TryApplyInputAction(
+        string text,
+        int caret,
+        int selectionAnchor,
+        string actionId,
+        bool control,
+        bool shift,
+        int scrollLines,
+        out string resultText,
+        out int resultCaret,
+        out int resultSelectionAnchor,
+        out int appliedScrollLines)
+    {
+        text = text ?? string.Empty;
+        resultText = text;
+        resultCaret = Math.Max(0, Math.Min(caret, text.Length));
+        resultSelectionAnchor = selectionAnchor < 0 ? -1 : Math.Max(0, Math.Min(selectionAnchor, text.Length));
+        appliedScrollLines = 0;
+        if (string.IsNullOrWhiteSpace(actionId))
+        {
+            return false;
+        }
+
+        try
+        {
+            ensureRuntime();
+            if (!chat.HasInputEditors)
+            {
+                return false;
+            }
+
+            var snapshot = new ChatInputSnapshot(text, resultCaret, resultSelectionAnchor);
+            ChatInputEditResult result = chat.Edit(snapshot, new ChatInputAction(actionId, control, shift, null, scrollLines));
+            if (!result.Handled)
+            {
+                return false;
+            }
+
+            resultText = result.Text;
+            resultCaret = result.Caret;
+            resultSelectionAnchor = result.SelectionAnchor;
+            int boundedScrollLines = Math.Max(-TerrariaChatRuntime.MaximumChatScrollLinesPerAction, Math.Min(TerrariaChatRuntime.MaximumChatScrollLinesPerAction, result.ChatScrollLines));
+            if (boundedScrollLines != 0)
+            {
+                Main.chatMonitor.Offset(boundedScrollLines);
+                appliedScrollLines = boundedScrollLines;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat extension normalized input action", exception);
+            return false;
+        }
+    }
+
+    internal bool TryHandleActionStripEscape()
+    {
+        try
+        {
+            ensureRuntime();
+            return TerrariaChatActionStrip.TryHandleEscape();
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat action-menu escape", exception);
+            return false;
+        }
+    }
+
     internal string FormatInputForDraw(string text)
     {
         try { return TerrariaChatRuntime.FormatForDraw(HasInputEditors(), text); }
         catch (Exception exception) { reportFailure("Chat extension draw text", exception); return text; }
     }
 
-    internal object Decorate(object snippets, Color baseColor, string originalMessage)
+    /// <summary>Decorates a stored chat-monitor message. Editable input and unrelated UI text
+    /// never enter this path.</summary>
+    internal object DecorateStoredMessage(object snippets, Color baseColor, string originalMessage)
     {
         try
         {
             ensureRuntime();
             return chat.HasMessageDecorators
-                ? TerrariaChatRuntime.Decorate(chat, snippets, baseColor, originalMessage)
+                ? TerrariaChatRuntime.DecorateStoredMessage(chat, snippets, baseColor, originalMessage)
                 : snippets;
         }
         catch (Exception exception)
@@ -122,6 +218,39 @@ internal sealed class TerrariaPluginChatAdapter
             reportFailure("Chat extension message decoration", exception);
             return snippets;
         }
+    }
+
+    /// <summary>Applies a reusable message-level presentation before Terraria performs its
+    /// native word wrapping. This avoids treating each wrapped display fragment as a message.</summary>
+    internal string PrepareStoredMessageText(object messageContainer, string originalMessage)
+    {
+        try
+        {
+            ensureRuntime();
+            return chat.HasMessageDecorators
+                ? TerrariaChatRuntime.PrepareStoredMessageText(chat, messageContainer, originalMessage)
+                : originalMessage ?? string.Empty;
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat extension stored-message preparation", exception);
+            return originalMessage ?? string.Empty;
+        }
+    }
+
+    internal void BeginStoredMessageDecoration(object messageContainer)
+    {
+        TerrariaChatRuntime.BeginStoredMessageDecoration(messageContainer);
+    }
+
+    internal void EndStoredMessageDecoration()
+    {
+        TerrariaChatRuntime.EndStoredMessageDecoration();
+    }
+
+    internal void RefreshStoredMessagePresentations()
+    {
+        TerrariaChatRuntime.RefreshQueuedMessagePresentations();
     }
 
     internal bool ShouldDisplayNetworkMessage(byte messageAuthor)
@@ -169,7 +298,7 @@ internal sealed class TerrariaPluginChatAdapter
         try
         {
             ensureRuntime();
-            return chat.HasLinkHandlers && TerrariaChatRuntime.Click(chat, snippet);
+            return (chat.HasLinkHandlers || chat.HasMessageActions) && TerrariaChatRuntime.Click(chat, snippet);
         }
         catch (Exception exception)
         {
@@ -180,7 +309,7 @@ internal sealed class TerrariaPluginChatAdapter
 
     internal Color GetVisibleColor(object snippet, Color color)
     {
-        try { return TerrariaChatRuntime.VisibleColor(snippet, color); }
+        try { return TerrariaChatRuntime.VisibleColor(snippet, color, chat); }
         catch (Exception exception) { reportFailure("Chat extension hover color", exception); return color; }
     }
 
@@ -188,5 +317,78 @@ internal sealed class TerrariaPluginChatAdapter
     {
         try { TerrariaChatRuntime.CopyContext(source, copy); }
         catch (Exception exception) { reportFailure("Chat extension snippet copy", exception); }
+    }
+
+    internal bool TryDeferOutgoingMessage(string text)
+    {
+        try
+        {
+            ensureRuntime();
+            return chat.TryDeferOutgoingMessage(text);
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat outgoing transform", exception);
+            return false;
+        }
+    }
+
+    internal bool TryTakeReadyOutgoingMessage(out string text)
+    {
+        try
+        {
+            ensureRuntime();
+            return chat.TryTakeReadyOutgoingMessage(out text);
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat outgoing transform completion", exception);
+            text = string.Empty;
+            return false;
+        }
+    }
+
+    /// <summary>Stages a completed scoped transform before Terraria processes player chat this
+    /// update. The normal native send path still owns packet creation and submission.</summary>
+    internal void QueueReadyOutgoingMessageForNativeSubmit()
+    {
+        if (!Main.drawingPlayerChat)
+        {
+            return;
+        }
+
+        try
+        {
+            ensureRuntime();
+            if (chat.TryTakeReadyOutgoingMessage(out string text))
+            {
+                Main.chatText = text;
+                Main.inputTextEnter = true;
+                Main.chatRelease = true;
+                TerrariaChatRuntime.RequestReadyOutgoingSubmission();
+            }
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat outgoing transform handoff", exception);
+        }
+    }
+
+    internal void DrawActionStrip()
+    {
+        try
+        {
+            ensureRuntime();
+            TerrariaChatActionStrip.Draw(chat);
+        }
+        catch (Exception exception)
+        {
+            reportFailure("Chat action strip", exception);
+        }
+    }
+
+    internal void ResetActionStrip()
+    {
+        TerrariaChatActionStrip.Reset();
     }
 }

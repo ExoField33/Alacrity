@@ -15,6 +15,8 @@
     <Reference Include="Microsoft.Xna.Framework.Game"><HintPath>$(AlacrityXnaReferenceDirectory)\Microsoft.Xna.Framework.Game\v4.0_4.0.0.0__842cf8be1de50553\Microsoft.Xna.Framework.Game.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Input\NativeTextEditState.cs" />
+    <Compile Include="Input\PluginUiRuntime.NativeTextInput.cs" />
     <Compile Include="Bridge\PluginUiRuntime.RuntimeForwarding.cs" />
     <Compile Include="Bridge\PluginUiRuntimeBridgeState.cs" />
     <Compile Include="Bridge\ClientManifestIntegrity.cs" />

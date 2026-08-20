@@ -7,7 +7,7 @@ namespace Alacrity.Core;
 /// <summary>Concrete host context assembled from verified package metadata and scope-owned services.</summary>
 public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWorkContext, IActivationCallbackAdmissionContext
 {
-    internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginDispatcher dispatcher, IPluginScheduler scheduler, IPluginNotificationService notifications, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginOverlayService overlays, IPluginHudService hud, IPluginUserInteractionService userInteraction, ITerrariaServices terraria, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
+    internal PluginHostContext(PluginManifest manifest, IPluginLogger logger, IPluginResourceScope resources, IPluginDispatcher dispatcher, IPluginScheduler scheduler, IPluginNotificationService notifications, IPluginSettings settings, IPluginStorage storage, IPluginEventService events, IPluginCommandService commands, IPluginKeybindService keybinds, IPluginUiService ui, IPluginOverlayService overlays, IPluginHudService hud, IPluginUserInteractionService userInteraction, IPluginNetworkService network, ITerrariaServices terraria, IPluginServiceRegistry services, IMultiplayerSession multiplayer)
     {
         Manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
         Logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -24,6 +24,7 @@ public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWor
         Overlays = overlays ?? throw new ArgumentNullException(nameof(overlays));
         Hud = hud ?? throw new ArgumentNullException(nameof(hud));
         UserInteraction = userInteraction ?? throw new ArgumentNullException(nameof(userInteraction));
+        Network = network ?? throw new ArgumentNullException(nameof(network));
         Terraria = terraria ?? throw new ArgumentNullException(nameof(terraria));
         Services = services ?? throw new ArgumentNullException(nameof(services));
         Multiplayer = multiplayer ?? throw new ArgumentNullException(nameof(multiplayer));
@@ -43,6 +44,7 @@ public sealed class PluginHostContext : IPluginContext, IActivationBackgroundWor
     public IPluginOverlayService Overlays { get; }
     public IPluginHudService Hud { get; }
     public IPluginUserInteractionService UserInteraction { get; }
+    public IPluginNetworkService Network { get; }
     public ITerrariaServices Terraria { get; }
     public IPluginServiceRegistry Services { get; }
     public IMultiplayerSession Multiplayer { get; }
@@ -74,6 +76,7 @@ public sealed class PluginHostContextFactory
     private readonly PluginHudHost hud;
     private readonly PluginChatHost chat;
     private readonly PluginUserInteractionHost userInteraction;
+    private readonly PluginNetworkHost network;
     private readonly PluginNotificationCenter notifications;
     private readonly PluginDispatcherHost dispatcher;
     private readonly PluginSchedulerHost scheduler;
@@ -83,7 +86,7 @@ public sealed class PluginHostContextFactory
     private readonly PluginPresentationSuppressionHost presentation;
     private readonly Func<PluginManifest, IPluginResourceScope, IPluginChatService, ITerrariaServices>? terrariaServicesFactory;
 
-    public PluginHostContextFactory(string alacrityRoot, PluginServiceHub services, PluginExtensionHost extensions, PluginCommandHost commands, PluginOverlayHost? overlays = null, PluginChatHost? chat = null, PluginUserInteractionHost? userInteraction = null, PluginNotificationCenter? notifications = null, Func<PluginManifest, IPluginResourceScope, IPluginChatService, ITerrariaServices>? terrariaServicesFactory = null, PluginDispatcherHost? dispatcher = null, PluginVisualEffectsHost? visualEffects = null, PluginHudHost? hud = null, PluginSchedulerHost? scheduler = null, PluginRenderCullingHost? renderCulling = null, PluginRenderingOptimizationHost? renderingOptimizations = null, PluginPresentationSuppressionHost? presentation = null)
+    public PluginHostContextFactory(string alacrityRoot, PluginServiceHub services, PluginExtensionHost extensions, PluginCommandHost commands, PluginOverlayHost? overlays = null, PluginChatHost? chat = null, PluginUserInteractionHost? userInteraction = null, PluginNotificationCenter? notifications = null, Func<PluginManifest, IPluginResourceScope, IPluginChatService, ITerrariaServices>? terrariaServicesFactory = null, PluginDispatcherHost? dispatcher = null, PluginVisualEffectsHost? visualEffects = null, PluginHudHost? hud = null, PluginSchedulerHost? scheduler = null, PluginRenderCullingHost? renderCulling = null, PluginRenderingOptimizationHost? renderingOptimizations = null, PluginPresentationSuppressionHost? presentation = null, PluginNetworkHost? network = null)
     {
         if (string.IsNullOrWhiteSpace(alacrityRoot)) throw new ArgumentException("An Alacrity root is required.", nameof(alacrityRoot));
         this.alacrityRoot = alacrityRoot;
@@ -93,6 +96,7 @@ public sealed class PluginHostContextFactory
         this.overlays = overlays ?? new PluginOverlayHost();
         this.chat = chat ?? new PluginChatHost();
         this.userInteraction = userInteraction ?? new PluginUserInteractionHost(UnsupportedPluginUserInteractionBackend.Instance);
+        this.network = network ?? new PluginNetworkHost();
         this.notifications = notifications ?? new PluginNotificationCenter();
         this.dispatcher = dispatcher ?? new PluginDispatcherHost();
         this.scheduler = scheduler ?? new PluginSchedulerHost();
@@ -112,14 +116,16 @@ public sealed class PluginHostContextFactory
         var resources = new PluginResourceScope();
         var extensionServices = extensions.CreateServices(manifest, resources, logger);
         IPluginUserInteractionService scopedUserInteraction = userInteraction.CreateService(manifest, resources);
-        IPluginChatService chatService = chat.CreateService(manifest, resources, scopedUserInteraction);
+        IPluginNetworkService scopedNetwork = network.CreateService(manifest, resources, logger);
+        IPluginDispatcher scopedDispatcher = dispatcher.CreateService(manifest, resources, logger);
+        IPluginScheduler scopedScheduler = scheduler.CreateService(manifest, resources, scopedDispatcher, logger);
+        IPluginChatService chatService = chat.CreateService(manifest, resources, scopedUserInteraction, scopedScheduler, logger);
         ITerrariaServices terraria = terrariaServicesFactory == null
             ? new PluginTerrariaServices(chatService, null, visualEffects.CreateService(manifest, resources), renderCulling: renderCulling.CreateService(manifest, resources), renderingOptimizations: renderingOptimizations.CreateService(manifest, resources), presentation: presentation.CreateService(manifest, resources))
             : terrariaServicesFactory(manifest, resources, chatService) ?? throw new InvalidOperationException("The Terraria service factory returned null.");
-        IPluginDispatcher scopedDispatcher = dispatcher.CreateService(manifest, resources, logger);
-        return new PluginHostContext(manifest, logger, resources, scopedDispatcher, scheduler.CreateService(manifest, resources, scopedDispatcher, logger), notifications.CreateService(manifest, resources),
+        return new PluginHostContext(manifest, logger, resources, scopedDispatcher, scopedScheduler, notifications.CreateService(manifest, resources),
             new PluginSettingsStore(alacrityRoot, manifest.Id, resources), new PluginDataStore(alacrityRoot, manifest.Id, resources),
             extensionServices.Events, commands.CreateService(manifest, resources, logger), extensionServices.Keybinds,
-            extensionServices.Ui, overlays.CreateService(manifest, resources, logger), hud.CreateService(manifest, resources, logger), scopedUserInteraction, terraria, services.CreateRegistry(manifest, resources), multiplayer);
+            extensionServices.Ui, overlays.CreateService(manifest, resources, logger), hud.CreateService(manifest, resources, logger), scopedUserInteraction, scopedNetwork, terraria, services.CreateRegistry(manifest, resources), multiplayer);
     }
 }

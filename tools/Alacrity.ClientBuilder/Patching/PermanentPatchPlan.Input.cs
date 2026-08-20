@@ -20,7 +20,7 @@ internal static partial class PermanentPatchPlan
             il.Create(OpCodes.Call, appendPluginKeybindControls));
     }
 
-    private static void PatchPluginInput(TypeDefinition mainType, MethodReference handleInput, MethodReference updatePluginKeybinds)
+    private static void PatchPluginInput(TypeDefinition mainType, TypeDefinition playerType, MethodReference handleInput, MethodReference updatePluginKeybinds)
     {
         var method = mainType.Methods.Single(m => m.Name == "DoUpdate_HandleInput");
         var il = method.Body.GetILProcessor();
@@ -33,6 +33,32 @@ internal static partial class PermanentPatchPlan
         // leaves Terraria's original input path untouched otherwise.
         il.InsertBefore(ret, il.Create(OpCodes.Call, handleInput));
         il.InsertBefore(ret, il.Create(OpCodes.Brtrue, ret));
+
+        PatchIngameOptionsCloseInputGuard(playerType, handleInput);
+    }
+
+    private static void PatchIngameOptionsCloseInputGuard(TypeDefinition playerType, MethodReference handleInput)
+    {
+        var toggleInventory = playerType.Methods.SingleOrDefault(method =>
+            method.Name == "ToggleInv" &&
+            !method.IsStatic &&
+            method.ReturnType.FullName == "System.Void" &&
+            method.Parameters.Count == 0)
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 Player.ToggleInv signature did not match the verified in-game options input guard.");
+        var close = toggleInventory.Body.Instructions.SingleOrDefault(instruction =>
+            instruction.OpCode == OpCodes.Call &&
+            instruction.Operand is MethodReference target &&
+            target.FullName == "System.Void Terraria.IngameOptions::Close()")
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 Player.ToggleInv did not contain the verified IngameOptions.Close call.");
+        var continuation = close.Next
+            ?? throw new InvalidOperationException("Terraria 1.4.5.6 Player.ToggleInv has no continuation after IngameOptions.Close.");
+        var il = toggleInventory.Body.GetILProcessor();
+
+        // HandleInput records an Alacrity-owned Escape at the post-input boundary. ToggleInv is
+        // where Terraria otherwise closes the entire options window, so bypass just this call.
+        il.InsertBefore(close, il.Create(OpCodes.Call, handleInput));
+        il.InsertBefore(close, il.Create(OpCodes.Brtrue, close));
+        il.InsertBefore(close, il.Create(OpCodes.Br, continuation));
     }
 
     private static void PatchPluginKeybindStateShape(ModuleDefinition module, MethodReference ensurePluginKeybindStateShape)

@@ -28,6 +28,7 @@
     <ProjectReference Include="..\Alacrity.OffScreenCulling\Alacrity.OffScreenCulling.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Alacrity.Kinesin\Alacrity.Kinesin.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Alacrity.RemovePaladinShieldIcon\Alacrity.RemovePaladinShieldIcon.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Alacrity.ChatTranslation\Alacrity.ChatTranslation.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Query project target outputs instead of reconstructing target-framework output paths. -->
@@ -74,6 +75,9 @@
     <MSBuild Projects="..\Alacrity.RemovePaladinShieldIcon\Alacrity.RemovePaladinShieldIcon.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
       <Output TaskParameter="TargetOutputs" PropertyName="_RemovePaladinShieldIconOutput" />
     </MSBuild>
+    <MSBuild Projects="..\Alacrity.ChatTranslation\Alacrity.ChatTranslation.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" PropertyName="_ChatTranslationOutput" />
+    </MSBuild>
 
     <ItemGroup>
       <_RuntimeAssembly Include="$(_BridgeOutput);$(_FacadeOutput);$(_BootstrapOutput);$(_SdkOutput);$(_CoreOutput);$(_AppOutput)" />
@@ -104,6 +108,9 @@
       <_PluginPackage Include="$(_RemovePaladinShieldIconOutput)">
         <PluginId>alacrity.remove-paladin-shield-icon</PluginId>
       </_PluginPackage>
+      <_PluginPackage Include="$(_ChatTranslationOutput)">
+        <PluginId>alacrity.chat-translation</PluginId>
+      </_PluginPackage>
       <_PluginManifest Include="..\Alacrity.BetterChat\plugin.json">
         <PluginId>alacrity.better-chat</PluginId>
       </_PluginManifest>
@@ -128,6 +135,12 @@
       <_PluginManifest Include="..\Alacrity.RemovePaladinShieldIcon\plugin.json">
         <PluginId>alacrity.remove-paladin-shield-icon</PluginId>
       </_PluginManifest>
+      <_PluginManifest Include="..\Alacrity.ChatTranslation\plugin.json">
+        <PluginId>alacrity.chat-translation</PluginId>
+      </_PluginManifest>
+      <_PluginAsset Include="..\..\assets\translate-icon.xnb">
+        <RelativePath>plugins\alacrity.chat-translation\assets\translate-icon.xnb</RelativePath>
+      </_PluginAsset>
       <_RuntimeFile Include="@(_RuntimeAssembly)">
         <RelativePath>%(_RuntimeAssembly.Filename)%(_RuntimeAssembly.Extension)</RelativePath>
       </_RuntimeFile>
@@ -140,11 +153,12 @@
       <_RuntimeFile Include="@(_PluginManifest)">
         <RelativePath>plugins\%(_PluginManifest.PluginId)\plugin.json</RelativePath>
       </_RuntimeFile>
+      <_RuntimeFile Include="@(_PluginAsset)" />
       <_RuntimeFile Include="@(_RuntimeMetadata)">
         <RelativePath>VERSION</RelativePath>
       </_RuntimeFile>
     </ItemGroup>
-    <Error Condition="'@(_RuntimeAssembly)' == '' Or !Exists('$(_BridgeOutput)') Or !Exists('$(_FacadeOutput)') Or !Exists('$(_BootstrapOutput)') Or !Exists('$(_SdkOutput)') Or !Exists('$(_CoreOutput)') Or !Exists('$(_AppOutput)') Or !Exists('$(MSBuildThisFileDirectory)..\..\VERSION')" Text="Alacrity runtime staging requires every managed assembly and the current VERSION file from this build." />
+    <Error Condition="'@(_RuntimeAssembly)' == '' Or !Exists('$(_BridgeOutput)') Or !Exists('$(_FacadeOutput)') Or !Exists('$(_BootstrapOutput)') Or !Exists('$(_SdkOutput)') Or !Exists('$(_CoreOutput)') Or !Exists('$(_AppOutput)') Or !Exists('$(_ChatTranslationOutput)') Or !Exists('$(MSBuildThisFileDirectory)..\..\assets\translate-icon.xnb') Or !Exists('$(MSBuildThisFileDirectory)..\..\VERSION')" Text="Alacrity runtime staging requires every managed assembly, packaged asset, and the current VERSION file from this build." />
 
     <!-- A fresh stage cannot silently retain an older runtime component. -->
     <RemoveDir Directories="$(AlacrityRuntimeArtifactDirectory)" />
@@ -155,6 +169,8 @@
     <MakeDir Directories="@(_PluginPackage->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)')" />
     <Copy SourceFiles="@(_PluginPackage)" DestinationFiles="@(_PluginPackage->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)\%(Filename)%(Extension)')" SkipUnchangedFiles="false" />
     <Copy SourceFiles="@(_PluginManifest)" DestinationFiles="@(_PluginManifest->'$(AlacrityRuntimeArtifactDirectory)\plugins\%(PluginId)\plugin.json')" SkipUnchangedFiles="false" />
+    <MakeDir Directories="$(AlacrityRuntimeArtifactDirectory)\plugins\alacrity.chat-translation\assets" />
+    <Copy SourceFiles="@(_PluginAsset)" DestinationFiles="@(_PluginAsset->'$(AlacrityRuntimeArtifactDirectory)\%(RelativePath)')" SkipUnchangedFiles="false" />
     <GetFileHash Files="@(_RuntimeFile)" Algorithm="SHA256">
       <Output TaskParameter="Items" ItemName="_RuntimeHash" />
     </GetFileHash>

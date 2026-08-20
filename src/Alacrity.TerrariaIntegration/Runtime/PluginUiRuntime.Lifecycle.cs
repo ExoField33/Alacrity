@@ -78,6 +78,7 @@ namespace AlacrityTerraria
                     _scheduler.CancelAndDrainBackgroundWorkAsync(TimeSpan.FromSeconds(3)));
             }
             _drawAdapter?.Dispose();
+            _chatAdapter?.ResetActionStrip();
             _ingameBlankTexture?.Dispose();
             _ingameBlankTexture = null;
             _ingameBlankTextureDevice = null;

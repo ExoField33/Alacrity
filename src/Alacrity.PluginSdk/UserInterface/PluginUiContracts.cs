@@ -185,10 +185,29 @@ public enum PluginSettingControlKind
     Toggle,
     /// A control which cycles through declared values.
     Cycle,
+    /// A control which opens a host-owned list of labelled choices.
+    Dropdown,
     /// A bounded numeric slider.
     Slider,
     /// A three-channel color picker with hexadecimal import and export.
     Color
+}
+
+/// <summary>One immutable value and display label supplied to a host-owned dropdown.</summary>
+public sealed class PluginSettingOption
+{
+    /// <summary>Creates a stable dropdown option.</summary>
+    public PluginSettingOption(string value, string displayName)
+    {
+        Value = string.IsNullOrWhiteSpace(value) ? throw new ArgumentException("A dropdown option value is required.", nameof(value)) : value;
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? throw new ArgumentException("A dropdown option display name is required.", nameof(displayName)) : displayName;
+    }
+
+    /// <summary>Persisted or otherwise host-consumed value selected by this option.</summary>
+    public string Value { get; }
+
+    /// <summary>Human-readable label rendered by the host.</summary>
+    public string DisplayName { get; }
 }
 
 /// Terraria-independent RGB color used by plugin settings contracts.
@@ -251,6 +270,13 @@ public sealed class PluginSettingControl
     public Func<string>? GetCycle { get; private set; }
     /// Writes a cycle value.
     public Action<string>? SetCycle { get; private set; }
+    /// Returns the current immutable options for a host-owned dropdown. Hosts query this only while
+    /// the dropdown is open, so plugins may refresh remote-backed choices without a new control registration.
+    public Func<IReadOnlyList<PluginSettingOption>>? GetDropdownOptions { get; private set; }
+    /// Reads the currently selected dropdown value.
+    public Func<string>? GetDropdown { get; private set; }
+    /// Writes a declared dropdown value.
+    public Action<string>? SetDropdown { get; private set; }
     /// Inclusive slider minimum.
     public float Minimum { get; private set; }
     /// Inclusive slider maximum.
@@ -294,6 +320,60 @@ public sealed class PluginSettingControl
     {
         if (setting == null) throw new ArgumentNullException(nameof(setting));
         return Cycle(id, displayName, values, () => setting.Value, value => setting.Value = value);
+    }
+
+    /// <summary>Creates a host-owned dropdown. It remains activation-scoped through the retained
+    /// settings registration; choosing an option never gives a plugin raw UI or input objects.</summary>
+    public static PluginSettingControl Dropdown(string id, string displayName, IReadOnlyList<PluginSettingOption> options, Func<string> getValue, Action<string> setValue)
+    {
+        if (options == null || options.Count == 0)
+        {
+            throw new ArgumentException("A dropdown needs at least one option.", nameof(options));
+        }
+
+        var copy = new PluginSettingOption[options.Count];
+        var values = new HashSet<string>(StringComparer.Ordinal);
+        for (int index = 0; index < options.Count; index++)
+        {
+            PluginSettingOption option = options[index] ?? throw new ArgumentException("Dropdown options cannot contain null values.", nameof(options));
+            if (!values.Add(option.Value))
+            {
+                throw new ArgumentException("Dropdown option values must be unique.", nameof(options));
+            }
+
+            copy[index] = option;
+        }
+
+        return Dropdown(id, displayName, () => copy, getValue, setValue);
+    }
+
+    /// <summary>Creates a dropdown whose option provider may publish a refreshed immutable list.
+    /// The provider is called only by a host while the user opens or draws the chooser.</summary>
+    public static PluginSettingControl Dropdown(string id, string displayName, Func<IReadOnlyList<PluginSettingOption>> getOptions, Func<string> getValue, Action<string> setValue)
+    {
+        if (getOptions == null) throw new ArgumentNullException(nameof(getOptions));
+        if (getValue == null) throw new ArgumentNullException(nameof(getValue));
+        if (setValue == null) throw new ArgumentNullException(nameof(setValue));
+        return new PluginSettingControl(id, displayName, PluginSettingControlKind.Dropdown)
+        {
+            GetDropdownOptions = getOptions,
+            GetDropdown = getValue,
+            SetDropdown = setValue
+        };
+    }
+
+    /// <summary>Creates a dropdown directly bound to a host-owned typed string setting.</summary>
+    public static PluginSettingControl Dropdown(string id, string displayName, IReadOnlyList<PluginSettingOption> options, IPluginSetting<string> setting)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Dropdown(id, displayName, options, () => setting.Value, value => setting.Value = value);
+    }
+
+    /// <summary>Creates a dynamic dropdown directly bound to a host-owned typed string setting.</summary>
+    public static PluginSettingControl Dropdown(string id, string displayName, Func<IReadOnlyList<PluginSettingOption>> getOptions, IPluginSetting<string> setting)
+    {
+        if (setting == null) throw new ArgumentNullException(nameof(setting));
+        return Dropdown(id, displayName, getOptions, () => setting.Value, value => setting.Value = value);
     }
 
     /// Creates a bounded Terraria-style numeric slider.
@@ -389,6 +469,21 @@ public sealed class PluginSettingControl
         {
             EnsureAvailable(isAvailable);
             SetCycle(value);
+        };
+        copy.GetDropdownOptions = GetDropdownOptions == null ? null : () =>
+        {
+            EnsureAvailable(isAvailable);
+            return GetDropdownOptions();
+        };
+        copy.GetDropdown = GetDropdown == null ? null : () =>
+        {
+            EnsureAvailable(isAvailable);
+            return GetDropdown();
+        };
+        copy.SetDropdown = SetDropdown == null ? null : value =>
+        {
+            EnsureAvailable(isAvailable);
+            SetDropdown(value);
         };
         copy.GetSlider = GetSlider == null ? null : () =>
         {

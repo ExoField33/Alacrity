@@ -9,6 +9,7 @@ using Alacrity.Core;
 using Alacrity.PluginSdk;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 using Terraria;
 using Terraria.Audio;
 
@@ -25,6 +26,11 @@ namespace AlacrityTerraria
             Utils.DrawBorderString(spriteBatch, plugin.Name + " Settings", new Vector2(bounds.Center.X, bounds.Y + 16), Color.White, 0.9f, 0.5f, 0f, -1);
             var controls = _extensions.GetSettingsControls(plugin.Id);
             var pages = _extensions.GetSettingsPages(plugin.Id).Where(page => page.IsInteractive).ToArray();
+            if (!string.IsNullOrEmpty(_ingameOpenDropdownControlId) && !ContainsIngameControl(controls, _ingameOpenDropdownControlId))
+            {
+                CloseIngameDropdown(playSound: false);
+            }
+
             if (controls.Count == 0 && pages.Length == 0)
             {
                 Utils.DrawBorderString(spriteBatch, "No plugin settings are available.", new Vector2(bounds.Center.X, bounds.Center.Y), Color.White, 0.7f, 0.5f, 0.5f, -1);
@@ -40,7 +46,7 @@ namespace AlacrityTerraria
             foreach (var page in pages)
             {
                 var hitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
-                bool hovered = !HasIngamePointerCapture && hitArea.Contains(Main.mouseX, Main.mouseY);
+                bool hovered = CanInteractWithIngameSettings && hitArea.Contains(Main.mouseX, Main.mouseY);
                 anySettingHovered |= hovered;
                 if (hovered && _ingameHoveredSettingId != page.Id)
                     SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
@@ -65,10 +71,44 @@ namespace AlacrityTerraria
 
             if (!anySettingHovered)
                 _ingameHoveredSettingId = null;
+
+            DrawIngameDropdown(spriteBatch, bounds, controls, ref anySettingHovered);
         }
 
         private static int DrawIngameTypedControl(SpriteBatch spriteBatch, Rectangle bounds, int y, PluginSettingControl control, ref bool anyHovered)
         {
+            if (control.Kind == PluginSettingControlKind.Dropdown)
+            {
+                var dropdownHitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
+                bool dropdownHover = CanInteractWithIngameSettings && dropdownHitArea.Contains(Main.mouseX, Main.mouseY);
+                anyHovered |= dropdownHover;
+                if (dropdownHover && _ingameHoveredSettingId != control.Id)
+                {
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                }
+
+                if (dropdownHover)
+                {
+                    _ingameHoveredSettingId = control.Id;
+                }
+
+                Utils.DrawBorderString(
+                    spriteBatch,
+                    control.DisplayName + ": " + ReadSettingValue(control) + "  >",
+                    new Vector2(bounds.Center.X, y),
+                    dropdownHover ? new Color(255, 230, 140) : Color.White,
+                    dropdownHover ? 0.8f : 0.7f,
+                    0.5f,
+                    0f,
+                    -1);
+                if (dropdownHover && Main.mouseLeft && Main.mouseLeftRelease)
+                {
+                    OpenIngameDropdown(control);
+                }
+
+                return 30;
+            }
+
             if (control.Kind == PluginSettingControlKind.Color)
             {
                 var swatch = new Rectangle(bounds.X + 18, y - 4, 20, 20);
@@ -76,7 +116,7 @@ namespace AlacrityTerraria
                 Utils.DrawBorderString(spriteBatch, control.DisplayName, new Vector2(bounds.X + 46, y), Color.White, 0.7f, 0f, 0f, -1);
                 var copy = new Rectangle(bounds.Right - 73, y - 5, 25, 22);
                 var paste = new Rectangle(bounds.Right - 42, y - 5, 25, 22);
-                bool allowHover = !HasIngamePointerCapture;
+                bool allowHover = CanInteractWithIngameSettings;
                 bool copyHover = allowHover && copy.Contains(Main.mouseX, Main.mouseY);
                 bool pasteHover = allowHover && paste.Contains(Main.mouseX, Main.mouseY);
                 anyHovered |= copyHover || pasteHover;
@@ -93,7 +133,7 @@ namespace AlacrityTerraria
                 // ID is enough to identify its primary-pointer capture without allocating a key.
                 string captureId = control.Id;
                 bool captured = IsIngamePointerCaptured(captureId);
-                bool hovered = captured || (!HasIngamePointerCapture && bar.Contains(Main.mouseX, Main.mouseY));
+                bool hovered = captured || (CanInteractWithIngameSettings && bar.Contains(Main.mouseX, Main.mouseY));
                 if (!captured && hovered && Main.mouseLeft)
                 {
                     BeginIngamePointerCapture(captureId);
@@ -111,13 +151,459 @@ namespace AlacrityTerraria
                 return 32;
             }
             var hitArea = new Rectangle(bounds.X + 18, y - 9, bounds.Width - 36, 26);
-            bool hover = !HasIngamePointerCapture && hitArea.Contains(Main.mouseX, Main.mouseY);
+            bool hover = CanInteractWithIngameSettings && hitArea.Contains(Main.mouseX, Main.mouseY);
             anyHovered |= hover;
             if (hover && _ingameHoveredSettingId != control.Id) SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
             if (hover) _ingameHoveredSettingId = control.Id;
             Utils.DrawBorderString(spriteBatch, control.DisplayName + ": " + ReadSettingValue(control), new Vector2(bounds.Center.X, y), hover ? new Color(255, 230, 140) : Color.White, hover ? 0.8f : 0.7f, 0.5f, 0f, -1);
             if (hover && Main.mouseLeft && Main.mouseLeftRelease) ActivateSetting(control);
             return 30;
+        }
+
+        private static bool CanInteractWithIngameSettings => !HasIngamePointerCapture && string.IsNullOrEmpty(_ingameOpenDropdownControlId);
+
+        private static bool ContainsIngameControl(IReadOnlyList<PluginSettingControl> controls, string id)
+        {
+            for (int index = 0; index < controls.Count; index++)
+            {
+                if (string.Equals(controls[index].Id, id, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void OpenIngameDropdown(PluginSettingControl control)
+        {
+            try
+            {
+                IReadOnlyList<PluginSettingOption> options = control.GetDropdownOptions();
+                if (options == null || options.Count == 0)
+                {
+                    ShowHoverText("No choices are available for this setting.");
+                    return;
+                }
+
+                _ingameOpenDropdownControlId = control.Id;
+                _ingameDropdownScroll = 0;
+                _ingameDropdownTop = -1;
+                _ingameDropdownSearchText = string.Empty;
+                _ingameDropdownSearchBuffer.Clear();
+                StopIngameDropdownSearchInput();
+                _ingameDropdownFilteredOptions.Clear();
+                _ingameHoveredSettingId = null;
+                SoundEngine.PlaySound(10, -1, -1, 1, 1f, 0f);
+                ConsumeIngamePointer();
+            }
+            catch (Exception exception)
+            {
+                ShowHoverText("Unable to open plugin setting choices: " + exception.Message);
+            }
+        }
+
+        private static void DrawIngameDropdown(SpriteBatch spriteBatch, Rectangle bounds, IReadOnlyList<PluginSettingControl> controls, ref bool anySettingHovered)
+        {
+            string openId = _ingameOpenDropdownControlId;
+            if (string.IsNullOrEmpty(openId))
+            {
+                return;
+            }
+
+            PluginSettingControl control = null;
+            for (int index = 0; index < controls.Count; index++)
+            {
+                if (string.Equals(controls[index].Id, openId, StringComparison.Ordinal))
+                {
+                    control = controls[index];
+                    break;
+                }
+            }
+
+            if (control == null)
+            {
+                CloseIngameDropdown(playSound: false);
+                return;
+            }
+
+            IReadOnlyList<PluginSettingOption> options;
+            string selected;
+            try
+            {
+                options = control.GetDropdownOptions();
+                selected = control.GetDropdown();
+            }
+            catch (Exception exception)
+            {
+                CloseIngameDropdown(playSound: false);
+                ShowHoverText("Unable to read plugin setting choices: " + exception.Message);
+                return;
+            }
+
+            if (options == null || options.Count == 0)
+            {
+                CloseIngameDropdown(playSound: false);
+                return;
+            }
+
+            UpdateIngameDropdownSearchInput();
+            PluginDropdownFilter.Filter(options, _ingameDropdownSearchText, _ingameDropdownFilteredOptions);
+
+            const int rowHeight = 24;
+            const int headerHeight = 26;
+            const int searchHeight = 24;
+            const int maximumRows = 10;
+            int optionCount = _ingameDropdownFilteredOptions.Count;
+            int visibleRows = Math.Min(maximumRows, Math.Max(1, optionCount));
+            int menuHeight = headerHeight + searchHeight + visibleRows * rowHeight + 4;
+            int menuWidth = Math.Min(240, Math.Max(180, bounds.Width - 54));
+            if (_ingameDropdownTop < 0)
+            {
+                _ingameDropdownTop = Math.Max(bounds.Y + 34, bounds.Bottom - menuHeight - 12);
+            }
+
+            // The chooser is initially placed to fit its full option set. Filtering keeps this
+            // anchor so results collapse below the search field instead of jumping upward.
+            var menuBounds = new Rectangle(bounds.X + 24, _ingameDropdownTop, menuWidth, menuHeight);
+            int maximumScroll = Math.Max(0, optionCount - visibleRows);
+            if (menuBounds.Contains(Main.mouseX, Main.mouseY))
+            {
+                int delta = Terraria.GameInput.PlayerInput.ScrollWheelDelta;
+                if (delta == 0)
+                {
+                    delta = Terraria.GameInput.PlayerInput.ScrollWheelDeltaForUI;
+                }
+                if (delta != 0)
+                {
+                    _ingameDropdownScroll = Math.Max(0, Math.Min(maximumScroll, _ingameDropdownScroll - Math.Sign(delta)));
+                    // This modal picker owns the wheel while hovered. It must not also select a
+                    // hotbar item or leak into the underlying settings pane later in the frame.
+                    Terraria.GameInput.PlayerInput.ScrollWheelDelta = 0;
+                    Terraria.GameInput.PlayerInput.ScrollWheelDeltaForUI = 0;
+                }
+
+                anySettingHovered = true;
+                MarkIngameMouseInterface();
+            }
+
+            _ingameDropdownScroll = Math.Max(0, Math.Min(maximumScroll, _ingameDropdownScroll));
+            DrawIngameDropdownScrollbar(spriteBatch, menuBounds, headerHeight + searchHeight, visibleRows, optionCount);
+            var header = new Rectangle(menuBounds.X, menuBounds.Y, menuBounds.Width - 8, headerHeight);
+            bool headerHover = header.Contains(Main.mouseX, Main.mouseY);
+            DrawIngameDropdownHover(spriteBatch, header, headerHover);
+            Utils.DrawBorderString(spriteBatch, "< " + control.DisplayName, new Vector2(header.X + 4, header.Center.Y), Color.White, headerHover ? 0.72f : 0.68f, 0f, 0.5f, -1);
+            if (headerHover && Main.mouseLeft && Main.mouseLeftRelease)
+            {
+                CloseIngameDropdown(playSound: true);
+                ConsumeIngamePointer();
+                return;
+            }
+
+            var search = new Rectangle(menuBounds.X, menuBounds.Y + headerHeight, menuBounds.Width - 8, searchHeight);
+            bool searchHover = search.Contains(Main.mouseX, Main.mouseY);
+            DrawIngameDropdownHover(spriteBatch, search, searchHover || _ingameDropdownSearchFocused);
+            DrawIngameDropdownSearchSelection(spriteBatch, search, 0.7f);
+            string searchText = string.IsNullOrEmpty(_ingameDropdownSearchText) ? "Search languages..." : "Search: " + _ingameDropdownSearchText;
+            Color searchColor = string.IsNullOrEmpty(_ingameDropdownSearchText) ? Color.Gray : Color.White;
+            if (_ingameDropdownSearchFocused && Main.instance != null && Main.instance.textBlinkerState == 1)
+            {
+                searchText = InsertSearchCaret(searchText, _ingameDropdownSearchBuffer.Caret);
+            }
+
+            Utils.DrawBorderString(spriteBatch, searchText, new Vector2(search.X + 4, search.Center.Y), searchColor, searchHover || _ingameDropdownSearchFocused ? 0.7f : 0.66f, 0f, 0.5f, -1);
+            if (searchHover && Main.mouseLeft && Main.mouseLeftRelease)
+            {
+                if (!_ingameDropdownSearchFocused)
+                {
+                    _ingameDropdownSearchFocused = true;
+                    Main.clrInput();
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                }
+
+                ConsumeIngamePointer();
+                return;
+            }
+
+            for (int rowIndex = 0; rowIndex < visibleRows; rowIndex++)
+            {
+                int optionIndex = _ingameDropdownScroll + rowIndex;
+                if (optionIndex >= optionCount)
+                {
+                    break;
+                }
+
+                PluginSettingOption option = _ingameDropdownFilteredOptions[optionIndex];
+                var row = new Rectangle(menuBounds.X, menuBounds.Y + headerHeight + searchHeight + rowIndex * rowHeight, menuBounds.Width - 8, rowHeight);
+                bool hovered = row.Contains(Main.mouseX, Main.mouseY);
+                if (hovered && _ingameHoveredSettingId != "dropdown:" + option.Value)
+                {
+                    SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                }
+
+                if (hovered)
+                {
+                    _ingameHoveredSettingId = "dropdown:" + option.Value;
+                    anySettingHovered = true;
+                }
+
+                bool selectedOption = string.Equals(option.Value, selected, StringComparison.OrdinalIgnoreCase);
+                DrawIngameDropdownHover(spriteBatch, row, hovered);
+                Utils.DrawBorderString(spriteBatch, option.DisplayName, new Vector2(row.X + 4, row.Center.Y), selectedOption ? new Color(191, 219, 255) : Color.White, hovered ? 0.7f : 0.66f, 0f, 0.5f, -1);
+                if (hovered && Main.mouseLeft && Main.mouseLeftRelease)
+                {
+                    try
+                    {
+                        control.SetDropdown(option.Value);
+                        CloseIngameDropdown(playSound: true);
+                        ConsumeIngamePointer();
+                    }
+                    catch (Exception exception)
+                    {
+                        ShowHoverText("Unable to change plugin setting: " + exception.Message);
+                    }
+
+                    return;
+                }
+            }
+
+            if (optionCount == 0)
+            {
+                var empty = new Rectangle(menuBounds.X, menuBounds.Y + headerHeight + searchHeight, menuBounds.Width - 8, rowHeight);
+                Utils.DrawBorderString(spriteBatch, "No matching languages.", new Vector2(empty.X + 4, empty.Center.Y), Color.Gray, 0.66f, 0f, 0.5f, -1);
+            }
+
+            if (!menuBounds.Contains(Main.mouseX, Main.mouseY) && Main.mouseLeft && Main.mouseLeftRelease)
+            {
+                CloseIngameDropdown(playSound: true);
+                ConsumeIngamePointer();
+            }
+        }
+
+        private static void DrawIngameDropdownHover(SpriteBatch spriteBatch, Rectangle bounds, bool highlighted)
+        {
+            if (!highlighted)
+            {
+                return;
+            }
+
+            EnsureIngameBlankTexture(spriteBatch);
+            if (_ingameBlankTexture != null)
+            {
+                spriteBatch.Draw(_ingameBlankTexture, new Rectangle(bounds.X - 2, bounds.Y + 2, bounds.Width + 2, Math.Max(1, bounds.Height - 4)), new Color(116, 154, 236, 52));
+            }
+        }
+
+        private static void DrawIngameDropdownScrollbar(SpriteBatch spriteBatch, Rectangle menuBounds, int contentTop, int visibleRows, int optionCount)
+        {
+            if (optionCount <= visibleRows)
+            {
+                return;
+            }
+
+            EnsureIngameBlankTexture(spriteBatch);
+            if (_ingameBlankTexture == null)
+            {
+                return;
+            }
+
+            int trackHeight = visibleRows * 24 - 4;
+            int trackX = menuBounds.Right - 8;
+            int trackY = menuBounds.Y + contentTop + 2;
+            int thumbHeight = Math.Max(18, trackHeight * visibleRows / optionCount);
+            int maximumScroll = optionCount - visibleRows;
+            int thumbY = trackY + (trackHeight - thumbHeight) * _ingameDropdownScroll / maximumScroll;
+            spriteBatch.Draw(_ingameBlankTexture, new Rectangle(trackX, trackY, 3, trackHeight), new Color(18, 12, 58, 180));
+            spriteBatch.Draw(_ingameBlankTexture, new Rectangle(trackX - 1, thumbY, 5, thumbHeight), new Color(180, 170, 255, 220));
+        }
+
+        private static void UpdateIngameDropdownSearchInput()
+        {
+            if (!_ingameDropdownSearchFocused)
+            {
+                if (!ShouldStartIngameDropdownSearch(Main.inputText, Main.oldInputText))
+                {
+                    return;
+                }
+
+                _ingameDropdownSearchFocused = true;
+            }
+
+            Terraria.GameInput.PlayerInput.WritingText = true;
+            Main.instance?.HandleIME();
+            Main.inputTextEscape = false;
+            Main.inputTextEnter = false;
+            ProcessIngameDropdownSearchKeys();
+            string updated = _ingameDropdownSearchBuffer.Text;
+            if (Main.inputTextEscape)
+            {
+                Main.inputTextEscape = false;
+                StopIngameDropdownSearchInput();
+                return;
+            }
+
+            if (Main.inputTextEnter)
+            {
+                Main.inputTextEnter = false;
+                StopIngameDropdownSearchInput();
+            }
+
+            if (!string.Equals(updated, _ingameDropdownSearchText, StringComparison.Ordinal))
+            {
+                _ingameDropdownSearchText = updated;
+                _ingameDropdownScroll = 0;
+            }
+        }
+
+        private static void ProcessIngameDropdownSearchKeys()
+        {
+            KeyboardState current = Main.inputText;
+            KeyboardState previous = Main.oldInputText;
+            bool control = current.IsKeyDown(Keys.LeftControl) || current.IsKeyDown(Keys.RightControl);
+            bool shift = current.IsKeyDown(Keys.LeftShift) || current.IsKeyDown(Keys.RightShift);
+            if (Pressed(current, previous, Keys.Escape))
+            {
+                Main.inputTextEscape = true;
+            }
+            else if (Pressed(current, previous, Keys.Enter))
+            {
+                Main.inputTextEnter = true;
+            }
+            else if (control && Pressed(current, previous, Keys.A))
+            {
+                _ingameDropdownSearchBuffer.SelectAll();
+            }
+            else if (_ingameDropdownBackspaceRepeat.ShouldRepeat(current, previous, Keys.Back))
+            {
+                _ingameDropdownSearchBuffer.Backspace(control);
+            }
+            else if (_ingameDropdownDeleteRepeat.ShouldRepeat(current, previous, Keys.Delete))
+            {
+                _ingameDropdownSearchBuffer.Delete(control);
+            }
+            else if (_ingameDropdownLeftRepeat.ShouldRepeat(current, previous, Keys.Left))
+            {
+                _ingameDropdownSearchBuffer.MoveLeft(control, shift);
+            }
+            else if (_ingameDropdownRightRepeat.ShouldRepeat(current, previous, Keys.Right))
+            {
+                _ingameDropdownSearchBuffer.MoveRight(control, shift);
+            }
+            else if (Pressed(current, previous, Keys.Home))
+            {
+                _ingameDropdownSearchBuffer.MoveHome(shift);
+            }
+            else if (Pressed(current, previous, Keys.End))
+            {
+                _ingameDropdownSearchBuffer.MoveEnd(shift);
+            }
+            else
+            {
+                int count = Math.Max(0, Math.Min(Main.keyCount, Math.Min(Main.keyInt.Length, Main.keyString.Length)));
+                for (int index = 0; index < count; index++)
+                {
+                    int key = Main.keyInt[index];
+                    string value = Main.keyString[index];
+                    if (key >= 32 && key != 127 && !string.IsNullOrEmpty(value))
+                    {
+                        _ingameDropdownSearchBuffer.Insert(value);
+                    }
+                }
+            }
+
+            Main.keyCount = 0;
+            Main.oldInputText = current;
+            Main.inputText = Keyboard.GetState();
+        }
+
+        private static bool Pressed(KeyboardState current, KeyboardState previous, Keys key)
+        {
+            return current.IsKeyDown(key) && !previous.IsKeyDown(key);
+        }
+
+        private static bool ShouldStartIngameDropdownSearch(KeyboardState current, KeyboardState previous)
+        {
+            if (Pressed(current, previous, Keys.Escape) ||
+                current.IsKeyDown(Keys.Escape) ||
+                previous.IsKeyDown(Keys.Escape) ||
+                Pressed(current, previous, Keys.Enter))
+            {
+                return false;
+            }
+
+            int count = Math.Max(0, Math.Min(Main.keyCount, Main.keyInt.Length));
+            for (int index = 0; index < count; index++)
+            {
+                int key = Main.keyInt[index];
+                if (key >= 32 && key != 127)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string InsertSearchCaret(string display, int caret)
+        {
+            const string prefix = "Search: ";
+            if (!display.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return display + "|";
+            }
+
+            int index = Math.Max(prefix.Length, Math.Min(display.Length, prefix.Length + caret));
+            return display.Insert(index, "|");
+        }
+
+        private static void DrawIngameDropdownSearchSelection(SpriteBatch spriteBatch, Rectangle search, float scale)
+        {
+            if (!_ingameDropdownSearchFocused ||
+                !_ingameDropdownSearchBuffer.TryGetSelection(out int start, out int end))
+            {
+                return;
+            }
+
+            EnsureIngameBlankTexture(spriteBatch);
+            if (_ingameBlankTexture == null)
+            {
+                return;
+            }
+
+            string value = _ingameDropdownSearchBuffer.Text;
+            Vector2 left = Utils.DrawBorderString(spriteBatch, "Search: " + value.Substring(0, start), Vector2.Zero, Color.Transparent, scale);
+            Vector2 right = Utils.DrawBorderString(spriteBatch, "Search: " + value.Substring(0, end), Vector2.Zero, Color.Transparent, scale);
+            int width = Math.Max(1, (int)Math.Ceiling(right.X - left.X));
+            int height = Math.Max(1, (int)Math.Ceiling(Utils.DrawBorderString(spriteBatch, " ", Vector2.Zero, Color.Transparent, scale).Y));
+            var selection = new Rectangle(search.X + 4 + (int)left.X, search.Center.Y - height / 2, width, height);
+            spriteBatch.Draw(_ingameBlankTexture, selection, new Color(96, 142, 218, 150));
+        }
+
+        private static void CloseIngameDropdown(bool playSound)
+        {
+            _ingameOpenDropdownControlId = null;
+            _ingameDropdownScroll = 0;
+            _ingameDropdownTop = -1;
+            _ingameDropdownSearchText = string.Empty;
+            _ingameDropdownSearchBuffer.Clear();
+            _ingameDropdownBackspaceRepeat = default;
+            _ingameDropdownDeleteRepeat = default;
+            _ingameDropdownLeftRepeat = default;
+            _ingameDropdownRightRepeat = default;
+            StopIngameDropdownSearchInput();
+            _ingameDropdownFilteredOptions.Clear();
+            _ingameHoveredSettingId = null;
+            if (playSound)
+            {
+                SoundEngine.PlaySound(11, -1, -1, 1, 1f, 0f);
+            }
+        }
+
+        private static void StopIngameDropdownSearchInput()
+        {
+            _ingameDropdownSearchFocused = false;
+            Terraria.GameInput.PlayerInput.WritingText = false;
+            Main.instance?.HandleIME();
         }
 
         private static void DrawIngameSlider(SpriteBatch spriteBatch, Rectangle bar, float value)
@@ -187,6 +673,7 @@ namespace AlacrityTerraria
                 {
                     case PluginSettingControlKind.Toggle: return control.GetToggle() ? "Enabled" : "Disabled";
                     case PluginSettingControlKind.Cycle: return control.GetCycle();
+                    case PluginSettingControlKind.Dropdown: return control.GetDropdown();
                     case PluginSettingControlKind.Slider:
                         float value = control.GetSlider();
                         return control.FormatSlider == null ? value.ToString("0.##") : control.FormatSlider(value);
@@ -511,6 +998,11 @@ namespace AlacrityTerraria
         private static void ConsumeIngamePointer()
         {
             Main.mouseLeftRelease = false;
+            MarkIngameMouseInterface();
+        }
+
+        private static void MarkIngameMouseInterface()
+        {
             if (Main.myPlayer >= 0 && Main.myPlayer < Main.player.Length && Main.player[Main.myPlayer] != null)
                 Main.player[Main.myPlayer].mouseInterface = true;
         }
@@ -575,6 +1067,13 @@ namespace AlacrityTerraria
                 _ingameBlankTexture = null;
                 _ingameBlankTextureDevice = null;
             }
+        }
+
+        /// <summary>Returns the integration-owned reusable pixel texture for native Alacrity UI surfaces.</summary>
+        internal static Texture2D GetIngameBlankTexture(SpriteBatch spriteBatch)
+        {
+            EnsureIngameBlankTexture(spriteBatch);
+            return _ingameBlankTexture;
         }
 
 

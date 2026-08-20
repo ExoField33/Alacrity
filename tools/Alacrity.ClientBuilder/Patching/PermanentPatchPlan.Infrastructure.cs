@@ -123,6 +123,16 @@ internal static partial class PermanentPatchPlan
         return false;
     }
 
+    private static bool IsStoreLocal(Instruction instruction)
+    {
+        return instruction.OpCode == OpCodes.Stloc ||
+            instruction.OpCode == OpCodes.Stloc_S ||
+            instruction.OpCode == OpCodes.Stloc_0 ||
+            instruction.OpCode == OpCodes.Stloc_1 ||
+            instruction.OpCode == OpCodes.Stloc_2 ||
+            instruction.OpCode == OpCodes.Stloc_3;
+    }
+
     private static bool IsLdlocFor(this Instruction instruction, VariableDefinition variable)
     {
         var index = variable.Index;

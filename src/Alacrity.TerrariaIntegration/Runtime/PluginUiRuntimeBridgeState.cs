@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Alacrity.App.PluginManagement;
+using Alacrity.PluginSdk;
+using AlacrityTerraria.UserInterface;
 using Microsoft.Xna.Framework.Graphics;
 
 namespace AlacrityTerraria.Runtime;
@@ -54,6 +56,35 @@ internal sealed class PluginUiRuntimeBridgeState
     /// button until release so dragging a slider or scrollbar cannot activate Terraria's settings UI.
     /// </summary>
     internal string IngamePointerCaptureId { get; set; }
+
+    /// <summary>Owner-local control whose in-game dropdown currently owns pointer and Escape input.</summary>
+    internal string IngameOpenDropdownControlId { get; set; }
+
+    /// <summary>Scroll offset within the currently open in-game dropdown.</summary>
+    internal int IngameDropdownScroll { get; set; }
+
+    /// <summary>Fixed top edge for the current chooser. Filtering may shorten only its bottom edge.</summary>
+    internal int IngameDropdownTop { get; set; } = -1;
+
+    /// <summary>Current host-owned search text for the in-game dropdown chooser.</summary>
+    internal string IngameDropdownSearchText { get; set; } = string.Empty;
+
+    /// <summary>Cursor-aware host search state for the in-game dropdown chooser.</summary>
+    internal PluginSearchTextBuffer IngameDropdownSearchBuffer { get; } = new PluginSearchTextBuffer();
+
+    internal PluginSearchKeyRepeatState IngameDropdownBackspaceRepeat;
+
+    internal PluginSearchKeyRepeatState IngameDropdownDeleteRepeat;
+
+    internal PluginSearchKeyRepeatState IngameDropdownLeftRepeat;
+
+    internal PluginSearchKeyRepeatState IngameDropdownRightRepeat;
+
+    /// <summary>Whether typed input is currently directed to the in-game dropdown search box.</summary>
+    internal bool IngameDropdownSearchFocused { get; set; }
+
+    /// <summary>Reusable filtered view. It is rebuilt only after a search/input change.</summary>
+    internal List<PluginSettingOption> IngameDropdownFilteredOptions { get; } = new List<PluginSettingOption>(128);
 
     internal uint IconInteractionInputTick { get; set; } = uint.MaxValue;
 

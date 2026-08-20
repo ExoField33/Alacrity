@@ -46,6 +46,8 @@ public enum PluginPermission
     Clipboard = 16,
     /// <summary>May request local network access.</summary>
     LocalNetwork = 32,
+    /// <summary>May send bounded HTTPS requests through the host-approved networking service.</summary>
+    NetworkAccess = 256,
     /// <summary>May request managed plugin-data file access.</summary>
     FileSystem = 64,
     /// <summary>May request host-managed full-file patch registration.</summary>
@@ -106,7 +108,8 @@ public sealed class PluginManifest
         string? changelog = null,
         string? entryAssembly = null,
         string? entryType = null,
-        PluginCompatibilityRequirements? compatibility = null)
+        PluginCompatibilityRequirements? compatibility = null,
+        IEnumerable<string>? networkHosts = null)
     {
         Id = id;
         Name = RequireText(name, nameof(name));
@@ -124,6 +127,7 @@ public sealed class PluginManifest
         EntryAssembly = string.IsNullOrWhiteSpace(entryAssembly) ? null : entryAssembly;
         EntryType = string.IsNullOrWhiteSpace(entryType) ? null : entryType;
         Compatibility = compatibility ?? PluginCompatibilityRequirements.Current;
+        NetworkHosts = CopyNetworkHosts(networkHosts);
     }
 
     /// <summary>Stable plugin identifier.</summary>
@@ -158,6 +162,8 @@ public sealed class PluginManifest
     public string? EntryType { get; }
     /// <summary>SDK, host, and bridge requirements checked before the entry assembly loads.</summary>
     public PluginCompatibilityRequirements Compatibility { get; }
+    /// <summary>HTTPS hosts this plugin may contact through the host-managed network service.</summary>
+    public IReadOnlyList<string> NetworkHosts { get; }
 
     /// <summary>Validates cross-field manifest invariants.</summary>
     public void Validate()
@@ -178,6 +184,9 @@ public sealed class PluginManifest
             throw new InvalidOperationException("EntryAssembly and EntryType must be declared together.");
         if (EntryAssembly != null && (System.IO.Path.IsPathRooted(EntryAssembly) || EntryAssembly.IndexOf("..", StringComparison.Ordinal) >= 0))
             throw new InvalidOperationException("EntryAssembly must be a package-relative path.");
+
+        if (NetworkHosts.Count != 0 && (Capabilities & PluginCapability.Networking) != PluginCapability.Networking)
+            throw new InvalidOperationException("Declared network hosts require the Networking capability.");
     }
 
     private static string RequireText(string value, string parameterName)
@@ -201,5 +210,31 @@ public sealed class PluginManifest
     private static IReadOnlyList<PluginDependency> CopyOptional(IEnumerable<PluginDependency>? values)
     {
         return (values ?? Enumerable.Empty<PluginDependency>()).ToArray();
+    }
+
+    private static IReadOnlyList<string> CopyNetworkHosts(IEnumerable<string>? values)
+    {
+        var source = values ?? Enumerable.Empty<string>();
+        var hosts = new List<string>();
+        foreach (string value in source)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.IndexOf('/') >= 0 || value.IndexOf(':') >= 0 || value.IndexOf(' ') >= 0)
+            {
+                throw new ArgumentException("Network hosts must be bare DNS host names.", nameof(values));
+            }
+
+            string normalized = value.Trim().TrimEnd('.').ToLowerInvariant();
+            if (!Uri.CheckHostName(normalized).Equals(UriHostNameType.Dns))
+            {
+                throw new ArgumentException("Network hosts must be valid DNS host names.", nameof(values));
+            }
+
+            if (!hosts.Contains(normalized, StringComparer.Ordinal))
+            {
+                hosts.Add(normalized);
+            }
+        }
+
+        return hosts.ToArray();
     }
 }

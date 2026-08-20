@@ -16,6 +16,8 @@ public sealed class PluginManagerPresenter
         if (warnings == null) throw new ArgumentNullException(nameof(warnings));
         return runtime.Registry.Records
             .Where(record => record.State != PluginPackageLifecycleState.Uninstalled)
+            .OrderBy(record => record.Manifest.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(record => record.Manifest.Id.Value, StringComparer.Ordinal)
             .Select(record => new PluginManagerRow(
                 record.Manifest.Id,
                 record.Manifest.Name,
@@ -34,7 +36,11 @@ public sealed class PluginManagerPresenter
     {
         if (menu == null) throw new ArgumentNullException(nameof(menu));
         if (warnings == null) throw new ArgumentNullException(nameof(warnings));
-        return menu.SettingsEntries.Select(entry => new PluginManagerRow(entry.Id, entry.Name, entry.Author, entry.Version, entry.Description, entry.Changelog, entry.State, entry.CanConfigure, warnings.FirstOrDefault(warning => warning.Plugin == entry.Id)?.Reason)).ToArray();
+        return menu.SettingsEntries
+            .OrderBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Id.Value, StringComparer.Ordinal)
+            .Select(entry => new PluginManagerRow(entry.Id, entry.Name, entry.Author, entry.Version, entry.Description, entry.Changelog, entry.State, entry.CanConfigure, warnings.FirstOrDefault(warning => warning.Plugin == entry.Id)?.Reason))
+            .ToArray();
     }
 
     private static PluginLifecycleState ToLifecycleState(PluginPackageLifecycleState state)

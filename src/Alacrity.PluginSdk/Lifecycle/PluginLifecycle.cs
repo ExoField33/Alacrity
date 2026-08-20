@@ -157,6 +157,8 @@ public interface IPluginContext
     IPluginHudService Hud { get; }
     /// <summary>Permission-gated clipboard and external-link operations owned by the host.</summary>
     IPluginUserInteractionService UserInteraction { get; }
+    /// <summary>Permission-gated bounded HTTPS requests to manifest-approved remote hosts.</summary>
+    IPluginNetworkService Network { get; }
     /// <summary>Host-provided Terraria services with no raw Terraria objects exposed.</summary>
     ITerrariaServices Terraria { get; }
     /// <summary>Read-only multiplayer session and server policy state.</summary>

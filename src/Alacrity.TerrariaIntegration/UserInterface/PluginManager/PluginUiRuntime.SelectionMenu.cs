@@ -139,6 +139,9 @@ public static partial class PluginUiRuntime
                 list.Height = StyleDimension.Fill;
                 list.ListPadding = 5f;
                 list.HAlign = align;
+                // Rows are already ordered by PluginManagerPresenter. UIList's default sort is
+                // not stable for equal-priority panels and can scramble that display order.
+                list.ManualSortMethod = items => { };
             }
 
             private static void ConfigureTitle(UIText title, float align, float offset)

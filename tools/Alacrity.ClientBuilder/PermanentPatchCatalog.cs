@@ -169,7 +169,7 @@ internal sealed class ClientPatchOperation
 /// <summary>Ordered, audited transformations for exactly one supported Terraria build.</summary>
 internal static class PermanentPatchCatalog
 {
-    internal const string Identity = "alacrity-terraria-1.4.5.6-r19";
+    internal const string Identity = "alacrity-terraria-1.4.5.6-r25";
 
     private static readonly ClientPatchDefinition[] Definitions =
     {
@@ -187,9 +187,10 @@ internal static class PermanentPatchCatalog
             "patch.runtime.input-and-keybinds",
             PermanentPatchPlan.ApplyPermanentInputAndKeybinds,
             "runtime.input-and-keybinds",
-            "Terraria.Main / Terraria.GameInput.PlayerInput / Terraria.GameContent.UI.States.UIManageControls",
-            "Post-input keybind dispatch and controls-menu integration",
-            new ClientPatchTarget("input.post-input", "Terraria.Main", "DoUpdate_HandleInput()", "final return after Terraria updates input state", "insert keybind update and vanilla-input guard", "UpdatePluginKeybinds", "HandleInput"),
+            "Terraria.Main / Terraria.Player / Terraria.GameInput.PlayerInput / Terraria.GameContent.UI.States.UIManageControls",
+            "Post-input keybind dispatch, scoped Escape handling, and controls-menu integration",
+            new ClientPatchTarget("input.post-input", "Terraria.Main", "DoUpdate_HandleInput()", "final return after Terraria updates input state", "insert keybind update and dropdown Escape admission", "UpdatePluginKeybinds", "HandleInput"),
+            new ClientPatchTarget("input.ingame-options-escape", "Terraria.Player", "ToggleInv()", "the unique IngameOptions.Close call in the active in-game-options branch", "skip only the native options close when an Alacrity dropdown consumed Escape", "HandleInput"),
             new ClientPatchTarget("input.key-state-shape", "Terraria.GameInput.PlayerInput", "UpdateInput()", "SettingsForUI.UpdateCounters() call", "insert before native state reset/copy", "EnsurePluginKeybindStateShape"),
             new ClientPatchTarget("input.controls-menu", "Terraria.GameContent.UI.States.UIManageControls", "OnInitialize()", "final return", "insert before return", "AppendPluginKeybindControls")),
         CreateDefinition(
@@ -292,6 +293,21 @@ internal static class PermanentPatchCatalog
             "Version-locked batched mechanical laser-ruler presentation with native fallback",
             new ClientPatchTarget("laser-ruler.draw", "Terraria.Main", "DrawInterface_3_LaserRuler()", "the verified static ruler method with its native ReverseGravitySupport grid draws", "call the generic host renderer first and continue through vanilla when it declines", "TryDrawLaserRulerPresentation")),
         CreateDefinition(
+            "patch.runtime.rain-presentation",
+            PermanentPatchPlan.ApplyPermanentRainPresentation,
+            "render.rain-presentation",
+            "Terraria.Main",
+            "Version-locked instanced rain presentation with native SpriteBatch fallback",
+            new ClientPatchTarget("rain.presentation.draw", "Terraria.Main", "DrawRain()", "the one verified native SpriteBatch.Draw(Texture2D, Vector2, Rectangle?, Color, Single, Vector2, Single, SpriteEffects, Single) call", "wrap the native draw while retaining the exact Rain.Update loop position and restoring its known batch context", "TryBeginRainPresentation", "TryQueueRainPresentation", "EndRainPresentation")),
+        CreateDefinition(
+            "patch.runtime.lighting-parallelism",
+            PermanentPatchPlan.ApplyPermanentLightingParallelism,
+            "render.lighting-parallelism",
+            "Terraria.Graphics.Light.LightMap / Terraria.Graphics.Light.TileLightScanner",
+            "Version-locked balanced parallel scheduling for the native lighting blur and tile scan callbacks",
+            new ClientPatchTarget("lighting.blur-ranges", "Terraria.Graphics.Light.LightMap", "BlurPass()", "the two exact ReLogic.Threading.FastParallel.For range calls for vertical and horizontal blur lines", "route through a generated native wrapper that retains FastParallel as its fallback", 2, "TryRunLightingParallel"),
+            new ClientPatchTarget("lighting.export-ranges", "Terraria.Graphics.Light.TileLightScanner", "ExportTo(Rectangle, LightMap, TileLightScannerOptions)", "the one exact ReLogic.Threading.FastParallel.For range call for tile-light columns", "route through a generated native wrapper that retains FastParallel as its fallback", "TryRunLightingParallel")),
+        CreateDefinition(
             "patch.runtime.static-tile-chunk-presentation",
             PermanentPatchPlan.ApplyPermanentStaticTileChunkPresentation,
             "render.static-tile-chunk-presentation",
@@ -305,22 +321,28 @@ internal static class PermanentPatchCatalog
             "runtime.chat-input-and-commands",
             "Terraria.Main / Terraria.Program",
             "Chat editing, command consumption, startup, and input formatting",
-            new ClientPatchTarget("chat.input-edit", "Terraria.Main", "GetInputText(String, Boolean)", "method entry guarded by Main.drawingPlayerChat", "early return through generic chat editor", "IsBetterChatActive", "ProcessPlayerChatInput"),
+            new ClientPatchTarget("native-text.input-edit", "Terraria.Main", "GetInputText(String, Boolean)", "method entry and native fallback body", "try the core-owned generic text editor before retaining Terraria's original input path", "TryProcessNativeTextInput"),
+            new ClientPatchTarget("native-text.caret", "Terraria.GameContent.UI.Elements.UITextBox", "DrawSelf(SpriteBatch)", "verified _cursor = Text.Length setup and UITextPanel base draw", "replace end-only cursor positioning and draw the retained selection without mutating stored text", "GetNativeTextInputCaret", "DrawNativeTextBoxSelection"),
+            new ClientPatchTarget("native-text.menu-presentation", "Terraria.Main", "DrawMenu(GameTime)", "the four verified menu String[] render loads after the first String measurement", "move Terraria's existing trailing input ticker to the generic edit-state caret for legacy menu fields", 4, "FormatNativeTextInputDisplay"),
+            new ClientPatchTarget("native-text.reset", "Terraria.Main", "clrInput()", "method entry", "reset core-owned caret, selection, and repeat state with Terraria's text-input reset", "ResetNativeTextInput"),
             new ClientPatchTarget("chat.native-navigation", "Terraria.Main", "DoUpdate_HandleChat()", "verified independent Up and Down key branches before IChatMonitor.Offset", "guard each native direction independently without suppressing the other", 2, "ShouldHandleChatInputAction"),
-            new ClientPatchTarget("chat.command-dispatch", "Terraria.Main", "DoUpdate_HandleChat()", "Main.chatText non-empty comparison and native close-chat path", "record accepted input and consume handled command before network send", "RecordSubmittedChatInput", "TryHandlePluginChatCommand"),
+            new ClientPatchTarget("chat.command-dispatch", "Terraria.Main", "DoUpdate_HandleChat()", "Main.chatText non-empty comparison and native close-chat path", "defer owned outgoing transforms, then record accepted input and consume handled commands; completed replacements are staged at the input boundary before this native path", "HasReadyOutgoingChatMessage", "TryDeferOutgoingChatMessage", "RecordSubmittedChatInput", "TryHandlePluginChatCommand"),
             new ClientPatchTarget("chat.bootstrap", "Terraria.Program", "LaunchGame(String[], Boolean)", "method entry", "insert before first instruction", "BootstrapPluginRuntime"),
-            new ClientPatchTarget("chat.input-format", "Terraria.Main", "DrawPlayerChat()", "verified chatText capture into string local 2 and cursor literal/append region", "format input and remove vanilla cursor append", "FormatPlayerChatText")),
+            new ClientPatchTarget("chat.input-format", "Terraria.Main", "DrawPlayerChat()", "verified chatText capture into string local 2, editable-text draw, cursor literal/append region, and chat-monitor draw", "format input, draw selection behind snippets, remove vanilla cursor append, and append the generic host-owned chat action strip", "FormatPlayerChatText", "DrawNativePlayerChatSelection", "DrawChatActionStrip")),
         CreateDefinition(
             "patch.runtime.chat-display-and-interaction",
             PermanentPatchPlan.ApplyPermanentChatDisplayAndInteraction,
             "runtime.chat-display-and-interaction",
-            "Terraria.UI.Chat.TextSnippet / Terraria.UI.Chat.ChatManager / Terraria.Chat.ChatHelper / Terraria.Main",
+            "Terraria.UI.Chat.TextSnippet / Terraria.UI.Chat.ChatManager / Terraria.UI.Chat.ChatMessageContainer / Terraria.Chat.ChatHelper / Terraria.Main",
             "Chat decoration, display visibility, hover, click, color, and copy context",
             new ClientPatchTarget("chat.snippet-color", "Terraria.UI.Chat.TextSnippet", "GetVisibleColor()", "complete method body", "replace body", "GetChatSnippetVisibleColor"),
             new ClientPatchTarget("chat.snippet-hover", "Terraria.UI.Chat.TextSnippet", "OnHover()", "complete method body", "replace body", "HandleChatSnippetHover"),
             new ClientPatchTarget("chat.snippet-click", "Terraria.UI.Chat.TextSnippet", "OnClick()", "complete method body", "replace body", "HandleChatSnippetClick"),
             new ClientPatchTarget("chat.snippet-copy", "Terraria.UI.Chat.TextSnippet", "CopyMorph(String)", "final return", "insert copy-context callback before return", "CopyChatSnippetContext"),
-            new ClientPatchTarget("chat.parse-decoration", "Terraria.UI.Chat.ChatManager", "ParseMessage(String, Color)", "final return", "decorate returned snippet list before return", "DecorateChatMessage"),
+            new ClientPatchTarget("chat.stored-message-decoration-scope", "Terraria.UI.Chat.ChatMessageContainer", "Refresh()", "verified OriginalText load and WordwrapStringSmart result store", "scope the shared parser to a stored chat-monitor message", "BeginStoredChatMessageDecorationForContainer", "EndStoredChatMessageDecoration"),
+            new ClientPatchTarget("chat.stored-message-preparation", "Terraria.UI.Chat.ChatMessageContainer", "Refresh()", "verified OriginalText load immediately before WordwrapStringSmart", "prepare one complete retained message before Terraria wraps it into display fragments", "PrepareStoredChatMessageText"),
+            new ClientPatchTarget("chat.stored-message-decoration", "Terraria.UI.Chat.ChatManager", "ParseMessage(String, Color)", "final return", "decorate only while ChatMessageContainer owns the parse scope", "DecorateStoredChatMessage"),
+            new ClientPatchTarget("chat.stored-message-presentation-refresh", "Terraria.GameContent.UI.Chat.RemadeChatMonitor", "Update()", "method entry", "mark only host-updated retained messages for Terraria's normal rewrap before monitor update", "RefreshStoredChatMessagePresentations"),
             new ClientPatchTarget("chat.network-visibility", "Terraria.Chat.ChatHelper", "DisplayMessage(NetworkText, Color, Byte)", "method entry", "return gate using argument 2", "ShouldDisplayNetworkChatMessage"),
             new ClientPatchTarget("chat.local-visibility-text", "Terraria.Main", "NewText(String, Byte, Byte, Byte)", "method entry", "return gate", "ShouldDisplayLocalChatMessage"),
             new ClientPatchTarget("chat.local-visibility-multiline", "Terraria.Main", "NewTextMultiline(String, Boolean, Color, Int32)", "method entry", "return gate", "ShouldDisplayLocalChatMessage"))
@@ -411,6 +433,19 @@ internal static class PermanentPatchCatalog
 
             if (!definition.IsPresent(module))
             {
+                try
+                {
+                    for (var operationIndex = 0; operationIndex < definition.Operations.Count; operationIndex++)
+                    {
+                        ValidateOperationPostcondition(module, definition.Operations[operationIndex]);
+                    }
+                }
+                catch (ClientBuildException exception)
+                {
+                    throw new ClientBuildException(
+                        "Patch " + definition.Id + " completed without satisfying its verified postcondition: " + exception.Message);
+                }
+
                 throw new ClientBuildException("Patch " + definition.Id + " completed without producing its verified runtime bridge call.");
             }
 
@@ -762,6 +797,19 @@ internal static class PermanentPatchCatalog
             return;
         }
 
+        if (string.Equals(target.Id, "rain.presentation.draw", StringComparison.Ordinal))
+        {
+            ValidateRainPresentationBridgeCall(target, targetMethods, bridgeMethod);
+            return;
+        }
+
+        if (string.Equals(target.Id, "lighting.blur-ranges", StringComparison.Ordinal) ||
+            string.Equals(target.Id, "lighting.export-ranges", StringComparison.Ordinal))
+        {
+            ValidateLightingParallelBridgeCall(target, targetMethods, bridgeMethod);
+            return;
+        }
+
         bool allReturns = target.BridgeCallMode == ClientPatchPostconditionMode.BeforeEveryReturn;
         int expected = allReturns ? CountReturns(targetMethods) : target.ExpectedBridgeCallCount;
         int actual = CountBridgeMethodCalls(targetMethods, bridgeMethod);
@@ -819,6 +867,68 @@ internal static class PermanentPatchCatalog
         }
     }
 
+    private static void ValidateRainPresentationBridgeCall(
+        ClientPatchTarget target,
+        IReadOnlyList<MethodDefinition> targetMethods,
+        string bridgeMethod)
+    {
+        TypeDefinition type = targetMethods[0].DeclaringType;
+        IReadOnlyList<MethodDefinition> expectedLocation;
+        if (string.Equals(bridgeMethod, "TryQueueRainPresentation", StringComparison.Ordinal))
+        {
+            MethodDefinition? wrapper = type.Methods.SingleOrDefault(method =>
+                string.Equals(method.Name, "AlacrityDrawRainSprite", StringComparison.Ordinal));
+            if (wrapper == null || !wrapper.HasBody)
+            {
+                throw new ClientBuildException("Patch target " + target.Id + " did not create its verified rain SpriteBatch wrapper.");
+            }
+
+            expectedLocation = new[] { wrapper };
+        }
+        else
+        {
+            expectedLocation = targetMethods;
+        }
+
+        int actual = CountBridgeMethodCalls(expectedLocation, bridgeMethod);
+        if (actual != target.ExpectedBridgeCallCount)
+        {
+            throw new ClientBuildException(
+                "Patch target " + target.Id + " expected " + target.ExpectedBridgeCallCount +
+                " call(s) to " + bridgeMethod + " in its verified rain presentation location but found " + actual + ".");
+        }
+    }
+
+    private static void ValidateLightingParallelBridgeCall(
+        ClientPatchTarget target,
+        IReadOnlyList<MethodDefinition> targetMethods,
+        string bridgeMethod)
+    {
+        TypeDefinition type = targetMethods[0].DeclaringType;
+        MethodDefinition? wrapper = type.Methods.SingleOrDefault(method =>
+            string.Equals(method.Name, "AlacrityRunLightingParallel", StringComparison.Ordinal));
+        if (wrapper == null || !wrapper.HasBody)
+        {
+            throw new ClientBuildException("Patch target " + target.Id + " did not create its verified lighting wrapper.");
+        }
+
+        int bridgeCalls = CountBridgeMethodCalls(new[] { wrapper }, bridgeMethod);
+        if (bridgeCalls != 1)
+        {
+            throw new ClientBuildException(
+                "Patch target " + target.Id + " expected one call to " + bridgeMethod +
+                " in its generated wrapper but found " + bridgeCalls + ".");
+        }
+
+        int wrapperCalls = CountMethodCalls(targetMethods, "AlacrityRunLightingParallel");
+        if (wrapperCalls != target.ExpectedBridgeCallCount)
+        {
+            throw new ClientBuildException(
+                "Patch target " + target.Id + " expected " + target.ExpectedBridgeCallCount +
+                " calls to its generated wrapper but found " + wrapperCalls + ".");
+        }
+    }
+
     private static void ValidateTargetStructuralPostcondition(
         ClientPatchTarget target,
         TypeDefinition type,
@@ -873,6 +983,17 @@ internal static class PermanentPatchCatalog
                     "DrawEntities_AlacrityDisplayDollEntries");
                 RequireMethodCall(methods[0], "DrawEntities_AlacrityHatRacks");
                 RequireMethodCall(methods[0], "DrawEntities_AlacrityDisplayDolls");
+                return;
+
+            case "rain.presentation.draw":
+                RequireGeneratedMembers(type, "alacrityRainUsesWorldTransform", "AlacrityDrawRainSprite");
+                RequireMethodCall(methods[0], "AlacrityDrawRainSprite");
+                return;
+
+            case "lighting.blur-ranges":
+            case "lighting.export-ranges":
+                RequireGeneratedMembers(type, "AlacrityRunLightingParallel");
+                RequireMethodCall(methods[0], "AlacrityRunLightingParallel");
                 return;
 
             case "waterfall.discovery-reuse":
@@ -977,6 +1098,25 @@ internal static class PermanentPatchCatalog
         }
 
         throw new ClientBuildException("Patch postcondition is missing '" + name + "' in " + method.FullName + ".");
+    }
+
+    private static int CountMethodCalls(IReadOnlyList<MethodDefinition> methods, string name)
+    {
+        int count = 0;
+        for (int methodIndex = 0; methodIndex < methods.Count; methodIndex++)
+        {
+            MethodDefinition method = methods[methodIndex];
+            for (int instructionIndex = 0; instructionIndex < method.Body.Instructions.Count; instructionIndex++)
+            {
+                if (method.Body.Instructions[instructionIndex].Operand is MethodReference reference &&
+                    string.Equals(reference.Name, name, StringComparison.Ordinal))
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
     }
 
     private static void RequireDictionaryCapacityMutation(MethodDefinition constructor)

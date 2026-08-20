@@ -29,6 +29,7 @@ namespace AlacrityTerraria
                 UpdateIconInteractionInput();
                 _dispatcher?.Drain(exception => ReportOptionalUiFailure("Plugin dispatcher callback", exception));
                 _scheduler?.Tick(Main.GameUpdateCount);
+                _chatAdapter?.QueueReadyOutgoingMessageForNativeSubmit();
                 RefreshVisualEffectsPolicy();
                 RefreshRenderCullingPolicy();
                 TimeSpan timestamp = TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency);

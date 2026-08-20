@@ -69,12 +69,16 @@
     <Compile Include="Rendering\PluginUiRuntime.PaintPreparationBridge.cs" />
     <Compile Include="Rendering\PluginUiRuntime.PresentationSuppressionBridge.cs" />
     <Compile Include="Rendering\LaserRuler\TerrariaLaserRulerPresentation.cs" />
+    <Compile Include="Rendering\Rain\TerrariaInstancedRainPresentation.cs" />
+    <Compile Include="Rendering\Optimization\TerrariaLightingParallelExecutor.cs" />
+    <Compile Include="Rendering\Optimization\PluginUiRuntime.LightingBridge.cs" />
     <Compile Include="Rendering\TileChunks\StaticTileChunkEligibility.Generated.cs" />
     <Compile Include="Rendering\TileChunks\TerrariaStaticTileChunkRenderer.cs" />
     <Compile Include="Rendering\Culling\TerrariaRenderCullingAdapter.cs" />
     <Compile Include="Rendering\Culling\TerrariaRenderCullingBounds.cs" />
     <Compile Include="Rendering\Culling\PluginUiRuntime.RenderCullingBridge.cs" />
     <Compile Include="Chat\TerrariaPluginChatAdapter.cs" />
+    <Compile Include="Chat\TerrariaChatActionStrip.cs" />
     <Compile Include="Runtime\TerrariaPluginOperationCoordinator.cs" />
     <Compile Include="Persistence\TerrariaPluginEnabledStateStore.cs" />
     <Compile Include="VisualEffects\TerrariaVisualEffectsRuntimePolicy.cs" />
@@ -83,6 +87,10 @@
     <Compile Include="Input\TerrariaPluginKeybindPersistence.cs" />
     <Compile Include="Input\TerrariaPluginKeybindControlsAdapter.cs" />
     <Compile Include="Input\TerrariaKeybindRuntime.cs" />
+    <Compile Include="UserInterface\PluginDropdownFilter.cs" />
+    <Compile Include="UserInterface\PluginSearchKeyRepeatState.cs" />
+    <Compile Include="UserInterface\PluginSearchTextElement.cs" />
+    <Compile Include="UserInterface\PluginSearchTextBuffer.cs" />
     <Compile Include="UserInterface\PluginManager\PluginUiRuntime.DescriptionMenu.cs" />
     <Compile Include="UserInterface\PluginManager\PluginUiRuntime.SelectionMenu.cs" />
     <Compile Include="UserInterface\PluginManager\PluginUiRuntime.PluginMenuBridge.cs" />
@@ -90,4 +98,19 @@
     <Compile Include="UserInterface\Settings\PluginUiRuntime.IngamePluginList.cs" />
     <Compile Include="UserInterface\Settings\PluginUiRuntime.IngamePluginSettings.cs" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <RainEffectSource>$(MSBuildProjectDirectory)\Rendering\Rain\InstancedRainPresentation.fx</RainEffectSource>
+    <RainEffectIntermediateDirectory>$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)</RainEffectIntermediateDirectory>
+    <RainEffectOutput>$(RainEffectIntermediateDirectory)\InstancedRainPresentation.mgfxo</RainEffectOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(RainEffectOutput)" LogicalName="AlacrityTerraria.Rendering.Rain.InstancedRainPresentation.mgfxo" />
+  </ItemGroup>
+
+  <Target Name="CompileInstancedRainEffect" BeforeTargets="CoreCompile" Inputs="$(RainEffectSource)" Outputs="$(RainEffectOutput)">
+    <MakeDir Directories="$(RainEffectIntermediateDirectory)" />
+    <Exec Command="dotnet tool run mgfxc &quot;$(RainEffectSource)&quot; &quot;$(RainEffectOutput)&quot; /Profile:OpenGL" />
+  </Target>
 </Project>

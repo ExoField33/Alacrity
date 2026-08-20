@@ -7,6 +7,7 @@ using Alacrity.App.PluginManagement;
 using Alacrity.PluginSdk;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 using Terraria;
 using Terraria.Audio;
 using Terraria.GameContent.UI.Elements;
@@ -26,6 +27,9 @@ public static partial class PluginUiRuntime
             private readonly IReadOnlyList<PluginUiContribution> legacyPages;
             private UIGamepadHelper gamepadHelper;
             private UIList settingsList;
+            private UIElement outer;
+            private UIElement dropdownLayer;
+            private UserInterface.PluginSearchTextElement dropdownSearch;
 
             public PluginSettingsMenu(PluginManagerRow plugin, IReadOnlyList<PluginSettingControl> controls, IReadOnlyList<PluginUiContribution> legacyPages)
             {
@@ -41,10 +45,16 @@ public static partial class PluginUiRuntime
                 SetupGamepadPoints(spriteBatch);
             }
 
+            public override void Update(GameTime gameTime)
+            {
+                FocusDropdownSearchOnKeyboardInput();
+                base.Update(gameTime);
+            }
+
             public override void OnInitialize()
             {
                 // This deliberately mirrors UIManageControls: Terraria owns the panel, list, slider, and scrollbar visuals.
-                var outer = new UIElement { Width = new StyleDimension(0f, 0.8f), MaxWidth = new StyleDimension(600f, 0f), Top = new StyleDimension(220f, 0f), Height = new StyleDimension(-200f, 1f), HAlign = 0.5f };
+                outer = new UIElement { Width = new StyleDimension(0f, 0.8f), MaxWidth = new StyleDimension(600f, 0f), Top = new StyleDimension(220f, 0f), Height = new StyleDimension(-200f, 1f), HAlign = 0.5f };
                 Append(outer);
                 var panel = new UIPanel { Width = StyleDimension.Fill, Height = new StyleDimension(-110f, 1f), BackgroundColor = new Color(33, 43, 79) * 0.8f };
                 outer.Append(panel);
@@ -85,8 +95,24 @@ public static partial class PluginUiRuntime
                 outer.Append(back);
             }
 
-            private static void AddControl(UIList list, PluginSettingControl control, int snapIndex)
+            private void AddControl(UIList list, PluginSettingControl control, int snapIndex)
             {
+                if (control.Kind == PluginSettingControlKind.Dropdown)
+                {
+                    var dropdown = new UIKeybindingSimpleListItem(
+                        () => control.DisplayName + ": " + ReadSettingValue(control) + "  >",
+                        new Color(73, 94, 171, 255) * 0.9f)
+                    {
+                        Width = StyleDimension.Fill,
+                        Height = new StyleDimension(30f, 0f)
+                    };
+                    dropdown.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                    dropdown.OnLeftClick += (evt, element) => OpenDropdown(control);
+                    dropdown.SetSnapPoint("PluginSetting", snapIndex, null, null);
+                    list.Add(dropdown);
+                    return;
+                }
+
                 if (control.Kind == PluginSettingControlKind.Slider)
                 {
                     var slider = new UIKeybindingSliderItem(
@@ -108,6 +134,242 @@ public static partial class PluginUiRuntime
                 entry.OnLeftClick += (evt, element) => ActivateSetting(control);
                 entry.SetSnapPoint("PluginSetting", snapIndex, null, null);
                 list.Add(entry);
+            }
+
+            private void OpenDropdown(PluginSettingControl control)
+            {
+                IReadOnlyList<PluginSettingOption> options;
+                try
+                {
+                    options = control.GetDropdownOptions();
+                }
+                catch (Exception exception)
+                {
+                    ShowHoverText("Unable to open plugin setting choices: " + exception.Message);
+                    return;
+                }
+
+                if (options == null || options.Count == 0)
+                {
+                    ShowHoverText("No choices are available for this setting.");
+                    return;
+                }
+
+                CloseDropdown(playSound: false);
+                dropdownLayer = new UIElement
+                {
+                    Width = StyleDimension.Fill,
+                    Height = StyleDimension.Fill
+                };
+                // Only clicks outside the panel dismiss the chooser. Child clicks bubble through
+                // this layer, so closing unconditionally would make a text search impossible.
+                dropdownLayer.OnLeftClick += (evt, element) =>
+                {
+                    if (evt.Target == dropdownLayer)
+                    {
+                        CloseDropdown(playSound: true);
+                    }
+                };
+                outer.Append(dropdownLayer);
+
+                var panel = new UIPanel
+                {
+                    Width = new StyleDimension(0f, 0.78f),
+                    Height = new StyleDimension(300f, 0f),
+                    HAlign = 0.5f,
+                    VAlign = 0.5f,
+                    BackgroundColor = new Color(33, 43, 79) * 0.96f
+                };
+                dropdownLayer.Append(panel);
+                var title = new UITextPanel<string>("< " + control.DisplayName, 0.7f, true)
+                {
+                    Width = StyleDimension.Fill,
+                    Height = new StyleDimension(36f, 0f),
+                    BackgroundColor = new Color(73, 94, 171)
+                };
+                title.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                title.OnLeftClick += (evt, element) => CloseDropdown(playSound: true);
+                panel.Append(title);
+
+                var list = new UIList
+                {
+                    Width = new StyleDimension(-25f, 1f),
+                    Height = new StyleDimension(-92f, 1f),
+                    Top = new StyleDimension(88f, 0f),
+                    ListPadding = 4f,
+                    ManualSortMethod = items => { }
+                };
+                panel.Append(list);
+
+                var searchFrame = new UIPanel
+                {
+                    Width = new StyleDimension(-12f, 1f),
+                    Height = new StyleDimension(30f, 0f),
+                    Left = new StyleDimension(6f, 0f),
+                    Top = new StyleDimension(50f, 0f),
+                    BackgroundColor = new Color(38, 52, 94) * 0.94f,
+                    BorderColor = ResourcePackBorder
+                };
+                searchFrame.SetPadding(2f);
+                var search = new UserInterface.PluginSearchTextElement("Search...", 0.68f)
+                {
+                    Width = StyleDimension.Fill,
+                    Height = StyleDimension.Fill
+                };
+                search.ContentsChanged += text => PopulateDropdownOptions(list, control, options, text);
+                searchFrame.OnUpdate += element =>
+                {
+                    var frame = (UIPanel)element;
+                    bool focused = search.IsWritingText;
+                    frame.BackgroundColor = focused
+                        ? new Color(59, 80, 151) * 0.96f
+                        : new Color(38, 52, 94) * 0.94f;
+                    frame.BorderColor = focused
+                        ? Colors.FancyUIFatButtonMouseOver
+                        : ResourcePackBorder;
+                };
+                searchFrame.Append(search);
+                dropdownSearch = search;
+                panel.Append(searchFrame);
+                PopulateDropdownOptions(list, control, options, string.Empty);
+
+                var scrollbar = new UIScrollbar
+                {
+                    Height = new StyleDimension(-98f, 1f),
+                    HAlign = 1f,
+                    Top = new StyleDimension(90f, 0f)
+                };
+                // UIList handles wheel events over list rows. This covers the narrow scrollbar
+                // track too, whose native element otherwise only supports dragging.
+                scrollbar.OnScrollWheel += (evt, element) => scrollbar.ViewPosition -= evt.ScrollWheelValue;
+                panel.Append(scrollbar);
+                list.SetScrollbar(scrollbar);
+                SoundEngine.PlaySound(10, -1, -1, 1, 1f, 0f);
+            }
+
+            private void PopulateDropdownOptions(UIList list, PluginSettingControl control, IReadOnlyList<PluginSettingOption> options, string searchText)
+            {
+                list.Clear();
+                string selected = ReadSettingValue(control);
+                int matchCount = 0;
+                for (int index = 0; index < options.Count; index++)
+                {
+                    PluginSettingOption option = options[index];
+                    if (!PluginDropdownFilter.Matches(option.DisplayName, option.Value, searchText))
+                    {
+                        continue;
+                    }
+
+                    matchCount++;
+                    bool isSelected = string.Equals(option.Value, selected, StringComparison.OrdinalIgnoreCase);
+                    var item = new UIKeybindingSimpleListItem(
+                        () => isSelected ? option.DisplayName + "  *" : option.DisplayName,
+                        new Color(73, 94, 171, 255) * 0.9f)
+                    {
+                        Width = StyleDimension.Fill,
+                        Height = new StyleDimension(28f, 0f)
+                    };
+                    item.OnMouseOver += (evt, element) => SoundEngine.PlaySound(12, -1, -1, 1, 1f, 0f);
+                    item.OnLeftClick += (evt, element) => SelectDropdownOption(control, option.Value);
+                    list.Add(item);
+                }
+
+                if (matchCount == 0)
+                {
+                    var empty = new UIKeybindingSimpleListItem(() => "No matching choices.", new Color(73, 94, 171, 255) * 0.55f)
+                    {
+                        Width = StyleDimension.Fill,
+                        Height = new StyleDimension(28f, 0f),
+                        IgnoresMouseInteraction = true
+                    };
+                    list.Add(empty);
+                }
+            }
+
+            private void SelectDropdownOption(PluginSettingControl control, string value)
+            {
+                try
+                {
+                    control.SetDropdown(value);
+                    CloseDropdown(playSound: true);
+                }
+                catch (Exception exception)
+                {
+                    ShowHoverText("Unable to change plugin setting: " + exception.Message);
+                }
+            }
+
+            /// <summary>Closes the host-owned chooser before menu-level Escape changes screens.</summary>
+            internal bool TryCloseDropdown()
+            {
+                if (dropdownLayer == null)
+                {
+                    return false;
+                }
+
+                if (dropdownSearch != null && dropdownSearch.IsWritingText)
+                {
+                    dropdownSearch.Blur();
+                    return true;
+                }
+
+                CloseDropdown(playSound: true);
+                return true;
+            }
+
+            private void CloseDropdown(bool playSound)
+            {
+                if (dropdownLayer == null)
+                {
+                    return;
+                }
+
+                outer?.RemoveChild(dropdownLayer);
+                dropdownLayer = null;
+                dropdownSearch = null;
+                if (playSound)
+                {
+                    SoundEngine.PlaySound(11, -1, -1, 1, 1f, 0f);
+                }
+            }
+
+            private void FocusDropdownSearchOnKeyboardInput()
+            {
+                if (dropdownSearch == null || dropdownSearch.IsWritingText)
+                {
+                    return;
+                }
+
+                KeyboardState current = Main.keyState;
+                KeyboardState previous = Main.oldKeyState;
+                if (current.IsKeyDown(Keys.Escape) ||
+                    previous.IsKeyDown(Keys.Escape) ||
+                    (current.IsKeyDown(Keys.Enter) && !previous.IsKeyDown(Keys.Enter)))
+                {
+                    return;
+                }
+
+                // Start the host-owned search before child elements update so the triggering
+                // typed input belongs to the chooser instead of falling through underneath it.
+                if (HasPendingDropdownSearchText())
+                {
+                    dropdownSearch.Focus(preservePendingText: true);
+                }
+            }
+
+            private static bool HasPendingDropdownSearchText()
+            {
+                int count = Math.Max(0, Math.Min(Main.keyCount, Main.keyInt.Length));
+                for (int index = 0; index < count; index++)
+                {
+                    int key = Main.keyInt[index];
+                    if (key >= 32 && key != 127)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             private static void AddLegacyControl(UIList list, PluginUiContribution contribution, int snapIndex)

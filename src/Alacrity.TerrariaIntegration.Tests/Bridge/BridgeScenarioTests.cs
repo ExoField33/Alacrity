@@ -23,16 +23,52 @@ public sealed class BridgeScenarioTests
         VerifyStaticBridgeMethod(bridge, "ShutdownPluginRuntime", typeof(void));
         VerifyStaticBridgeMethod(bridge, "UpdatePluginKeybinds", typeof(void));
         VerifyStaticBridgeMethod(bridge, "ProcessChatInput", typeof(string), typeof(string), typeof(bool));
+        VerifyStaticBridgeMethod(bridge, "PrepareStoredChatMessageText", typeof(string), typeof(string), typeof(object));
         VerifyStaticBridgeMethod(bridge, "DrawWorldOverlays", typeof(void), typeof(SpriteBatch));
         VerifyStaticBridgeMethod(bridge, "DrawHudWidgets", typeof(void), typeof(SpriteBatch));
         VerifyStaticBridgeMethod(bridge, "ShouldCreateDust", typeof(bool), typeof(int));
         VerifyStaticBridgeMethod(bridge, "ShouldRunGoreSystem", typeof(bool));
         VerifyStaticBridgeMethod(bridge, "ShouldDrawPaladinShieldIcon", typeof(bool));
+        VerifyStaticBridgeMethod(bridge, "TryBeginRainPresentation", typeof(bool), typeof(bool));
+        VerifyStaticBridgeMethod(
+            bridge,
+            "TryQueueRainPresentation",
+            typeof(bool),
+            typeof(Texture2D),
+            typeof(Vector2),
+            typeof(Rectangle?),
+            typeof(Color),
+            typeof(float),
+            typeof(Vector2),
+            typeof(float),
+            typeof(SpriteEffects),
+            typeof(float));
+        VerifyStaticBridgeMethod(bridge, "EndRainPresentation", typeof(void));
+        VerifyStaticBridgeMethod(
+            bridge,
+            "TryRunLightingParallel",
+            typeof(bool),
+            typeof(int),
+            typeof(int),
+            typeof(Delegate),
+            typeof(object));
 
         MethodInfo handshake = bridge.GetMethod("GetBridgeHandshake", BindingFlags.Public | BindingFlags.Static);
-        Assert.Equal("4|2|5|1.4.5.6", (string)handshake.Invoke(null, null));
+        Assert.Equal("5|2|14|1.4.5.6", (string)handshake.Invoke(null, null));
         Assert.Equal(string.Format("{0}|{1}|{2}|1.4.5.6", AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi), (string)handshake.Invoke(null, null));
 
+    }
+
+    [Fact]
+    public void FacadeExposesNativeTextInputAbi()
+    {
+        Assembly facade = Assembly.LoadFrom(GetStagedFacadePath());
+        Type bridge = facade.GetType("AlacrityTerraria.PluginUiRuntime", true);
+
+        VerifyStaticBridgeMethod(bridge, "TryProcessNativeTextInput", typeof(bool), typeof(string), typeof(bool), typeof(string).MakeByRefType());
+        VerifyStaticBridgeMethod(bridge, "FormatNativeTextInputDisplay", typeof(string), typeof(string));
+        VerifyStaticBridgeMethod(bridge, "GetNativeTextInputCaret", typeof(int), typeof(string));
+        VerifyStaticBridgeMethod(bridge, "ResetNativeTextInput", typeof(void));
     }
 
     [Fact]
@@ -56,12 +92,14 @@ public sealed class BridgeScenarioTests
         AssertBundledPluginPackage(root, "alacrity.off-screen-culling", "Alacrity.OffScreenCulling.dll");
         AssertBundledPluginPackage(root, "alacrity.kinesin", "Alacrity.Kinesin.dll");
         AssertBundledPluginPackage(root, "alacrity.remove-paladin-shield-icon", "Alacrity.RemovePaladinShieldIcon.dll");
+        AssertBundledPluginPackage(root, "alacrity.chat-translation", "Alacrity.ChatTranslation.dll");
         string manifest = File.ReadAllText(Path.Combine(root, "runtime-manifest.txt"));
         Assert.Contains("Alacrity.BetterChat.dll", manifest);
         Assert.Contains("Alacrity.PlayerList.dll", manifest);
         Assert.Contains("Alacrity.DustGoreToggle.dll", manifest);
         Assert.Contains("Alacrity.Hitboxes.dll", manifest);
         Assert.Contains("Alacrity.VisualDiagnostics.dll", manifest);
+        Assert.Contains("plugins\\alacrity.chat-translation\\assets\\translate-icon.xnb", manifest);
         Assert.Equal("Alacrity.PluginUiCoreBridge", AssemblyName.GetAssemblyName(bridgePath).Name);
 
         Assembly facade = Assembly.LoadFrom(facadePath);
@@ -87,7 +125,7 @@ public sealed class BridgeScenarioTests
     public void HandshakeParsingReportsCompatibilityFailures()
     {
         BridgeCompatibilityDescriptor expected = new BridgeCompatibilityDescriptor(AlacrityCompatibility.PluginSdk, AlacrityCompatibility.Host, AlacrityCompatibility.BridgeAbi, "1.4.5.6");
-        Assert.True(BridgeCompatibilityDescriptor.TryParse("4|2|5|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic));
+        Assert.True(BridgeCompatibilityDescriptor.TryParse("5|2|14|1.4.5.6", out BridgeCompatibilityDescriptor current, out string diagnostic));
         Assert.NotNull(current);
         Assert.True(current.TryValidateAgainst(expected, out _));
         Assert.False(BridgeCompatibilityDescriptor.TryParse("2|2|2", out _, out diagnostic));
@@ -122,6 +160,11 @@ public sealed class BridgeScenarioTests
     private static string GetStagedBridgePath()
     {
         return Path.Combine(GetRuntimeArtifactDirectory(), "bin", "Alacrity.PluginUiCoreBridge.dll");
+    }
+
+    private static string GetStagedFacadePath()
+    {
+        return Path.Combine(GetRuntimeArtifactDirectory(), "Alacrity.PluginUiRuntime.dll");
     }
 
     private static string GetRuntimeArtifactDirectory()

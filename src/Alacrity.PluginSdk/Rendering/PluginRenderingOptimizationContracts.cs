@@ -47,7 +47,19 @@ public enum PluginRenderingOptimization
     /// continuing to calculate Terraria's lighting for every rendered frame. Unsupported,
     /// animated, painted, or visibility-sensitive tiles remain on Terraria's native path.
     /// </summary>
-    StaticTileChunkPresentation = 64
+    StaticTileChunkPresentation = 64,
+
+    /// <summary>
+    /// Replaces Terraria's repeated CPU-side rain sprite submissions with a version-verified
+    /// instanced presentation pass. Rain simulation and update ordering remain native.
+    /// </summary>
+    RainPresentation = 128,
+
+    /// <summary>
+    /// Uses balanced caller-participating parallel ranges for Terraria's verified vanilla lighting
+    /// blur and tile-light scan work. The lighting algorithm and update cadence remain native.
+    /// </summary>
+    LightingParallelism = 256
 }
 
 /// <summary>
