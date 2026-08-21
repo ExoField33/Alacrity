@@ -229,7 +229,7 @@ internal static class PermanentPatchCatalog
             "Terraria.UI.BannerClaimingUI",
             "Native banner-claiming search that filters only the local player's current kill-count claimable entries",
             new ClientPatchTarget("banner-search.filter", "Terraria.UI.BannerClaimingUI", "UpdateAndGetClaimableItemsCount()", "the verified positive claimable-count branch before native entry compaction", "skip nonmatching available banner entries before both native list and grid views consume the compact array", "ShouldDisplayAvailableBanner"),
-            new ClientPatchTarget("banner-search.grid-field", "Terraria.UI.BannerClaimingUI", "DrawBannersGrid(SpriteBatch)", "the refreshed claimable-count store at method entry", "draw the local search field immediately left of the native grid's first row", "DrawAvailableBannerSearch"),
+            new ClientPatchTarget("banner-search.list-field", "Terraria.UI.BannerClaimingUI", "DrawBannersList(SpriteBatch, Int32, Int32, Color)", "the refreshed claimable-count store and native list vertical offset", "draw the fixed local search field beside the top native list entry", "DrawAvailableBannerSearch"),
             new ClientPatchTarget("banner-search.empty-results", "Terraria.UI.BannerClaimingUI", "UpdateAndGetClaimableItemsCount()", "the native AnyAvailableBanners assignment", "retain the local Banners menu while an active local filter has zero matches", "ShouldKeepBannerMenuAvailable")),
         CreateDefinition(
             "patch.runtime.presentation-suppression",

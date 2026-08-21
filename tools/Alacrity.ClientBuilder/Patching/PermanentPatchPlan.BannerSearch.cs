@@ -59,14 +59,14 @@ internal static partial class PermanentPatchPlan
         updateIl.InsertAfter(loadThis, loadTrue);
         updateIl.InsertAfter(loadTrue, setAvailable);
 
-        PatchBannerSearchField(
-            bannerClaimingUi.Methods.Single(candidate => candidate.Name == "DrawBannersGrid" && candidate.Parameters.Count == 1),
+        PatchBannerSearchListField(
+            bannerClaimingUi.Methods.Single(candidate => candidate.Name == "DrawBannersList" && candidate.Parameters.Count == 4),
             drawSearch,
-            136,
-            342);
+            82,
+            388);
     }
 
-    private static void PatchBannerSearchField(MethodDefinition method, MethodReference drawSearch, int x, int y)
+    private static void PatchBannerSearchListField(MethodDefinition method, MethodReference drawSearch, int x, int y)
     {
         Instruction updateClaimableCount = method.Body.Instructions.Single(instruction =>
             (instruction.OpCode == OpCodes.Call || instruction.OpCode == OpCodes.Callvirt) &&
@@ -84,10 +84,14 @@ internal static partial class PermanentPatchPlan
         Instruction loadSpriteBatch = il.Create(OpCodes.Ldarg_1);
         Instruction loadX = il.Create(OpCodes.Ldc_I4, x);
         Instruction loadY = il.Create(OpCodes.Ldc_I4, y);
+        Instruction loadListOffset = il.Create(OpCodes.Ldarg_2);
+        Instruction addListOffset = il.Create(OpCodes.Add);
         il.InsertAfter(storedCount, loadSpriteBatch);
         il.InsertAfter(loadSpriteBatch, loadX);
         il.InsertAfter(loadX, loadY);
-        il.InsertAfter(loadY, il.Create(OpCodes.Call, drawSearch));
+        il.InsertAfter(loadY, loadListOffset);
+        il.InsertAfter(loadListOffset, addListOffset);
+        il.InsertAfter(addListOffset, il.Create(OpCodes.Call, drawSearch));
     }
 
 }
